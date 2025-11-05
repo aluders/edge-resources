@@ -1,0 +1,3 @@
+create a new fat32 efi boot partition and copy the boot files to it from windows boot image command prompt...
+bcdboot x:\windows /s y:
+where x is the windows partition and y is the efi partition
