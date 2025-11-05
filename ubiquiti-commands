@@ -6,7 +6,7 @@ wget http://dl.ubnt.com/unifi/4.8.12/unifi_sysvinit_all.deb
 dpkg -i unifi_sysvinit_all.deb
 rm unifi_sysvinit_all.deb
 
-manual ssh firmware update on cloud key...
+manual ssh firmware update on cloudkey...
 In order to free up enough space to install I cleared the /tmp and /var/tmp directories and then did the following.
 ## CLEAN AUFS 
 apt-get update
