@@ -1,0 +1,30 @@
+alias ls='colorls'
+
+alias glances='glances --disable-bg --disable-plugin cpu'
+
+alias speedtest='speedtest-cli --secure'
+
+alias doggo='doggo --nameserver https://cloudflare-dns.com/dns-query'
+
+curl() {
+    command curl "$@" && echo
+}
+
+wanip() {
+  echo "IPv4 Address:"
+  ipv4=$(curl -4 -s https://ipinfo.io/ip)
+  if [[ -n "$ipv4" ]]; then
+    echo "$ipv4"
+  else
+    echo "Not available"
+  fi
+
+  echo
+  echo "IPv6 Address:"
+  ipv6=$(curl -6 -s https://v6.ipinfo.io/ip)
+  if [[ -n "$ipv6" ]]; then
+    echo "$ipv6"
+  else
+    echo "Not available"
+  fi
+}
