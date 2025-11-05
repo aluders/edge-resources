@@ -1,0 +1,44 @@
+nvidia shield tv pro setup...
+
+the following is for usb connecting the shield to a windows computer however I did the network adb steps using my mac after installing platform tools via homebrew...
+brew install android-platform-tools
+device preferences > about ... click build until developer options are enabled
+device preferences > developer options ... enable usb debugging and network debugging
+plug keyboard into close-to-hdmi usb and computer into far-from-hdmi usb
+network adb from computer (approve connection on screen)
+adb connect xxx.xxx.xxx.xxx
+adb reboot bootloader
+unlock bootloader using keyboard and on-screen option
+reboot using on-screen option
+redo all steps necessary to get back to bootloader menu
+manually install Android Bootloader Interface driver on usb connected computer
+https://developer.nvidia.com/gameworksdownload#?search=SHIELD%20Family%20Windows%20USB
+get android platform tools and place shield image files in platform tools directory (for this whole project I was looking for version 8.2.3 - if no longer on nvidia site, it's on qnap)
+https://dl.google.com/android/repository/platform-tools-latest-windows.zip
+https://developer.nvidia.com/gameworksdownload
+run the following via command prompt in the platform tools path...
+fastboot devices (should return device id to confirm connection)
+fastboot flash staging blob
+fastboot flash boot boot.img
+fastboot flash recovery recovery.img
+fastboot flash system system.img
+fastboot flash vendor vendor.img
+fastboot flash dtb mdarcy.dtb.img
+fastboot flash vbmeta vbmeta.img
+fastboot oem lock (approve on-screen)
+fastboot reboot
+now you need to re-enable the developer options and network adb again to run the following after installing FLauncher...
+adb connect xxx.xxx.xxx.xxx
+adb shell pm disable-user --user 0 com.google.android.tvlauncher
+adb shell pm disable-user --user 0 com.google.android.tvrecommendations
+adb shell pm disable-user --user 0 com.google.android.leanbacklauncher
+adb shell pm disable-user --user 0 com.google.android.leanbacklauncher.recommendations
+now install button mapper for setting the netflix button under add button
+set the menu button preferences for mute under the shield built-in accessories menu
+
+some of this taken from...
+https://developer.download.nvidia.com/assets/gameworks/downloads/regular/howtoflash/How-To-Flash-Recovery-Image.txt
+
+to get custom wallpapers to work in FLauncher...
+adb shell pm disable-user --user 0 com.android.documentsui
+adb shell pm enable com.android.documentsui (if it needs to be reversed)
