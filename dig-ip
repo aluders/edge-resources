@@ -1,0 +1,18 @@
+ip lookup by dig...
+
+Google
+
+$ dig @ns1.google.com. -4 +short o-o.myaddr.l.google.com. txt|cut -f2 -d'"'
+$ dig @ns1.google.com. -6 +short o-o.myaddr.l.google.com. txt|cut -f2 -d'"'
+
+Cloudflare
+
+$ dig @one.one.one.one. -4 +short whoami.cloudflare. ch txt|cut -f2 -d'"'
+$ dig @one.one.one.one. -6 +short whoami.cloudflare. ch txt|cut -f2 -d'"'
+
+OpenDNS (Cisco)
+
+$ dig @dns.opendns.com. -4 +short myip.opendns.com. a
+$ dig @dns.opendns.com. -6 +short myip.opendns.com. aaaa
+
+https://talk.desec.io/t/idea-dns-based-service-to-determine-public-ips/1359
