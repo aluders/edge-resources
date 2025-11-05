@@ -1,0 +1,14 @@
+@echo off
+net use * /d /y
+net use x: \\192.168.4.16\storage_1 /user:admin password
+net use y: \\192.168.4.16\storage_2
+net use z: \\192.168.4.16\storage_3
+net use /p:no
+
+under program/script:
+%comspec%
+
+under arguments:
+/c start "" /min "c:\Users\Admin\AppData\map.bat" ^& exit
+
+run at logon... delay 10 seconds
