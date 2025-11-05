@@ -1,0 +1,18 @@
+created the following script on a wave pico to find access point ip addresses on a network so I could ssh to them and set-inform from uisp terminal...
+
+#!/bin/sh
+
+# Change this to match your subnet's network address
+SUBNET="192.168.1."
+
+# Loop through all possible addresses from 1 to 254
+for i in $(seq 1 254); do
+    # Use -c 1 to send only one ping packet
+    ping -c 1 -W 1 "$SUBNET$i" > /dev/null 2>&1 &
+done
+
+# Wait a moment for pings to complete
+sleep 5
+
+# Check the ARP table to see which IPs responded
+arp -n | grep "$SUBNET"
