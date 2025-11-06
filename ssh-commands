@@ -13,7 +13,9 @@ ssh-copy-id username@123.123.123.123
 remove stored known host
 ssh-keygen -R 123.123.123.123
 
+ssh login using key file
 sudo ssh-add some-server.key
+ssh username@hostname-or-ip
 
 scp /path/to/local/file.txt username@server-ip:/path/to/remote/
 scp username@server-ip:/path/to/remote/file.txt /path/to/local/
