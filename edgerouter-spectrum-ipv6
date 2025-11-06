@@ -1,5 +1,17 @@
 spectrum ipv6...
 
+configure 
+edit interfaces ethernet eth1
+set dhcpv6-pd rapid-commit enable 
+set dhcpv6-pd no-dns
+set dhcpv6-pd pd 0 prefix-length 56 
+set dhcpv6-pd pd 0 interface switch0 service slaac 
+set dhcpv6-pd pd 0 interface switch0 prefix-id 0 
+set dhcpv6-pd pd 0 interface switch0 host-address ::1 
+set ipv6 address autoconf  
+
+----- the following may not be needed -----
+
 set firewall ipv6-name WAN_IN-v6 default-action drop
 set firewall ipv6-name WAN_IN-v6 rule 10 action accept
 set firewall ipv6-name WAN_IN-v6 rule 10 state established enable
