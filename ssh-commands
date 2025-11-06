@@ -19,6 +19,7 @@ scp -r ~/myfolder admin@192.168.4.20:/home/admin/
 scp -r admin@192.168.4.20:/var/log/myapp ~/Desktop/
 
 disable macos ssh host key checking...
+(might be easier to just do this using a shell alias)
 
 https://www.shellhacks.com/disable-ssh-host-key-checking/
 
