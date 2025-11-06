@@ -1,0 +1,27 @@
+no matching host key type found
+ssh -oHostKeyAlgorithms=+ssh-rsa username@123.123.123.123
+
+generate local key
+ssh-keygen -t ed25519 -C "username"
+
+copy key to server
+ssh-copy-id username@123.123.123.123
+
+remove stored known host
+ssh-keygen -R 123.123.123.123
+
+scp /path/to/local/file.txt username@server-ip:/path/to/remote/
+scp username@server-ip:/path/to/remote/file.txt /path/to/local/
+scp -r ~/myfolder admin@192.168.4.20:/home/admin/
+scp -r admin@192.168.4.20:/var/log/myapp ~/Desktop/
+
+
+disable macos ssh host key checking...
+
+https://www.shellhacks.com/disable-ssh-host-key-checking/
+
+nano ~/.ssh/config
+
+Host *
+   StrictHostKeyChecking no
+   UserKnownHostsFile=/dev/null
