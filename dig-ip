@@ -14,5 +14,3 @@ OpenDNS (Cisco)
 
 $ dig @dns.opendns.com. -4 +short myip.opendns.com. a
 $ dig @dns.opendns.com. -6 +short myip.opendns.com. aaaa
-
-https://talk.desec.io/t/idea-dns-based-service-to-determine-public-ips/1359
