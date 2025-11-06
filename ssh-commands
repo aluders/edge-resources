@@ -1,5 +1,8 @@
 no matching host key type found
-ssh -oHostKeyAlgorithms=+ssh-rsa username@123.123.123.123
+ssh -o HostKeyAlgorithms=+ssh-rsa username@123.123.123.123
+
+temporarily disable strict host key checking
+ssh -o StrictHostKeyChecking=no username@123.123.123.123
 
 generate local key
 ssh-keygen -t ed25519 -C "username"
@@ -14,8 +17,6 @@ scp /path/to/local/file.txt username@server-ip:/path/to/remote/
 scp username@server-ip:/path/to/remote/file.txt /path/to/local/
 scp -r ~/myfolder admin@192.168.4.20:/home/admin/
 scp -r admin@192.168.4.20:/var/log/myapp ~/Desktop/
-
-ssh -o StrictHostKeyChecking=no username@123.123.123.123
 
 disable macos ssh host key checking...
 
