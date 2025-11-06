@@ -1,0 +1,12 @@
+edgerouter
+
+show system boot-image
+add system boot-image 
+reboot
+
+edgeswitch
+
+enable
+show version bootloader
+update bootcode active
+reload
