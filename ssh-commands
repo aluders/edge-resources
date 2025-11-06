@@ -15,6 +15,7 @@ scp username@server-ip:/path/to/remote/file.txt /path/to/local/
 scp -r ~/myfolder admin@192.168.4.20:/home/admin/
 scp -r admin@192.168.4.20:/var/log/myapp ~/Desktop/
 
+ssh -o StrictHostKeyChecking=no username@123.123.123.123
 
 disable macos ssh host key checking...
 
