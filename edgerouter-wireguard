@@ -1,0 +1,23 @@
+wireguard setup on edgerouter...
+
+get link for appropriate edgerouter version...
+https://github.com/WireGuard/wireguard-vyatta-ubnt/releases
+
+curl -L -O "paste link for deb file from above"
+sudo dpkg -i "file you downloaded"
+umask 077
+wg genkey > privatekey
+wg pubkey < privatekey > publickey
+mv privatekey /config/auth/wg-private.key
+mv publickey /config/auth/wg-public.key
+configure
+set interfaces wireguard wg0 address 10.55.0.1/24
+set interfaces wireguard wg0 listen-port 51820
+set interfaces wireguard wg0 mtu 1420
+set interfaces wireguard wg0 private-key /config/auth/wg-private.key
+set interfaces wireguard wg0 route-allowed-ips true
+commit
+save
+exit
+
+remember to create wan_local firewall rule for UDP 51820
