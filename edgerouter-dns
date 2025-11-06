@@ -1,0 +1,24 @@
+configure
+set interfaces ethernet eth0 dhcp-options name-server no-update
+
+set service dns forwarding name-server 8.8.8.8
+set service dns forwarding name-server 8.8.4.4
+set system name-server 127.0.0.1
+commit
+save
+exit
+
+renew dhcp interface eth0
+
+show dns forwarding nameservers
+
+-----------------------------------------------
+   Nameservers configured for DNS forwarding
+-----------------------------------------------
+208.67.222.222 available via 'statically configured'
+208.67.220.220 available via 'statically configured'
+
+-----------------------------------------------
+ Nameservers NOT configured for DNS forwarding
+-----------------------------------------------
+127.0.0.1 available via 'system'
