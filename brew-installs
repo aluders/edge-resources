@@ -5,6 +5,7 @@ cmatrix
 colorls (ls replacement)
 doggo (dig replacement)
 dust (du replacement)
+fastfetch
 fd (find replacement)
 glances
 handbrake
@@ -16,7 +17,6 @@ macmon
 mkcert
 mkvtoolnix
 mpv
-neofetch
 nvtop
 p7zip
 powerlevel10k
