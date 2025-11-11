@@ -18,7 +18,7 @@ files=($(fd -e mp4 -t f .))
 # --- Process each file ---
 for input in "${files[@]}"; do
     base="${input%.*}"
-    output="${base}-hevc.mp4"
+    output="${base}-HEVC.mp4"
 
     if [[ -f "$output" ]]; then
         echo "⚠️  Skipping existing: $output"
