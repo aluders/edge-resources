@@ -1,19 +1,19 @@
 alacritty
-bat (cat replacement)
+bat (cat alternative)
 btop
 cmatrix
-colorls (ls replacement)
-doggo (dig replacement)
-dust (du replacement)
+colorls (ls alternative)
+doggo (dig alternative)
+dust (du alternative)
 fastfetch
-fd (find replacement)
+fd (find alternative)
 glances
 handbrake
 htop
 iftop
 iterm2
 kew
-macmon
+macmon (asitop alternative)
 mkcert
 mkvtoolnix
 mpv
