@@ -50,7 +50,7 @@ echo ""
 
 
 ################################################################################
-# VALIDATE DOMAIN + SUBDOMAIN EXISTENCE
+# VALIDATE DOMAIN EXISTS
 ################################################################################
 
 echo "Checking if domain '$DOMAIN' exists..."
@@ -58,6 +58,7 @@ echo "Checking if domain '$DOMAIN' exists..."
 DOMAIN_LIST=$(curl -s -X GET https://desec.io/api/v1/domains/ \
   -H "Authorization: Token $AUTH_TOKEN")
 
+# deSEC returns objects: { "name": "edgedyn.com", ... }
 DOMAIN_EXISTS=$(echo "$DOMAIN_LIST" | jq -r --arg d "$DOMAIN" '.[] | select(.name == $d)')
 
 if [[ -z "$DOMAIN_EXISTS" ]]; then
@@ -70,20 +71,47 @@ fi
 echo "✔ Domain exists."
 
 
-echo "Checking if subdomain '$SUBNAME.$DOMAIN' exists..."
+################################################################################
+# CHECK / CREATE A RRSET IF MISSING
+################################################################################
+
+echo "Checking existing RRsets for '$DOMAIN'..."
 
 RRSETS=$(curl -s -X GET https://desec.io/api/v1/domains/"$DOMAIN"/rrsets/ \
   -H "Authorization: Token $AUTH_TOKEN")
 
-SUB_EXISTS=$(echo "$RRSETS" | jq -r --arg s "$SUBNAME" '.[] | select(.subname == $s)')
+# Does an A record for this subname already exist?
+A_RRSET_EXISTS=$(echo "$RRSETS" | jq -r --arg s "$SUBNAME" '.[] | select(.subname == $s and .type == "A")')
 
-if [[ -z "$SUB_EXISTS" ]]; then
-  echo "❌ ERROR: Subdomain '$SUBNAME.$DOMAIN' does NOT exist."
-  echo "Create at least one RRset (A or AAAA) before generating a restricted token."
-  exit 1
+if [[ -z "$A_RRSET_EXISTS" ]]; then
+  echo "No A record found for $FULLDOMAIN."
+  echo "Creating initial A RRset with 1.1.1.1 ..."
+
+  A_CREATE_PAYLOAD=$(jq -c -n \
+    --arg subname "$SUBNAME" \
+    '{subname:$subname, type:"A", ttl:3600, records:["1.1.1.1"]}')
+
+  A_CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" \
+    -X POST "https://desec.io/api/v1/domains/$DOMAIN/rrsets/" \
+    -H "Authorization: Token $AUTH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$A_CREATE_PAYLOAD")
+
+  A_CREATE_BODY=$(echo "$A_CREATE_RESPONSE" | sed '$d')
+  A_CREATE_CODE=$(echo "$A_CREATE_RESPONSE" | tail -n1)
+
+  if [[ "$A_CREATE_CODE" != "201" ]]; then
+    echo "❌ Failed to create initial A RRset for $FULLDOMAIN"
+    echo "HTTP $A_CREATE_CODE"
+    echo "$A_CREATE_BODY"
+    exit 1
+  fi
+
+  echo "✔ A RRset created for $FULLDOMAIN with 1.1.1.1 (TTL 3600)."
+else
+  echo "✔ A record already exists for $FULLDOMAIN; not creating a new RRset."
 fi
 
-echo "✔ Subdomain RRset exists."
 echo ""
 
 
@@ -204,7 +232,7 @@ echo ""
 
 
 ################################################################################
-# FINISH
+# FINISH (your preferred format)
 ################################################################################
 
 echo "=============================================="
