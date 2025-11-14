@@ -2,16 +2,23 @@
 
 echo "=== deSEC Restricted Token Generator ==="
 
+################################################################################
+# LOGIN
+################################################################################
+
 # --- Login credentials ---
 read -p "Email: " EMAIL
 read -s -p "Password: " PASSWORD
 echo ""
 
-# --- Login and extract main auth token ---
+# --- Safely build compact JSON using jq ($ARGS.named prevents any quoting issues) ---
+LOGIN_PAYLOAD=$(jq -c -n --arg email "$EMAIL" --arg password "$PASSWORD" '$ARGS.named')
+
 echo "Logging into deSEC..."
+
 LOGIN_RESPONSE=$(curl -s -X POST https://desec.io/api/v1/auth/login/ \
   --header "Content-Type: application/json" \
-  --data "{\"email\": \"$EMAIL\", \"password\": \"$PASSWORD\"}")
+  --data "$LOGIN_PAYLOAD")
 
 AUTH_TOKEN=$(echo "$LOGIN_RESPONSE" | jq -r '.token')
 
@@ -24,31 +31,51 @@ fi
 echo "✔ Login successful."
 
 
-# --- Ask for domain + subdomain ---
-read -p "Domain (example: example.com): " DOMAIN
-read -p "Subdomain (just the label, example: test): " SUBNAME
+################################################################################
+# SINGLE DOMAIN INPUT
+################################################################################
 
+# Example input: test.example.com
+read -p "Full domain (example: test.example.com): " FULLDOMAIN
 
-# --- Extract TLD (last segment of domain) ---
+# Extract subname (before the first dot)
+SUBNAME="${FULLDOMAIN%%.*}"
+
+# Extract the domain (after the first dot)
+DOMAIN="${FULLDOMAIN#*.}"
+
+# Extract TLD (after the last dot)
 TLD="${DOMAIN##*.}"
 
-# --- Generate token name following your rule ---
+# Auto-generate token name per your rule
 TOKEN_NAME="${SUBNAME}-${TLD}"
 
+echo ""
+echo "Parsed domain:"
+echo "  Subname: $SUBNAME"
+echo "  Domain:  $DOMAIN"
+echo "  TLD:     $TLD"
 echo "Generated token name: $TOKEN_NAME"
+echo ""
+
+
+################################################################################
+# CREATE TOKEN
+################################################################################
+
+TOKEN_CREATE_PAYLOAD=$(jq -c -n --arg name "$TOKEN_NAME" '$ARGS.named')
+
 echo "Creating restricted token..."
 
-
-# --- Create restricted token ---
 TOKEN_CREATE_RESPONSE=$(curl -s -X POST https://desec.io/api/v1/auth/tokens/ \
   --header "Authorization: Token $AUTH_TOKEN" \
   --header "Content-Type: application/json" \
-  --data "{\"name\": \"$TOKEN_NAME\"}")
+  --data "$TOKEN_CREATE_PAYLOAD")
 
 RESTRICTED_TOKEN=$(echo "$TOKEN_CREATE_RESPONSE" | jq -r '.token')
 TOKEN_ID=$(echo "$TOKEN_CREATE_RESPONSE" | jq -r '.id')
 
-if [[ -z "$TOKEN_ID" || "$TOKEN_ID" == "null" ]]; then
+if [[ "$TOKEN_ID" == "null" || -z "$TOKEN_ID" ]]; then
   echo "❌ Failed to create restricted token:"
   echo "$TOKEN_CREATE_RESPONSE"
   exit 1
@@ -57,40 +84,73 @@ fi
 echo "✔ Restricted token created. ID: $TOKEN_ID"
 
 
-# --- Default policy ---
+################################################################################
+# DEFAULT POLICY
+################################################################################
+
 echo "Creating default policy..."
-curl -s -X POST https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/ \
+
+DEFAULT_POLICY_PAYLOAD=$(jq -c -n \
+  '{domain: null, subname: null, type: null}')
+
+curl -s -X POST https://desec.io/api/v1/auth/tokens/'"$TOKEN_ID"'/policies/rrsets/ \
   --header "Authorization: Token $AUTH_TOKEN" \
   --header "Content-Type: application/json" \
-  --data '{"domain": null, "subname": null, "type": null}' > /dev/null
+  --data "$DEFAULT_POLICY_PAYLOAD" > /dev/null
+
 echo "✔ Default policy created."
 
 
-# --- A record policy ---
-echo "Creating A-record policy ($SUBNAME.$DOMAIN)..."
-curl -s -X POST https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/ \
+################################################################################
+# A RECORD POLICY
+################################################################################
+
+echo "Creating A-record policy for $FULLDOMAIN ..."
+
+A_POLICY_PAYLOAD=$(jq -c -n \
+  --arg domain "$DOMAIN" \
+  --arg subname "$SUBNAME" \
+  '{domain: $domain, subname: $subname, type: "A", perm_write: true}')
+
+curl -s -X POST https://desec.io/api/v1/auth/tokens/'"$TOKEN_ID"'/policies/rrsets/ \
   --header "Authorization: Token $AUTH_TOKEN" \
   --header "Content-Type: application/json" \
-  --data "{\"domain\": \"$DOMAIN\", \"subname\": \"$SUBNAME\", \"type\": \"A\", \"perm_write\": true}" > /dev/null
+  --data "$A_POLICY_PAYLOAD" > /dev/null
+
 echo "✔ A record policy created."
 
 
-# --- AAAA record policy ---
-echo "Creating AAAA-record policy ($SUBNAME.$DOMAIN)..."
-curl -s -X POST https://desec.io/api/v1/auth/tokens/$TOKEN_ID/policies/rrsets/ \
+################################################################################
+# AAAA RECORD POLICY
+################################################################################
+
+echo "Creating AAAA-record policy for $FULLDOMAIN ..."
+
+AAAA_POLICY_PAYLOAD=$(jq -c -n \
+  --arg domain "$DOMAIN" \
+  --arg subname "$SUBNAME" \
+  '{domain: $domain, subname: $subname, type: "AAAA", perm_write: true}')
+
+curl -s -X POST https://desec.io/api/v1/auth/tokens/'"$TOKEN_ID"'/policies/rrsets/ \
   --header "Authorization: Token $AUTH_TOKEN" \
   --header "Content-Type: application/json" \
-  --data "{\"domain\": \"$DOMAIN\", \"subname\": \"$SUBNAME\", \"type\": \"AAAA\", \"perm_write\": true}" > /dev/null
+  --data "$AAAA_POLICY_PAYLOAD" > /dev/null
+
 echo "✔ AAAA record policy created."
 
 
-# --- Done ---
+################################################################################
+# FINISH
+################################################################################
+
 echo ""
 echo "=============================================="
 echo " Restricted Token Successfully Created!"
-echo " Token name: $TOKEN_NAME"
-echo " Domain:     $DOMAIN"
-echo " Subdomain:  $SUBNAME"
+echo ""
+echo " Token name:   $TOKEN_NAME"
+echo " Full domain:  $FULLDOMAIN"
+echo " Domain:       $DOMAIN"
+echo " Subname:      $SUBNAME"
 echo ""
 echo " Use this token for DDNS updates:"
 echo ""
