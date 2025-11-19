@@ -68,7 +68,7 @@ detect_label() {
   fi
 
   # Default guess
-  echo -e "${GREEN}Residential ISP${RESET}"
+  echo -e "${GREEN}Conventional ISP${RESET}"
 }
 
 # -----------------------------
