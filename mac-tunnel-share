@@ -1,0 +1,12 @@
+web share files from mac...
+
+brew install cloudflared
+cloudflared tunnel login
+
+cd ~/some-directory-with-files/
+python3 -m http.server 8080
+
+in new terminal tab...
+cloudflared tunnel --url http://localhost:8080
+
+https://some-temp-name.trycloudflare.com
