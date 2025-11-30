@@ -15,7 +15,7 @@ command -v HandBrakeCLI >/dev/null 2>&1 || { echo "❌ HandBrakeCLI not found. I
 DELETE_SOURCE=false
 DRY_RUN=false
 ENCODER="x265"
-QUALITY=16
+QUALITY=18
 FORCE=false
 
 # ================================
