@@ -4,12 +4,9 @@
 # This script uses native cURL commands to interact with the Backblaze B2 API, 
 # completely bypassing Python environments and dependency conflicts.
 
-# Configuration variables
-BUCKET_NAME="parable-physical-backups" # Descriptive name (can be ignored)
-
 # Initialize variables (will be set from positional arguments)
-ACCOUNT_ID=""
-APPLICATION_KEY=""
+APP_ID=""
+APP_KEY=""
 BUCKET_ID=""
 LOCAL_FILE=""
 
@@ -29,10 +26,10 @@ if [ "$#" -ne 4 ]; then
 fi
 
 # Assign positional arguments to variables
-ACCOUNT_ID="$1"
-APPLICATION_KEY="$2"
-BUCKET_ID="$3"
-LOCAL_FILE="$4"
+APP_ID="$1"          # <APP_ID>
+APP_KEY="$2"         # <APP_KEY>
+BUCKET_ID="$3"       # <BUCKET_ID>
+LOCAL_FILE="$4"      # <LOCAL_FILE_PATH>
 
 # Set B2 file name after LOCAL_FILE is determined
 B2_FILE_NAME="$(basename "$LOCAL_FILE")"
@@ -57,7 +54,8 @@ fi
 
 # --- 2. b2_authorize_account (Get Auth Token and API URL) ---
 echo "2. Authorizing B2 account..."
-AUTH_STRING="${ACCOUNT_ID}:${APPLICATION_KEY}"
+# Use APP_ID and APP_KEY for authorization string
+AUTH_STRING="${APP_ID}:${APP_KEY}"
 AUTH_HEADER="Authorization: Basic $(echo -n "$AUTH_STRING" | base64)"
 API_URL_BASE="https://api.backblazeb2.com/b2api/v2"
 
