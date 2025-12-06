@@ -10,7 +10,7 @@ Cloudflare
 dig @one.one.one.one. -4 +short whoami.cloudflare. ch txt|cut -f2 -d'"'
 dig @one.one.one.one. -6 +short whoami.cloudflare. ch txt|cut -f2 -d'"'
 
-OpenDNS (Cisco)
+OpenDNS
 
 dig @dns.opendns.com. -4 +short myip.opendns.com. a
 dig @dns.opendns.com. -6 +short myip.opendns.com. aaaa
