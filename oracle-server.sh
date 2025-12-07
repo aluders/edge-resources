@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# =============================
+############################################
 # CONFIGURATION
-# =============================
+############################################
 TUNNEL_NAME="oracle"
 DOMAIN="files.edgeintegrated.net"
 FILE_DIR="/home/opc/files"
@@ -13,49 +13,50 @@ CONFIG_YAML="$CONFIG_DIR/config.yml"
 SYSTEMD_CF="/etc/systemd/system/cloudflared.service"
 SYSTEMD_FS="/etc/systemd/system/fileserver.service"
 
-# =============================
+
+############################################
 # STATUS MODE
-# =============================
+############################################
 if [[ "${1:-}" == "--status" ]]; then
     echo "=========================================="
     echo " Cloudflare Tunnel + File Server Status"
     echo "=========================================="
     echo
 
-    echo "[Cloudflared Version]"
-    if [[ -f $CLOUDFLARED_BIN ]]; then
-        $CLOUDFLARED_BIN --version || true
+    echo "[cloudflared version]"
+    if [[ -f "$CLOUDFLARED_BIN" ]]; then
+        "$CLOUDFLARED_BIN" --version || echo "Error reading version"
     else
-        echo "cloudflared not installed."
+        echo "cloudflared not installed"
     fi
     echo
 
-    echo "[Tunnel Config Check]"
+    echo "[config.yml]"
     if [[ -f "$CONFIG_YAML" ]]; then
-        echo "config.yml found: $CONFIG_YAML"
-        grep "hostname" "$CONFIG_YAML" || true
+        echo "Found: $CONFIG_YAML"
+        grep hostname "$CONFIG_YAML" || true
     else
-        echo "config.yml missing!"
+        echo "Missing!"
     fi
     echo
 
-    echo "[DNS Check]"
+    echo "[DNS for $DOMAIN]"
     dig +short "$DOMAIN"
     echo
 
-    echo "[Cloudflared Systemd Status]"
+    echo "[Cloudflared Service]"
     systemctl status cloudflared --no-pager || true
     echo
 
-    echo "[Fileserver Systemd Status]"
+    echo "[Fileserver Service]"
     systemctl status fileserver --no-pager || true
     echo
 
-    echo "[Directory Check]"
+    echo "[File Directory]"
     if [[ -d "$FILE_DIR" ]]; then
-        echo "File directory exists: $FILE_DIR"
+        echo "Exists: $FILE_DIR"
     else
-        echo "File directory missing!"
+        echo "Missing!"
     fi
 
     echo
@@ -65,26 +66,55 @@ if [[ "${1:-}" == "--status" ]]; then
     exit 0
 fi
 
-# =============================
+
+############################################
+# LOGS MODE
+############################################
+if [[ "${1:-}" == "--logs" ]]; then
+    echo "===== cloudflared logs ====="
+    journalctl -u cloudflared -n 50 --no-pager || true
+    echo
+    echo "===== fileserver logs ====="
+    journalctl -u fileserver -n 50 --no-pager || true
+    exit 0
+fi
+
+
+############################################
+# RESTART MODE
+############################################
+if [[ "${1:-}" == "--restart" ]]; then
+    echo "Restarting both services..."
+    sudo systemctl restart cloudflared
+    sudo systemctl restart fileserver
+    echo "Done."
+    exit 0
+fi
+
+
+############################################
 # UPDATE MODE
-# =============================
+############################################
 if [[ "${1:-}" == "--update" ]]; then
     echo "=========================================="
     echo " Updating cloudflared binary"
     echo "=========================================="
     echo
 
-    echo "[1/3] Downloading latest cloudflared ARM64..."
+    echo "[1/4] Stopping cloudflared service..."
+    sudo systemctl stop cloudflared 2>/dev/null || true
+
+    echo "[2/4] Downloading latest cloudflared ARM64..."
     sudo curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 \
         -o "$CLOUDFLARED_BIN"
     sudo chmod 755 "$CLOUDFLARED_BIN"
 
-    echo "[2/3] Restoring SELinux label..."
+    echo "[3/4] Restoring SELinux label..."
     sudo semanage fcontext -a -t bin_t "$CLOUDFLARED_BIN" 2>/dev/null || true
     sudo restorecon -v "$CLOUDFLARED_BIN"
 
-    echo "[3/3] Restarting cloudflared service..."
-    sudo systemctl restart cloudflared
+    echo "[4/4] Restarting cloudflared..."
+    sudo systemctl start cloudflared
 
     echo
     echo "=========================================="
@@ -93,9 +123,10 @@ if [[ "${1:-}" == "--update" ]]; then
     exit 0
 fi
 
-# =============================
+
+############################################
 # UNINSTALL MODE
-# =============================
+############################################
 if [[ "${1:-}" == "--uninstall" ]]; then
     echo "=========================================="
     echo " UNINSTALL Cloudflare Tunnel + File Server"
@@ -113,9 +144,9 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     echo "[3/6] Removing cloudflared binary..."
     sudo rm -f "$CLOUDFLARED_BIN"
 
-    echo "[4/6] Removing Cloudflare configs..."
-    rm -rf "$CONFIG_DIR"
-    sudo rm -rf /etc/cloudflared 2>/dev/null || true
+    echo "[4/6] Removing cloudflared configs..."
+    rm -rf "$CONFIG_DIR" || true
+    sudo rm -rf /etc/cloudflared || true
 
     echo "[5/6] Removing SELinux labels..."
     sudo semanage fcontext -d "$CLOUDFLARED_BIN" 2>/dev/null || true
@@ -138,10 +169,10 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     exit 0
 fi
 
-# =============================
-# INSTALL MODE (DEFAULT)
-# =============================
 
+############################################
+# INSTALL MODE (DEFAULT)
+############################################
 echo "=========================================="
 echo " Cloudflare Tunnel + File Server Installer"
 echo " Oracle Linux ARM64"
@@ -151,7 +182,7 @@ echo
 echo "[1/9] Installing dependencies..."
 sudo dnf install -y policycoreutils-python-utils python3
 
-echo "[2/9] Installing cloudflared..."
+echo "[2/9] Downloading cloudflared..."
 sudo curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 \
     -o "$CLOUDFLARED_BIN"
 sudo chmod 755 "$CLOUDFLARED_BIN"
@@ -163,11 +194,11 @@ sudo restorecon -v "$CLOUDFLARED_BIN"
 echo "[3/9] Logging into Cloudflare..."
 cloudflared tunnel login
 
-echo "[4/9] Creating tunnel: $TUNNEL_NAME"
-cloudflared tunnel delete "$TUNNEL_NAME" >/dev/null 2>&1 || true
+echo "[4/9] Creating new tunnel: $TUNNEL_NAME"
+cloudflared tunnel delete "$TUNNEL_NAME" 2>/dev/null || true
 cloudflared tunnel create "$TUNNEL_NAME"
 
-CRED_FILE=$(ls $CONFIG_DIR/*.json)
+CRED_FILE=$(ls "$CONFIG_DIR"/*.json)
 
 echo "[5/9] Writing config.yml..."
 cat <<EOF > "$CONFIG_YAML"
@@ -180,10 +211,10 @@ ingress:
   - service: http_status:404
 EOF
 
-echo "[6/9] Adding DNS route..."
+echo "[6/9] Creating DNS route..."
 cloudflared tunnel route dns "$TUNNEL_NAME" "$DOMAIN"
 
-echo "[7/9] Installing systemd cloudflared service..."
+echo "[7/9] Installing cloudflared systemd service..."
 sudo tee "$SYSTEMD_CF" >/dev/null <<EOF
 [Unit]
 Description=Cloudflare Tunnel
@@ -230,7 +261,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable fileserver
 sudo systemctl start fileserver
 
-echo "[9/9] Starting Cloudflare tunnel..."
+echo "[9/9] Starting Cloudflare Tunnel..."
 sudo systemctl start cloudflared
 
 echo
