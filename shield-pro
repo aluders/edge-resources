@@ -1,23 +1,75 @@
-nvidia shield tv pro setup...
+# NVIDIA Shield TV Pro – Setup & Flashing Guide
 
-the following is for usb connecting the shield to a windows computer however I did the network adb steps using my mac after installing platform tools via homebrew...
+These notes assume USB flashing from Windows, but ADB-over-network steps can also be performed on macOS after installing platform tools:
+
 brew install android-platform-tools
-device preferences > about ... click build until developer options are enabled
-device preferences > developer options ... enable usb debugging and network debugging
-plug keyboard into close-to-hdmi usb and computer into far-from-hdmi usb
-network adb from computer (approve connection on screen)
+
+
+-----------------------------------------
+# 1. Enable Developer Options on Shield
+-----------------------------------------
+Device Preferences → About → click Build repeatedly until Developer Options unlock.
+
+Device Preferences → Developer Options:
+- Enable USB debugging
+- Enable Network debugging
+
+
+-----------------------------------------
+# 2. Hardware Setup
+-----------------------------------------
+- Plug keyboard into the USB port closest to HDMI.
+- Plug computer into USB port farthest from HDMI.
+
+
+-----------------------------------------
+# 3. Connect via Network ADB
+-----------------------------------------
+Approve debugging prompt on Shield.
+
 adb connect xxx.xxx.xxx.xxx
 adb reboot bootloader
-unlock bootloader using keyboard and on-screen option
-reboot using on-screen option
-redo all steps necessary to get back to bootloader menu
-manually install Android Bootloader Interface driver on usb connected computer
+
+
+-----------------------------------------
+# 4. Unlock Bootloader
+-----------------------------------------
+Use keyboard + on-screen bootloader:
+- Select “Unlock Bootloader”
+- Approve confirmation
+- Reboot using on-screen option
+
+Then redo any steps needed to return to bootloader menu.
+
+
+-----------------------------------------
+# 5. Install Windows USB Driver (If Flashing via USB)
+-----------------------------------------
+Install “Android Bootloader Interface”:
+
 https://developer.nvidia.com/gameworksdownload#?search=SHIELD%20Family%20Windows%20USB
-get android platform tools and place shield image files in platform tools directory (for this whole project I was looking for version 8.2.3 - if no longer on nvidia site, it's on qnap)
+
+
+-----------------------------------------
+# 6. Get Platform Tools + Shield Image Files
+-----------------------------------------
+Android Platform Tools (Windows):
 https://dl.google.com/android/repository/platform-tools-latest-windows.zip
+
+NVIDIA Shield firmware images:
 https://developer.nvidia.com/gameworksdownload
-run the following via command prompt in the platform tools path...
-fastboot devices (should return device id to confirm connection)
+
+(For this project I used version 8.2.3 — if missing, I keep a copy on QNAP.)
+
+Place all Shield image files inside the platform-tools directory.
+
+
+-----------------------------------------
+# 7. Flashing Procedure (Fastboot)
+-----------------------------------------
+Run the following inside the platform-tools folder:
+
+fastboot devices
 fastboot flash staging blob
 fastboot flash boot boot.img
 fastboot flash recovery recovery.img
@@ -25,20 +77,55 @@ fastboot flash system system.img
 fastboot flash vendor vendor.img
 fastboot flash dtb mdarcy.dtb.img
 fastboot flash vbmeta vbmeta.img
-fastboot oem lock (approve on-screen)
+fastboot oem lock   (approve on-screen)
 fastboot reboot
-now you need to re-enable the developer options and network adb again to run the following after installing FLauncher...
+
+
+-----------------------------------------
+# 8. Post-Flash: Re-enable Developer Options
+-----------------------------------------
+After reboot:
+- Re-enable Developer Options
+- Re-enable Network ADB
+
+Then:
+
 adb connect xxx.xxx.xxx.xxx
+
+
+-----------------------------------------
+# 9. Disable Stock Launchers (For FLauncher)
+-----------------------------------------
+Run after installing FLauncher:
+
 adb shell pm disable-user --user 0 com.google.android.tvlauncher
 adb shell pm disable-user --user 0 com.google.android.tvrecommendations
 adb shell pm disable-user --user 0 com.google.android.leanbacklauncher
 adb shell pm disable-user --user 0 com.google.android.leanbacklauncher.recommendations
-now install button mapper for setting the netflix button under add button
-set the menu button preferences for mute under the shield built-in accessories menu
 
-some of this taken from...
-https://developer.download.nvidia.com/assets/gameworks/downloads/regular/howtoflash/How-To-Flash-Recovery-Image.txt
 
-to get custom wallpapers to work in FLauncher...
+-----------------------------------------
+# 10. Button Mapper Setup
+-----------------------------------------
+- Install Button Mapper.
+- Under "Add Button", assign Netflix button action.
+- In Shield Accessories settings, set Menu button → Mute.
+
+
+-----------------------------------------
+# 11. Enable Custom Wallpapers in FLauncher
+-----------------------------------------
+Disable DocumentsUI (needed to pick files):
+
 adb shell pm disable-user --user 0 com.android.documentsui
-adb shell pm enable com.android.documentsui (if it needs to be reversed)
+
+Re-enable if necessary:
+
+adb shell pm enable com.android.documentsui
+
+
+-----------------------------------------
+# 12. Reference
+-----------------------------------------
+Some steps based on NVIDIA guide:
+https://developer.download.nvidia.com/assets/gameworks/downloads/regular/howtoflash/How-To-Flash-Recovery-Image.txt
