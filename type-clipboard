@@ -1,8 +1,19 @@
 keyboard maestro on mac...
 
+shift-command-t
+
 new macro - paste clipboard by typing
 trigger - hotkey
-action - pause (.5)
+action - pause (0.5)
+action - keystroke delay (0.05)
+action - insert text by typing
+	%SystemClipboard%
+
+shift-command-r
+
+new macro - paste clipboard by typing
+trigger - hotkey
+action - pause (0.5)
 action - execute applescript
 
 set theText to the clipboard
