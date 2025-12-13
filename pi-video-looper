@@ -18,4 +18,4 @@ sudo systemctl daemon-reexec
 sudo systemctl daemon-reload
 sudo systemctl enable mpv.service
 sudo systemctl start mpv.service
-systemctl status mpv.service
+systemctl status mpv.service --no-pager
