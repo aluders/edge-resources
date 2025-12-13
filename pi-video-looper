@@ -1,0 +1,16 @@
+
+
+[Unit]
+Description=mpv boot video
+After=multi-user.target
+
+[Service]
+Type=simple
+User=edgeadmin
+ExecStart=/usr/bin/mpv --hwdec=drm --vo=gpu --ao=alsa --no-terminal --fullscreen --loop=inf /home/edgeadmin/videos/lobby-advent.mp4
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
