@@ -1,4 +1,4 @@
-
+sudo nano /etc/systemd/system/mpv.service
 
 [Unit]
 Description=mpv boot video
@@ -14,3 +14,8 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 
+sudo systemctl daemon-reexec
+sudo systemctl daemon-reload
+sudo systemctl enable mpv.service
+sudo systemctl start mpv.service
+systemctl status mpv.service
