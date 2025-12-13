@@ -23,7 +23,7 @@ echo
 # ATEM REACHABILITY CHECK
 # ---------------------------------------------------
 echo "📡 Checking ATEM status at $ATEM_IP ..."
-if ! ping -c 1 -W 100 "$ATEM_IP" >/dev/null 2>&1; then
+if ! ping -c 1 -W 200 "$ATEM_IP" >/dev/null 2>&1; then
     echo "❌ ATEM is offline or unreachable at $ATEM_IP"
     exit 1
 fi
