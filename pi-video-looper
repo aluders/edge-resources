@@ -1,3 +1,6 @@
+sudo apt update
+sudo apt upgrade
+sudo apt install mpv
 sudo nano /etc/systemd/system/mpv.service
 
 [Unit]
