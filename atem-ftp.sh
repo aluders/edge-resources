@@ -1,98 +1,104 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
 
 ATEM_IP="10.1.0.40"
+ATEM_DIR="CPC"
 DEST_DIR="/Users/admin/Desktop"
+TIMEOUT=5
 
-echo "📡 Checking ATEM Mini status at $ATEM_IP ..."
+# ---------------------------------------------------
+# DEPENDENCY CHECK
+# ---------------------------------------------------
+if ! command -v lftp >/dev/null 2>&1; then
+    echo "❌ lftp is not installed."
+    echo "Install it with:"
+    echo "  brew install lftp"
+    exit 1
+fi
+
+echo "✅ lftp found"
 echo
 
 # ---------------------------------------------------
-# 1. RELIABLE ONLINE CHECK (Ping)
+# ATEM REACHABILITY CHECK
 # ---------------------------------------------------
-# -c 1  → send 1 ping
-# -W 100 → wait max 100ms for reply (fast fail)
+echo "📡 Checking ATEM status at $ATEM_IP ..."
 if ! ping -c 1 -W 100 "$ATEM_IP" >/dev/null 2>&1; then
-    echo "❌ ATEM Mini is offline or unreachable at $ATEM_IP"
+    echo "❌ ATEM is offline or unreachable at $ATEM_IP"
     exit 1
 fi
 
-echo "✅ ATEM Mini is online — starting FTP session..."
+echo "✅ ATEM is online"
 echo
 
 # ---------------------------------------------------
-# 2. GET FTP DIRECTORY LISTING
+# GET DIRECTORY LISTING
 # ---------------------------------------------------
-RAW_LIST=$(ftp -inv "$ATEM_IP" <<EOF 2>&1
-user anonymous ""
+RAW_LIST=$(lftp -c "
+set net:max-retries 1
+set net:timeout $TIMEOUT
+open ftp://anonymous:@$ATEM_IP
+cd $ATEM_DIR
 ls
-quit
-EOF
-)
-
-# Detect FTP-specific failure cases
-if echo "$RAW_LIST" | grep -qiE "refused|timed out|unknown|not connected|No route|Can't connect"; then
-    echo "❌ FTP connection was attempted but failed."
-    exit 1
-fi
+")
 
 if [[ -z "$RAW_LIST" ]]; then
-    echo "❌ FTP responded with an empty listing — ATEM may be offline."
+    echo "❌ No files returned from ATEM directory '$ATEM_DIR'"
     exit 1
 fi
 
 # ---------------------------------------------------
-# 3. PARSE LISTING INTO SORTABLE DATE + FILENAMES
+# EXTRACT Month Day Filename (handles spaces)
 # ---------------------------------------------------
-FILES=$(echo "$RAW_LIST" | awk '
-  NF >= 9 {
-      month=$6; day=$7; time_or_year=$8;
+TMP_LIST=$(echo "$RAW_LIST" | awk '
+  {
+    name=$9
+    for (i=10; i<=NF; i++) name=name" "$i
 
-      # Determine year (FTP often shows HH:MM instead of year)
-      if (time_or_year ~ /^[0-9]{2}:[0-9]{2}$/) {
-          year = strftime("%Y");
-      } else {
-          year = time_or_year;
-      }
+    if (name ~ /^._/) next
+    if (tolower(name) !~ /\.mp4$/) next
 
-      # Convert to sortable YYYY-MM-DD
-      cmd = "date -jf \"%b %d %Y\" \"" month \" " day " " year "\" +\"%Y-%m-%d\"";
-      cmd | getline normalized
-      close(cmd)
-
-      # Rebuild filename (handles spaces)
-      filename=$9
-      for (i=10; i<=NF; i++) filename=filename" "$i
-
-      print normalized, filename
+    print $6, $7, name
   }
 ')
 
-if [[ -z "$FILES" ]]; then
-    echo "❌ Unable to parse FTP file listing."
+if [[ -z "$TMP_LIST" ]]; then
+    echo "❌ No valid .mp4 files found"
     exit 1
 fi
 
 # ---------------------------------------------------
-# 4. DETERMINE THE MOST RECENT RECORDING DATE
+# BUILD datekey|filename LIST
 # ---------------------------------------------------
-LATEST_DATE=$(echo "$FILES" | awk '{print $1}' | sort -u | tail -n 1)
+FILES=""
+YEAR=$(date +%Y)
+
+while IFS= read -r line; do
+    month=$(echo "$line" | awk '{print $1}')
+    day=$(echo "$line" | awk '{print $2}')
+    file=$(echo "$line" | cut -d' ' -f3-)
+
+    datekey=$(date -jf "%b %d %Y" "$month $day $YEAR" +"%Y-%m-%d" 2>/dev/null || true)
+    [[ -z "$datekey" ]] && continue
+
+    FILES+="$datekey|$file"$'\n'
+done <<< "$TMP_LIST"
+
+# ---------------------------------------------------
+# FIND LATEST DATE
+# ---------------------------------------------------
+LATEST_DATE=$(echo "$FILES" | cut -d'|' -f1 | sort -u | tail -n 1)
 
 echo "📅 Latest recording date: $LATEST_DATE"
 echo
 
 # ---------------------------------------------------
-# 5. EXTRACT ONLY .mp4 FILES FROM THAT DATE
+# FILES FROM THAT DATE
 # ---------------------------------------------------
-LATEST_MP4=$(echo "$FILES" | awk -v d="$LATEST_DATE" '
-  $1 == d {
-      $1=""; sub(/^ /,"");
-      if (tolower($0) ~ /\.mp4$/) print
-  }
-')
+LATEST_MP4=$(echo "$FILES" | awk -F'|' -v d="$LATEST_DATE" '$1==d {print $2}')
 
 if [[ -z "$LATEST_MP4" ]]; then
-    echo "⚠️ No .mp4 files found for latest day."
+    echo "⚠️ No .mp4 files found for latest day"
     exit 0
 fi
 
@@ -101,28 +107,31 @@ echo "$LATEST_MP4"
 echo
 
 # ---------------------------------------------------
-# 6. PRETTY DOWNLOAD LOOP (CLEAN OUTPUT)
+# DOWNLOAD FILES (PROGRESS SHOWN BY DEFAULT)
 # ---------------------------------------------------
 echo "⬇️  Starting downloads..."
 echo
 
 while IFS= read -r file; do
     echo "➡️  Downloading: $file"
+    echo
 
-    ftp -inv "$ATEM_IP" <<EOF >/dev/null 2>&1
-user anonymous ""
-binary
-get "$file" "$DEST_DIR/$file"
-quit
-EOF
+    lftp -c "
+    set net:timeout $TIMEOUT
+    open ftp://anonymous:@$ATEM_IP
+    cd $ATEM_DIR
+    get \"$file\" -o \"$DEST_DIR/$file\"
+    "
 
     if [[ -f "$DEST_DIR/$file" ]]; then
-        echo "   ✅ Saved to $DEST_DIR/$file"
+        echo
+        echo "   ✅ Saved → $DEST_DIR/$file"
     else
+        echo
         echo "   ❌ Failed to download: $file"
     fi
 
     echo
 done <<< "$LATEST_MP4"
 
-echo "🎉 All done!"
+echo "🎉 All downloads complete!"
