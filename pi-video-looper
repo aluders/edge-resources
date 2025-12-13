@@ -22,3 +22,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable mpv.service
 sudo systemctl start mpv.service
 systemctl status mpv.service --no-pager
+
+sudo crontab -e
+0 0 * * 0 /sbin/shutdown -r now
