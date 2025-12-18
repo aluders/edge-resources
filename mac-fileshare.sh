@@ -2,12 +2,25 @@
 set -euo pipefail
 
 # ================================
-# Cloudflare + Python file share
+# Cloudflare + Python File Share
 # ================================
 
 DEFAULT_PORT=8080
 TMP_CF_LOG="/tmp/cfshare-cloudflared.log"
 TMP_PY_LOG="/tmp/cfshare-python.log"
+
+PY_PID=""
+CF_PID=""
+
+# ================================
+# CLEANUP (always runs)
+# ================================
+cleanup() {
+  stty sane 2>/dev/null || true
+  [[ -n "$CF_PID" ]] && kill "$CF_PID" >/dev/null 2>&1 || true
+  [[ -n "$PY_PID" ]] && kill "$PY_PID" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
 
 echo
 echo "🌐 Cloudflare Quick File Share (macOS)"
@@ -15,37 +28,37 @@ echo "-------------------------------------"
 echo
 
 # ================================
-#  PREREQUISITE CHECKS
+# PREREQUISITE CHECKS
 # ================================
 
-# --- OS check ---
+# OS
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "❌ This script is intended for macOS."
   exit 1
 fi
 
-# --- Homebrew ---
+# Homebrew
 if ! command -v brew >/dev/null 2>&1; then
   echo "❌ Homebrew not found."
   echo "👉 Install from: https://brew.sh"
   exit 1
 fi
 
-# --- Python ---
+# Python
 if ! command -v python3 >/dev/null 2>&1; then
   echo "❌ python3 not found."
   echo "👉 Install with: brew install python"
   exit 1
 fi
 
-# --- cloudflared ---
+# cloudflared
 if ! command -v cloudflared >/dev/null 2>&1; then
   echo "❌ cloudflared not found."
   echo "👉 Install with: brew install cloudflared"
   exit 1
 fi
 
-# --- Cloudflare login check ---
+# Cloudflare login
 if [[ ! -d "$HOME/.cloudflared" ]]; then
   echo "❌ cloudflared is installed but not logged in."
   echo "👉 Run: cloudflared tunnel login"
@@ -56,7 +69,7 @@ echo "✅ All prerequisites satisfied"
 echo
 
 # ================================
-#  USER INPUT
+# USER INPUT
 # ================================
 
 read -rp "📂 Directory to share (default: current directory): " SHARE_DIR
@@ -70,15 +83,14 @@ fi
 read -rp "🔌 Local port (default: $DEFAULT_PORT): " PORT
 PORT="${PORT:-$DEFAULT_PORT}"
 
-# --- Port availability check ---
+# Port availability
 if lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "❌ Port $PORT is already in use."
-  echo "👉 Choose a different port."
   exit 1
 fi
 
 # ================================
-#  START SERVICES
+# START SERVICES
 # ================================
 
 echo
@@ -90,13 +102,13 @@ echo
 
 cd "$SHARE_DIR"
 
-# --- Python HTTP server ---
+# Python web server
 python3 -m http.server "$PORT" >"$TMP_PY_LOG" 2>&1 &
 PY_PID=$!
 
 sleep 1
 
-# --- Cloudflare tunnel ---
+# Cloudflare tunnel
 cloudflared tunnel \
   --url "http://localhost:$PORT" \
   --no-autoupdate \
@@ -104,23 +116,32 @@ cloudflared tunnel \
 CF_PID=$!
 
 # ================================
-#  FETCH PUBLIC URL
+# FETCH PUBLIC URL
 # ================================
 
 echo "⏳ Waiting for public URL..."
 echo
 
 PUBLIC_URL=""
-for _ in {1..20}; do
-  PUBLIC_URL=$(grep -o 'https://[-a-zA-Z0-9.]*\.trycloudflare\.com' "$TMP_CF_LOG" | tail -1 || true)
+for _ in {1..25}; do
+  PUBLIC_URL=$(grep -oE '(https:)?//[-a-zA-Z0-9.]*\.trycloudflare\.com' "$TMP_CF_LOG" | tail -1 || true)
   [[ -n "$PUBLIC_URL" ]] && break
   sleep 1
 done
 
 echo
 if [[ -n "$PUBLIC_URL" ]]; then
+  # Normalize URL (ensure https://)
+  if [[ "$PUBLIC_URL" == //* ]]; then
+    PUBLIC_URL="https:$PUBLIC_URL"
+  elif [[ "$PUBLIC_URL" != https://* ]]; then
+    PUBLIC_URL="https://$PUBLIC_URL"
+  fi
+
   echo "✅ Public URL:"
   echo "👉 $PUBLIC_URL"
+  echo "$PUBLIC_URL" | pbcopy
+  echo "📋 URL copied to clipboard"
 else
   echo "⚠️  Tunnel started, but URL not detected yet."
   echo "👉 Check log: $TMP_CF_LOG"
@@ -129,26 +150,23 @@ fi
 echo
 echo "📎 Local URL: http://localhost:$PORT"
 echo
-echo "Press 'q' then Enter to stop sharing."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo " Sharing live — press 'q' to quit "
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo
 
 # ================================
-#  WAIT FOR QUIT
+# SINGLE-KEY QUIT (no Enter)
 # ================================
+
+stty -icanon -echo
 
 while true; do
-  read -r input
-  [[ "$input" == "q" ]] && break
+  read -r -n 1 key
+  [[ "$key" == "q" ]] && break
 done
-
-# ================================
-#  CLEANUP
-# ================================
 
 echo
 echo "🛑 Stopping services..."
-
-kill "$CF_PID" "$PY_PID" >/dev/null 2>&1 || true
-
 echo "✅ File sharing stopped."
 echo
