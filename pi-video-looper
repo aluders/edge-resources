@@ -4,6 +4,7 @@ sudo raspi-config > system options > audio
 sudo apt update
 sudo apt upgrade
 sudo apt install mpv
+sudo apt install fastfetch
 sudo nano /etc/systemd/system/mpv.service
 
 [Unit]
