@@ -6,6 +6,22 @@ set -euo pipefail
 # ================================
 
 DEFAULT_PORT=8080
+
+# Cloudflare allowed origin ports (non-privileged only)
+ALLOWED_PORTS=(
+  8080
+  8880
+  2052
+  2082
+  2086
+  2095
+  2053
+  2083
+  2087
+  2096
+  8443
+)
+
 TMP_CF_LOG="/tmp/cfshare-cloudflared.log"
 TMP_PY_LOG="/tmp/cfshare-python.log"
 
@@ -31,39 +47,11 @@ echo
 # PREREQUISITE CHECKS
 # ================================
 
-# OS
-if [[ "$(uname)" != "Darwin" ]]; then
-  echo "❌ This script is intended for macOS."
-  exit 1
-fi
-
-# Homebrew
-if ! command -v brew >/dev/null 2>&1; then
-  echo "❌ Homebrew not found."
-  echo "👉 Install from: https://brew.sh"
-  exit 1
-fi
-
-# Python
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "❌ python3 not found."
-  echo "👉 Install with: brew install python"
-  exit 1
-fi
-
-# cloudflared
-if ! command -v cloudflared >/dev/null 2>&1; then
-  echo "❌ cloudflared not found."
-  echo "👉 Install with: brew install cloudflared"
-  exit 1
-fi
-
-# Cloudflare login
-if [[ ! -d "$HOME/.cloudflared" ]]; then
-  echo "❌ cloudflared is installed but not logged in."
-  echo "👉 Run: cloudflared tunnel login"
-  exit 1
-fi
+[[ "$(uname)" == "Darwin" ]] || { echo "❌ macOS only"; exit 1; }
+command -v brew >/dev/null || { echo "❌ Install Homebrew: https://brew.sh"; exit 1; }
+command -v python3 >/dev/null || { echo "❌ Install python3: brew install python"; exit 1; }
+command -v cloudflared >/dev/null || { echo "❌ Install cloudflared: brew install cloudflared"; exit 1; }
+[[ -d "$HOME/.cloudflared" ]] || { echo "❌ Run: cloudflared tunnel login"; exit 1; }
 
 echo "✅ All prerequisites satisfied"
 echo
@@ -74,16 +62,27 @@ echo
 
 read -rp "📂 Directory to share (default: current directory): " SHARE_DIR
 SHARE_DIR="${SHARE_DIR:-$(pwd)}"
-
-if [[ ! -d "$SHARE_DIR" ]]; then
-  echo "❌ Directory does not exist: $SHARE_DIR"
-  exit 1
-fi
+[[ -d "$SHARE_DIR" ]] || { echo "❌ Directory does not exist"; exit 1; }
 
 read -rp "🔌 Local port (default: $DEFAULT_PORT): " PORT
 PORT="${PORT:-$DEFAULT_PORT}"
 
-# Port availability
+# ================================
+# PORT VALIDATION
+# ================================
+
+if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
+  echo "❌ Invalid port: $PORT"
+  exit 1
+fi
+
+if [[ ! " ${ALLOWED_PORTS[*]} " =~ " $PORT " ]]; then
+  echo "❌ Port $PORT is not allowed."
+  echo "👉 Allowed ports (no sudo required):"
+  echo "   ${ALLOWED_PORTS[*]}"
+  exit 1
+fi
+
 if lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "❌ Port $PORT is already in use."
   exit 1
@@ -102,13 +101,11 @@ echo
 
 cd "$SHARE_DIR"
 
-# Python web server
 python3 -m http.server "$PORT" >"$TMP_PY_LOG" 2>&1 &
 PY_PID=$!
 
 sleep 1
 
-# Cloudflare tunnel
 cloudflared tunnel \
   --url "http://localhost:$PORT" \
   --no-autoupdate \
@@ -131,12 +128,8 @@ done
 
 echo
 if [[ -n "$PUBLIC_URL" ]]; then
-  # Normalize URL (ensure https://)
-  if [[ "$PUBLIC_URL" == //* ]]; then
-    PUBLIC_URL="https:$PUBLIC_URL"
-  elif [[ "$PUBLIC_URL" != https://* ]]; then
-    PUBLIC_URL="https://$PUBLIC_URL"
-  fi
+  [[ "$PUBLIC_URL" == //* ]] && PUBLIC_URL="https:$PUBLIC_URL"
+  [[ "$PUBLIC_URL" != https://* ]] && PUBLIC_URL="https://$PUBLIC_URL"
 
   echo "✅ Public URL:"
   echo "👉 $PUBLIC_URL"
@@ -156,11 +149,10 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo
 
 # ================================
-# SINGLE-KEY QUIT (no Enter)
+# SINGLE-KEY QUIT
 # ================================
 
 stty -icanon -echo
-
 while true; do
   read -r -n 1 key
   [[ "$key" == "q" ]] && break
