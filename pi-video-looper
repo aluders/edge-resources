@@ -1,3 +1,6 @@
+#make sure audio output is set to hdmi
+sudo raspi-config > system options > audio
+
 sudo apt update
 sudo apt upgrade
 sudo apt install mpv
@@ -23,5 +26,6 @@ sudo systemctl enable mpv.service
 sudo systemctl start mpv.service
 systemctl status mpv.service --no-pager
 
+#weekly reboot saturday
 sudo crontab -e
-0 0 * * 0 /sbin/shutdown -r now
+0 0 * * 6 /sbin/shutdown -r now
