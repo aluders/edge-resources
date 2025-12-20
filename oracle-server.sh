@@ -5,7 +5,7 @@ set -euo pipefail
 # CONFIGURATION
 ############################################
 TUNNEL_NAME="oracle"
-DOMAIN="files.edgeintegrated.net"
+DOMAIN="files.domain.net"
 FILE_DIR="/home/opc/files"
 CLOUDFLARED_BIN="/usr/local/sbin/cloudflared"
 CONFIG_DIR="/home/opc/.cloudflared"
