@@ -1,11 +1,30 @@
 #!/bin/bash
-set -euo pipefail
 
 # ===================================================
-# CONFIG
+# TIME QUALIFIER (Sunday After 11am Only)
 # ===================================================
+CURRENT_DAY=$(date +%u)   # 1=Mon, 7=Sun
+CURRENT_HOUR=$(date +%H)  # 00-23 format
+
+# Check if today is Sunday (7)
+if [ "$CURRENT_DAY" -ne 7 ]; then
+    echo "⏳ Today is not Sunday. Skipping download."
+    exit 0
+fi
+
+# Check if it is before 11:00 AM
+if [ "$CURRENT_HOUR" -lt 11 ]; then
+    echo "⏳ It is Sunday, but before 11:00 AM. Skipping download."
+    exit 0
+fi
+
+# ===================================================
+# STANDARD CONFIG & SETUP
+# ===================================================
+set -euo pipefail
+
 ATEM_IP="10.1.0.40"
-ATEM_DIR="CPC"
+ATEM_DIR="CPC"   # CHANGE THIS if your folder name is different
 DEST_DIR="/home/edgeadmin/atem"
 TIMEOUT=5
 
@@ -72,6 +91,8 @@ TMP_LIST=$(echo "$RAW_LIST" | awk '
 if [[ -z "$TMP_LIST" ]]; then
     echo "❌ No valid .mp4 files found"
     exit 1
+    # Note: If no files exist at all, we exit with error.
+    # If files exist but none match today (later in logic), we exit cleanly.
 fi
 
 # ===================================================
@@ -97,7 +118,7 @@ done <<< "$TMP_LIST"
 # ===================================================
 LATEST_DATE=$(echo "$FILES" | cut -d'|' -f1 | sort -u | tail -n 1)
 
-echo "📅 Latest recording date: $LATEST_DATE"
+echo "📅 Latest recording date found on drive: $LATEST_DATE"
 echo
 
 # ===================================================
