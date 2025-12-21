@@ -2,7 +2,7 @@
 set -e  # Exit immediately if a command exits with a non-zero status.
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER
+# ATEM MONITOR AUTO-INSTALLER (v2)
 # ==========================================
 
 # CONFIGURATION
@@ -76,7 +76,7 @@ myAtem.on('stateChanged', (state, pathToChange) => {
             if (isRecording) {
                 console.log('🔴 RECORDING STARTED');
             } else {
-                console.log('⬜ RECORDING STOPPED -> Executing Download Script...');
+                console.log('⬜ RECORDING STOPPED -> Triggering Download Script...');
                 
                 exec(SCRIPT_TO_RUN, (error, stdout, stderr) => {
                     if (error) console.error(\`Error: \${error.message}\`);
@@ -119,6 +119,12 @@ if [ "\$CURRENT_HOUR" -lt 11 ]; then
     echo "⏳ It is Sunday, but before 11:00 AM. Skipping download."
     exit 0
 fi
+
+# ===================================================
+# SAFETY PAUSE (Ensures file handles are closed)
+# ===================================================
+echo "⏳ Waiting 5 seconds for ATEM to finalize files..."
+sleep 5
 
 # ===================================================
 # STANDARD CONFIG
