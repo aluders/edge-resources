@@ -3,7 +3,7 @@ const { exec } = require('child_process');
 
 // --- CONFIGURATION ---
 const ATEM_IP = '10.1.0.40';
-const SCRIPT_TO_RUN = '/home/edgeadmin/my_script.sh';
+const SCRIPT_TO_RUN = '/home/edgeadmin/atem-download.sh';
 // ---------------------
 
 const myAtem = new Atem();
