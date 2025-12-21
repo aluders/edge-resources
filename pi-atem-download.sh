@@ -19,6 +19,12 @@ if [ "$CURRENT_HOUR" -lt 11 ]; then
 fi
 
 # ===================================================
+# SAFETY PAUSE (Ensures file handles are closed)
+# ===================================================
+echo "⏳ Waiting 5 seconds for ATEM to finalize files..."
+sleep 5
+
+# ===================================================
 # STANDARD CONFIG & SETUP
 # ===================================================
 set -euo pipefail
