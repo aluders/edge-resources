@@ -3,43 +3,29 @@ The Color Palette
 
 Hex: #61AFEF (Soft Blue)
 
-Usage: const, let, function, require
-
-Why: It draws the eye to the structure of the logic.
-
 🟢 Green (Strings)
 
 Hex: #98C379 (Sage Green)
-
-Usage: '10.1.0.40', '/home/pi/script.sh'
-
-Why: Green is distinct from blue/white so you can instantly see where text data starts and ends.
 
 🟣 Purple (Numbers & Booleans)
 
 Hex: #C678DD (Lavender)
 
-Usage: 1, 0, true, false, return
-
-Why: These are "hard" values or exit points, so they get a bold, contrasting color.
-
 ⚪ Whitish (Variables & Text)
 
 Hex: #ABB2BF (Light Gray/White)
-
-Usage: myAtem, console, wasRecording
-
-Why: This is the default color for the names you create. It is soft on the eyes for reading lists of variables.
 
 🌫 Gray (Comments)
 
 Hex: #7F848E (Slate Gray)
 
-Usage: // This is a comment
-
-Why: It is low-contrast so it recedes into the background. You only read it if you are looking for it.
-
 Background Color
 To make those colors pop correctly, you usually need a dark gray background:
 
 Background: #282C34 (Dark Blue-Gray)
+
+.keyword  { color: #61AFEF; } /* Blue */
+.string   { color: #98C379; } /* Green */
+.number   { color: #C678DD; } /* Purple */
+.comment  { color: #7F848E; } /* Gray */
+.variable { color: #ABB2BF; } /* Whitish */
