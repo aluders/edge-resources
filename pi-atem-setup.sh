@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v3 - Renaming)
+# ATEM MONITOR AUTO-INSTALLER (v4 - Final)
 # ==========================================
 
 # CONFIGURATION
@@ -82,7 +82,7 @@ myAtem.on('disconnected', () => { console.log('Disconnected...'); });
 myAtem.connect(ATEM_IP);
 EOF
 
-# 5. CREATE DOWNLOAD SCRIPT (With Renaming Logic)
+# 5. CREATE DOWNLOAD SCRIPT (Renaming + Safety Checks)
 echo ">>> Creating Download Script..."
 cat > "$DOWNLOAD_SCRIPT" <<EOF
 #!/bin/bash
@@ -172,7 +172,7 @@ done <<< "\$TMP_LIST"
 LATEST_DATE=\$(echo "\$FILES" | cut -d'|' -f1 | sort -u | tail -n 1)
 echo "📅 Latest Recording Date: \$LATEST_DATE"
 
-# Get files for this date and SORT them to ensure 1, 2, 3 order
+# Get files for this date and SORT them
 LATEST_MP4=\$(echo "\$FILES" | awk -F'|' -v d="\$LATEST_DATE" '\$1==d {print \$2}' | sort)
 
 if [[ -z "\$LATEST_MP4" ]]; then echo "⚠️ No files for latest date."; exit 0; fi
@@ -180,7 +180,6 @@ if [[ -z "\$LATEST_MP4" ]]; then echo "⚠️ No files for latest date."; exit 0
 # ===================================================
 # DOWNLOAD & RENAME
 # ===================================================
-# Generate Prefix: 2025-1221
 FILE_PREFIX=\$(date -d "\$LATEST_DATE" +"%Y-%m%d")
 COUNT=1
 
@@ -188,13 +187,11 @@ echo "⬇️  Processing Files..."
 echo
 
 while IFS= read -r file; do
-    # Generate new name: 2025-1221-1.mp4
     NEW_NAME="\${FILE_PREFIX}-\${COUNT}.mp4"
     LOCAL_PATH="\$DEST_DIR/\$NEW_NAME"
 
     echo "➡️  Target: \$file -> \$NEW_NAME"
 
-    # Skip download if this sequence number already exists locally
     if [ -f "\$LOCAL_PATH" ]; then
         echo "   ⚠️ File exists. Skipping download."
     else
@@ -222,12 +219,43 @@ chmod +x "$DOWNLOAD_SCRIPT"
 
 # 6. RESTART SERVICE
 echo ">>> Restarting Service..."
+sudo bash -c "cat > $SERVICE_FILE" <<EOF
+[Unit]
+Description=ATEM Recording Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=$CURRENT_USER
+WorkingDirectory=$PROJECT_DIR
+ExecStart=/usr/bin/node monitor.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
 sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
+# 7. ADD ALIASES
+echo ">>> Adding Aliases to .bashrc..."
+BASHRC="$HOME_DIR/.bashrc"
+
+# Check if alias exists before adding to avoid duplicates
+if ! grep -q "alias checkatem" "$BASHRC"; then
+    echo "alias checkatem='sudo systemctl status atem-monitor --no-pager -l'" >> "$BASHRC"
+fi
+
+if ! grep -q "alias logatem" "$BASHRC"; then
+    echo "alias logatem='sudo journalctl -u atem-monitor -f'" >> "$BASHRC"
+fi
+
 echo "================================================="
-echo "✅ UPDATE COMPLETE"
+echo "✅ INSTALLATION COMPLETE"
 echo "   Monitor is running."
-echo "   New naming convention: YYYY-MMDD-N.mp4"
+echo "   Aliases added: 'checkatem' and 'logatem'"
+echo "   (Type 'source ~/.bashrc' to use them immediately)"
 echo "================================================="
