@@ -25,3 +25,6 @@ syswrapper.sh upgrade2 &
 protect camera ssh firmware...
 curl -o /tmp/fwupdate.bin http://fw-download.ubnt.com/data/uvc/63ae-sav530q-5.1.190-5c1b8b84-e767-4ffc-a698-dd5218e228af.bin
 fwupdate -m
+
+protect camera ssh reset...
+set-default
