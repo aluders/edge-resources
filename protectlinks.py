@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 """
+Adapted from https://github.com/priiduonu/uvcfwlinks
 
 Fetches protect camera firmware information from the Ubiquiti firmware API endpoint(s).
 Uses standard library only (no 'requests' dependency required).
