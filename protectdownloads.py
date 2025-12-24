@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 """
-uvcdownloader.py
 
 1. Fetches firmware info from Ubiquiti.
 2. Downloads the last N versions for a specific platform.
