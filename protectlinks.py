@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
 """
-uvcfwlinks
 
-Fetches UVC camera firmware information from the Ubiquiti firmware API endpoint(s).
+Fetches protect camera firmware information from the Ubiquiti firmware API endpoint(s).
 Uses standard library only (no 'requests' dependency required).
 
 - if no camera platform is given, returns the latest f/w info for all platforms
