@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 """
+Adapted from https://github.com/priiduonu/uvcfwlinks
 
 1. Fetches firmware info from Ubiquiti.
 2. Downloads the last N versions for a specific platform.
