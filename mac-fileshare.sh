@@ -128,8 +128,8 @@ done
 
 echo
 if [[ -n "$PUBLIC_URL" ]]; then
-  [[ "$PUBLIC_URL" == //* ]] && PUBLIC_URL="https:$PUBLIC_URL"
-  [[ "$PUBLIC_URL" != https://* ]] && PUBLIC_URL="https://$PUBLIC_URL"
+  # Force https by stripping everything up to '//' and prepending https://
+  PUBLIC_URL="https://${PUBLIC_URL#*//}"
 
   echo "✅ Public URL:"
   echo "👉 $PUBLIC_URL"
