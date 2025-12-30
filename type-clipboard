@@ -9,7 +9,7 @@ action - keystroke delay (0.05)
 action - insert text by typing
 	%SystemClipboard%
 
-shift-command-r
+shift-command-r (RDP safe)
 
 new macro - paste clipboard by typing
 trigger - hotkey
