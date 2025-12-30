@@ -133,7 +133,10 @@ if [[ -n "$PUBLIC_URL" ]]; then
 
   echo "✅ Public URL:"
   echo "👉 $PUBLIC_URL"
-  echo "$PUBLIC_URL" | pbcopy
+  
+  # Use printf to avoid adding a newline character to the clipboard
+  printf "%s" "$PUBLIC_URL" | pbcopy
+  
   echo "📋 URL copied to clipboard"
 else
   echo "⚠️  Tunnel started, but URL not detected yet."
