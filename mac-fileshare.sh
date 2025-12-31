@@ -5,9 +5,8 @@ set -euo pipefail
 # Cloudflare + Python File Share
 # ================================
 
-DEFAULT_PORT=8080
-
 # Cloudflare allowed origin ports (non-privileged only)
+# The script will try these in order until it finds a free one.
 ALLOWED_PORTS=(
   8080
   8880
@@ -57,34 +56,32 @@ echo "✅ All prerequisites satisfied"
 echo
 
 # ================================
-# USER INPUT
+# USER INPUT (Directory Only)
 # ================================
 
 read -rp "📂 Directory to share (default: current directory): " SHARE_DIR
 SHARE_DIR="${SHARE_DIR:-$(pwd)}"
 [[ -d "$SHARE_DIR" ]] || { echo "❌ Directory does not exist"; exit 1; }
 
-read -rp "🔌 Local port (default: $DEFAULT_PORT): " PORT
-PORT="${PORT:-$DEFAULT_PORT}"
-
 # ================================
-# PORT VALIDATION
+# AUTO-SELECT PORT
 # ================================
 
-if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
-  echo "❌ Invalid port: $PORT"
-  exit 1
-fi
+PORT=""
 
-if [[ ! " ${ALLOWED_PORTS[*]} " =~ " $PORT " ]]; then
-  echo "❌ Port $PORT is not allowed."
-  echo "👉 Allowed ports (no sudo required):"
-  echo "   ${ALLOWED_PORTS[*]}"
-  exit 1
-fi
+echo "🔍 Scanning for an open allowed port..."
 
-if lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "❌ Port $PORT is already in use."
+for CANDIDATE in "${ALLOWED_PORTS[@]}"; do
+  # Check if port is in use (lsof returns 0 if found, 1 if not found)
+  if ! lsof -iTCP:"$CANDIDATE" -sTCP:LISTEN >/dev/null 2>&1; then
+    PORT="$CANDIDATE"
+    echo "✅ Found available port: $PORT"
+    break
+  fi
+done
+
+if [[ -z "$PORT" ]]; then
+  echo "❌ Error: All allowed Cloudflare ports are currently in use."
   exit 1
 fi
 
