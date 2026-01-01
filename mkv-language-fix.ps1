@@ -26,7 +26,9 @@ if (-not (Test-Path $Path)) {
 }
 
 Write-Host "Scanning folder: $Path" -ForegroundColor Cyan
-$files = Get-ChildItem -Path $Path -Recurse -Filter *.mp4
+
+# --- CHANGED: Added "| Sort-Object FullName" to process folders sequentially ---
+$files = Get-ChildItem -Path $Path -Recurse -Filter *.mp4 | Sort-Object FullName
 
 if ($files.Count -eq 0) {
     Write-Host "No .mp4 files found." -ForegroundColor Yellow
@@ -40,7 +42,7 @@ if ($Clean) {
 }
 elseif ($Test) {
     Write-Host "--- TEST MODE ACTIVE ---" -ForegroundColor Magenta
-    Write-Host "Processing only the first file found." -ForegroundColor Magenta
+    Write-Host "Processing only the first file found (Alphabetically)." -ForegroundColor Magenta
 }
 else {
     Write-Host "Found $($files.Count) files to process..." -ForegroundColor Cyan
