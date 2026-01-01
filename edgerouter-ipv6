@@ -1,7 +1,7 @@
 tested with spectrum and cox...
 
 configure 
-edit interfaces ethernet eth1
+edit interfaces ethernet eth8
 set dhcpv6-pd rapid-commit enable 
 set dhcpv6-pd no-dns
 set dhcpv6-pd pd 0 prefix-length 56 
