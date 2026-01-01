@@ -1,4 +1,4 @@
-spectrum ipv6...
+tested with spectrum and cox...
 
 configure 
 edit interfaces ethernet eth1
@@ -12,6 +12,12 @@ set ipv6 address autoconf
 commit
 save
 exit
+
+can use the following to refresh if needed...
+
+release dhcpv6-pd interface eth8
+# Wait about 10 seconds
+renew dhcpv6-pd interface eth8
 
 ----- the following may not be needed -----
 
