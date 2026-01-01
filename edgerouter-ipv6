@@ -19,7 +19,7 @@ release dhcpv6-pd interface eth8
 # Wait about 10 seconds
 renew dhcpv6-pd interface eth8
 
------ the following may not be needed -----
+firewall rules...
 
 set firewall ipv6-name WAN_IN-v6 default-action drop
 set firewall ipv6-name WAN_IN-v6 rule 10 action accept
