@@ -30,3 +30,6 @@ systemctl status mpv.service --no-pager
 #weekly reboot saturday
 sudo crontab -e
 0 0 * * 6 /sbin/shutdown -r now
+
+sudo nano ~/.bashrc
+alias checkmpv='sudo systemctl status mpv --no-pager -l'
