@@ -14,7 +14,7 @@ After=multi-user.target
 [Service]
 Type=simple
 User=edgeadmin
-ExecStart=/usr/bin/mpv --hwdec=drm --vo=gpu --ao=alsa --no-terminal --fullscreen --loop=inf /home/edgeadmin/videos/lobby-video.mp4
+ExecStart=/usr/bin/mpv --hwdec=drm --vo=gpu --ao=alsa --no-terminal --fullscreen --loop=inf /home/edgeadmin/videos/loop-video.mp4
 Restart=always
 RestartSec=5
 
