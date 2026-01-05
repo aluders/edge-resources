@@ -1,7 +1,6 @@
-```yaml
 keyboard maestro on mac...
 
-+ shift-command-t
+shift-command-t
 
 new macro - paste clipboard by typing
 trigger - hotkey
