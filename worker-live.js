@@ -2,10 +2,8 @@ export default {
   async fetch(request, env) {
     const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
     const API_KEY = env.YOUTUBE_API_KEY;
-    
     const CACHE_TTL = 21600; // 6 hours 
     const CACHE_KEY = `https://cache.local/simple-v7/${UPLOADS_PLAYLIST_ID}`;
-
     const cache = caches.default;
     const cacheRequest = new Request(CACHE_KEY);
     const url = new URL(request.url);
