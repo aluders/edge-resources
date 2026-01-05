@@ -1,0 +1,5 @@
+# 1. Force EVERYTHING to be treated as YAML (Code view, syntax highlighting)
+* linguist-language=Python
+
+# 2. Undo that rule for files with extensions (so .py or .js still work normally)
+*.* -linguist-language
