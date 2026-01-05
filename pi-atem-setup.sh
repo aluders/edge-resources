@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v11 - Precision Dates)
+# ATEM MONITOR AUTO-INSTALLER (v12 - Multi-Email Support)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -95,7 +95,11 @@ SMTP_PORT="587"
 SMTP_USER="your_email@gmail.com"
 SMTP_PASS="your_app_password"
 EMAIL_FROM="your_email@gmail.com"
+
+# FOR MULTIPLE RECIPIENTS: Separate with commas
+# Example: "me@gmail.com, wife@gmail.com"
 EMAIL_TO="your_email@gmail.com"
+
 EMAIL_SUBJECT_PREFIX="[ATEM-Pi]"
 
 # ===================================================
@@ -177,30 +181,21 @@ if [[ -z "\$RAW_LIST" ]]; then die "No files returned."; fi
 TMP_LIST=\$(echo "\$RAW_LIST" | awk '{
     date=\$1
     time=\$2
-    
-    # Reassemble filename from column 3 onwards (handling spaces)
     name=\$3; for (i=4; i<=NF; i++) name=name" "\$i
-    
-    # Filter out junk
     if (name ~ /^._/) next
     if (tolower(name) !~ /\.mp4\$/) next
-    
-    # Output: YYYY-MM-DD | filename
     print date "|" name
 }')
 
 if [[ -z "\$TMP_LIST" ]]; then die "No .mp4 files found."; fi
 
-# Find Latest Date (Sort by date column)
+# Find Latest Date
 LATEST_DATE=\$(echo "\$TMP_LIST" | cut -d'|' -f1 | sort -u | tail -n 1)
-
 if [[ -z "\$LATEST_DATE" ]]; then die "Could not determine dates."; fi
-
 log "📅 Latest Date Found: \$LATEST_DATE"
 
-# Filter files matching only the latest date
+# Filter files
 LATEST_MP4=\$(echo "\$TMP_LIST" | awk -F'|' -v d="\$LATEST_DATE" '\$1==d {print \$2}' | sort)
-
 if [[ -z "\$LATEST_MP4" ]]; then die "No files found for \$LATEST_DATE"; fi
 
 # Download
@@ -255,6 +250,8 @@ if ! grep -q "alias checkatem" "$BASHRC"; then echo "alias checkatem='sudo syste
 if ! grep -q "alias logatem" "$BASHRC"; then echo "alias logatem='sudo journalctl -u atem-monitor -f'" >> "$BASHRC"; fi
 
 echo "================================================="
-echo "✅ UPDATED TO v11 (Precision Date Parsing)"
-echo "   We now ask ATEM for the ISO date (YYYY-MM-DD)"
+echo "✅ UPDATED TO v12"
+echo "   - Precision Dates (ISO Fix)"
+echo "   - Multi-Email Support (Edit file to add commas)"
+echo "   - On-Demand Mode"
 echo "================================================="
