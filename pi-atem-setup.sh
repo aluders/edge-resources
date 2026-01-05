@@ -2,20 +2,18 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v7 - Path Fix)
+# ATEM MONITOR AUTO-INSTALLER (v8 - Test Mode)
 # ==========================================
 
-# 1. DETECT REAL USER (Even if run with sudo)
+# 1. DETECT REAL USER
 if [ -n "$SUDO_USER" ]; then
     CURRENT_USER="$SUDO_USER"
 else
     CURRENT_USER=$(whoami)
 fi
 
-# Prevent running as actual root login
 if [ "$CURRENT_USER" == "root" ]; then
-    echo "❌ ERROR: Please run this script as your normal user (e.g. edgeadmin), not as root."
-    echo "   Usage: ./setup_atem_monitor.sh"
+    echo "❌ ERROR: Run as normal user (e.g. edgeadmin), not root."
     exit 1
 fi
 
@@ -31,10 +29,8 @@ ATEM_SOURCE_DIR="CPC"
 LOCAL_DEST_DIR="$HOME_DIR/atem"
 
 echo ">>> Starting Installation for user: $CURRENT_USER"
-echo ">>> Installing to: $HOME_DIR"
 
-# 2. INSTALL SYSTEM DEPENDENCIES
-# We use sudo here explicitly so the script can be run without sudo
+# 2. INSTALL DEPENDENCIES
 sudo apt update
 sudo apt install -y nodejs npm lftp swaks
 
@@ -103,6 +99,37 @@ EMAIL_TO="your_email@gmail.com"
 EMAIL_SUBJECT_PREFIX="[ATEM-Pi]"
 
 # ===================================================
+# LOGGING & NOTIFICATION
+# ===================================================
+LOG_BUFFER=""
+log() { echo "\$1"; LOG_BUFFER+="\${1}\n"; }
+
+send_notification() {
+    STATUS="\$1"
+    BODY="\${2:-\$LOG_BUFFER}" # Use arg 2 if provided, else use log buffer
+
+    if [[ "\$SMTP_USER" == *"your_email"* ]]; then echo "⚠️ Email not configured."; return; fi
+    
+    echo "📧 Sending Email (\$STATUS)..."
+    swaks --to "\$EMAIL_TO" --from "\$EMAIL_FROM" --server "\$SMTP_SERVER" --port "\$SMTP_PORT" \
+          --auth LOGIN --auth-user "\$SMTP_USER" --auth-password "\$SMTP_PASS" --tls \
+          --header "Subject: \$EMAIL_SUBJECT_PREFIX \$STATUS" --body "\$BODY" --hide-all
+    
+    if [ \$? -eq 0 ]; then echo "✅ Email Sent."; else echo "❌ Email Failed."; fi
+}
+
+die() { log "❌ FATAL: \$1"; send_notification "FAILED"; exit 1; }
+
+# ===================================================
+# FLAG: EMAIL TEST MODE
+# ===================================================
+if [[ "\${1:-}" == "--email-test" ]]; then
+    echo "🧪 RUNNING EMAIL TEST..."
+    send_notification "TEST SUCCESS" "This is a test email from your ATEM Monitor Script.\n\nIf you are reading this, your SMTP settings are correct!"
+    exit 0
+fi
+
+# ===================================================
 # TIME QUALIFIERS
 # ===================================================
 CURRENT_DAY=\$(date +%u)   # 1=Mon, 7=Sun
@@ -111,22 +138,6 @@ CURRENT_HOUR=\$(date +%H)
 if [ "\$CURRENT_DAY" -ne 7 ]; then echo "⏳ Not Sunday. Skipping."; exit 0; fi
 if [ "\$CURRENT_HOUR" -lt 11 ]; then echo "⏳ Before 11AM. Skipping."; exit 0; fi
 
-# ===================================================
-# LOGGING & NOTIFICATION
-# ===================================================
-LOG_BUFFER=""
-log() { echo "\$1"; LOG_BUFFER+="\${1}\n"; }
-
-send_notification() {
-    STATUS="\$1"
-    if [[ "\$SMTP_USER" == *"your_email"* ]]; then echo "⚠️ Email not configured."; return; fi
-    
-    echo "📧 Sending Email..."
-    swaks --to "\$EMAIL_TO" --from "\$EMAIL_FROM" --server "\$SMTP_SERVER" --port "\$SMTP_PORT" \
-          --auth LOGIN --auth-user "\$SMTP_USER" --auth-password "\$SMTP_PASS" --tls \
-          --header "Subject: \$EMAIL_SUBJECT_PREFIX \$STATUS" --body "\$LOG_BUFFER" --hide-all
-}
-die() { log "❌ FATAL: \$1"; send_notification "FAILED"; exit 1; }
 
 # ===================================================
 # MAIN
@@ -205,8 +216,7 @@ log "🎉 Complete."
 send_notification "SUCCESS"
 EOF
 
-# 7. FIX PERMISSIONS (Crucial Fix!)
-# Ensure the normal user owns the files, not root
+# 7. FIX PERMISSIONS
 chown -R "$CURRENT_USER:$CURRENT_USER" "$PROJECT_DIR"
 chown "$CURRENT_USER:$CURRENT_USER" "$DOWNLOAD_SCRIPT"
 chmod 700 "$DOWNLOAD_SCRIPT"
@@ -237,8 +247,6 @@ if ! grep -q "alias checkatem" "$BASHRC"; then echo "alias checkatem='sudo syste
 if ! grep -q "alias logatem" "$BASHRC"; then echo "alias logatem='sudo journalctl -u atem-monitor -f'" >> "$BASHRC"; fi
 
 echo "================================================="
-echo "✅ FIXED INSTALLATION COMPLETE"
-echo "   User: $CURRENT_USER"
-echo "   Script: $DOWNLOAD_SCRIPT"
-echo "   (You can now edit this file without sudo)"
+echo "✅ UPDATED TO v8 (Email Test Mode Added)"
+echo "   Run: ~/atem-download.sh --email-test"
 echo "================================================="
