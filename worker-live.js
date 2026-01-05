@@ -3,8 +3,6 @@ export default {
     const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
     const API_KEY = env.YOUTUBE_API_KEY;
     
-    // ✅ Global 4-hour cache (14400 seconds)
-    // Simple, predictable, and extremely efficient (~6-12 API calls per day total)
     const CACHE_TTL = 21600; // 6 hours 
     const CACHE_KEY = `https://cache.local/simple-v7/${UPLOADS_PLAYLIST_ID}`;
 
