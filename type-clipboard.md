@@ -1,6 +1,6 @@
 keyboard maestro on mac...
 
-shift-command-t
++shift-command-t
 
 new macro - paste clipboard by typing
 trigger - hotkey
@@ -9,7 +9,7 @@ action - keystroke delay (0.05)
 action - insert text by typing
 	%SystemClipboard%
 
-shift-command-r (RDP safe)
++shift-command-r (RDP safe)
 
 new macro - paste clipboard by typing
 trigger - hotkey
