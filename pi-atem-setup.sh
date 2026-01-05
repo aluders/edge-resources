@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v8 - Test Mode)
+# ATEM MONITOR AUTO-INSTALLER (v10 - On-Demand)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -106,38 +106,42 @@ log() { echo "\$1"; LOG_BUFFER+="\${1}\n"; }
 
 send_notification() {
     STATUS="\$1"
-    BODY="\${2:-\$LOG_BUFFER}" # Use arg 2 if provided, else use log buffer
-
+    BODY="\${2:-\$LOG_BUFFER}" 
     if [[ "\$SMTP_USER" == *"your_email"* ]]; then echo "⚠️ Email not configured."; return; fi
-    
     echo "📧 Sending Email (\$STATUS)..."
     swaks --to "\$EMAIL_TO" --from "\$EMAIL_FROM" --server "\$SMTP_SERVER" --port "\$SMTP_PORT" \
           --auth LOGIN --auth-user "\$SMTP_USER" --auth-password "\$SMTP_PASS" --tls \
           --header "Subject: \$EMAIL_SUBJECT_PREFIX \$STATUS" --body "\$BODY" --hide-all
-    
     if [ \$? -eq 0 ]; then echo "✅ Email Sent."; else echo "❌ Email Failed."; fi
 }
-
 die() { log "❌ FATAL: \$1"; send_notification "FAILED"; exit 1; }
 
 # ===================================================
-# FLAG: EMAIL TEST MODE
+# MODE FLAGS
 # ===================================================
+ON_DEMAND_MODE=false
+
 if [[ "\${1:-}" == "--email-test" ]]; then
     echo "🧪 RUNNING EMAIL TEST..."
-    send_notification "TEST SUCCESS" "This is a test email from your ATEM Monitor Script.\n\nIf you are reading this, your SMTP settings are correct!"
+    send_notification "TEST SUCCESS" "This is a test email.\nSMTP settings are correct!"
     exit 0
 fi
 
+if [[ "\${1:-}" == "--on-demand" ]]; then
+    ON_DEMAND_MODE=true
+    echo "🛠️ ON-DEMAND MODE ACTIVE: Bypassing time checks."
+fi
+
 # ===================================================
-# TIME QUALIFIERS
+# TIME QUALIFIERS (Skipped if On-Demand Mode)
 # ===================================================
 CURRENT_DAY=\$(date +%u)   # 1=Mon, 7=Sun
 CURRENT_HOUR=\$(date +%H)
 
-if [ "\$CURRENT_DAY" -ne 7 ]; then echo "⏳ Not Sunday. Skipping."; exit 0; fi
-if [ "\$CURRENT_HOUR" -lt 11 ]; then echo "⏳ Before 11AM. Skipping."; exit 0; fi
-
+if [ "\$ON_DEMAND_MODE" = false ]; then
+    if [ "\$CURRENT_DAY" -ne 7 ]; then echo "⏳ Not Sunday. Skipping."; exit 0; fi
+    if [ "\$CURRENT_HOUR" -lt 11 ]; then echo "⏳ Before 11AM. Skipping."; exit 0; fi
+fi
 
 # ===================================================
 # MAIN
@@ -247,6 +251,6 @@ if ! grep -q "alias checkatem" "$BASHRC"; then echo "alias checkatem='sudo syste
 if ! grep -q "alias logatem" "$BASHRC"; then echo "alias logatem='sudo journalctl -u atem-monitor -f'" >> "$BASHRC"; fi
 
 echo "================================================="
-echo "✅ UPDATED TO v8 (Email Test Mode Added)"
-echo "   Run: ~/atem-download.sh --email-test"
+echo "✅ UPDATED TO v10 (On-Demand Mode Added)"
+echo "   Use: ~/atem-download.sh --on-demand"
 echo "================================================="
