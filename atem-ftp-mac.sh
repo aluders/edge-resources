@@ -13,114 +13,87 @@ TIMEOUT=5
 # DEPENDENCY CHECK
 # ---------------------------------------------------
 if ! command -v lftp >/dev/null 2>&1; then
-    echo "❌ lftp is not installed. Install it with: brew install lftp"
+    echo "❌ lftp is not installed. Run: brew install lftp"
     exit 1
 fi
 
 # ---------------------------------------------------
-# GET DIRECTORY LISTING
+# GET ISO DIRECTORY LISTING
 # ---------------------------------------------------
 echo "📡 Connecting to ATEM at $ATEM_IP..."
+
+# Using 'cls --1 --date-iso' to force YYYY-MM-DD HH:MM filename
 RAW_LIST=$(lftp -c "
-set net:max-retries 1
-set net:timeout $TIMEOUT
-open ftp://anonymous:@$ATEM_IP
-cd \"$ATEM_DIR\"
-ls
+set net:max-retries 1;
+set net:timeout $TIMEOUT;
+open ftp://anonymous:@$ATEM_IP;
+cd \"$ATEM_DIR\";
+cls --1 --date-iso
 " 2>/dev/null)
 
 if [[ -z "$RAW_LIST" ]]; then
-    echo "❌ No files found or unable to connect to $ATEM_DIR"
+    echo "❌ No files found or ATEM unreachable."
     exit 1
 fi
 
 # ---------------------------------------------------
-# PROCESS FILENAMES AND DATES
+# PARSE LIST (ISO format: YYYY-MM-DD HH:MM filename)
 # ---------------------------------------------------
-# This block handles spaces in filenames and ignores hidden files (._)
-# Output format: Month Day Filename
-TMP_LIST=$(echo "$RAW_LIST" | awk '
-  {
-    # Reconstruct filename for cases with spaces
-    name=$9
-    for (i=10; i<=NF; i++) name=name" "$i
-
-    # Filter: Must be .mp4, skip hidden AppleDouble files
+TMP_LIST=$(echo "$RAW_LIST" | awk '{
+    date=$1
+    time=$2
+    # Reassemble filename (column 3 onwards)
+    name=$3; for (i=4; i<=NF; i++) name=name" "$i
+    
+    # Filter junk/hidden files
     if (name ~ /^._/) next
     if (tolower(name) !~ /\.mp4$/) next
-
-    print $6, $7, name
-  }
-')
+    
+    print date "|" name
+}')
 
 if [[ -z "$TMP_LIST" ]]; then
-    echo "❌ No valid .mp4 recordings found."
+    echo "❌ No .mp4 files found."
     exit 1
 fi
 
 # ---------------------------------------------------
-# FIND THE LATEST DATE (Mac BSD Date Logic)
+# FIND LATEST DATE
 # ---------------------------------------------------
-FILES_WITH_KEYS=""
-YEAR=$(date +%Y)
+LATEST_DATE=$(echo "$TMP_LIST" | cut -d'|' -f1 | sort -u | tail -n 1)
 
-while IFS= read -r line; do
-    month=$(echo "$line" | awk '{print $1}')
-    day=$(echo "$line" | awk '{print $2}')
-    filename=$(echo "$line" | cut -d' ' -f3-)
+echo "📅 Latest Date Found: $LATEST_DATE"
 
-    # Convert "Jan 5" to "2026-01-05" using Mac BSD date format
-    datekey=$(date -jf "%b %d %Y" "$month $day $YEAR" +"%Y-%m-%d" 2>/dev/null || true)
-    
-    if [[ -n "$datekey" ]]; then
-        FILES_WITH_KEYS+="$datekey|$filename"$'\n'
-    fi
-done <<< "$TMP_LIST"
-
-# Identify the newest date present in the file list
-LATEST_DATE=$(echo "$FILES_WITH_KEYS" | cut -d'|' -f1 | sort -u | tail -n 1)
-
-if [[ -z "$LATEST_DATE" ]]; then
-    echo "⚠️  Could not determine the latest recording date."
-    exit 1
-fi
-
-echo "📅 Latest recording date detected: $LATEST_DATE"
+# Filter files from that date
+LATEST_MP4=$(echo "$TMP_LIST" | awk -F'|' -v d="$LATEST_DATE" '$1==d {print $2}' | sort)
 
 # ---------------------------------------------------
-# FILTER FILES FROM THAT DATE & DOWNLOAD
+# DOWNLOAD & RENAME (Mac BSD Date Format)
 # ---------------------------------------------------
-# Extract only the filenames matching the latest date
-TARGET_FILES=$(echo "$FILES_WITH_KEYS" | awk -F'|' -v d="$LATEST_DATE" '$1==d {print $2}' | sort)
-
-# Prepare renaming prefix: YYYY-MMDD (e.g., 2026-0105)
-DATE_PREFIX=$(date -j -f "%Y-%m-%d" "$LATEST_DATE" "+%Y-%m%d")
+# Mac version of: date -d "$LATEST_DATE" +"%Y-%m%d"
+FILE_PREFIX=$(date -j -f "%Y-%m-%d" "$LATEST_DATE" "+%Y-%m%d")
 COUNT=1
 
-echo "🎞  Found $(echo "$TARGET_FILES" | wc -l | xargs) files from that day."
 echo "⬇️  Downloading to $DEST_DIR..."
 echo
 
 while IFS= read -r file; do
-    NEW_NAME="${DATE_PREFIX}-${COUNT}.mp4"
-    
-    echo "➡️  $file  -->  $NEW_NAME"
+    NEW_NAME="${FILE_PREFIX}-${COUNT}.mp4"
+    LOCAL_PATH="$DEST_DIR/$NEW_NAME"
 
-    lftp -c "
-    set net:timeout $TIMEOUT
-    open ftp://anonymous:@$ATEM_IP
-    cd \"$ATEM_DIR\"
-    get \"$file\" -o \"$DEST_DIR/$NEW_NAME\"
-    "
-
-    if [[ -f "$DEST_DIR/$NEW_NAME" ]]; then
-        echo "   ✅ Success"
+    if [ -f "$LOCAL_PATH" ]; then
+        echo "⚠️  Exists: $NEW_NAME"
     else
-        echo "   ❌ Failed"
+        echo "➡️  $file -> $NEW_NAME"
+        lftp -c "
+        set net:timeout $TIMEOUT; 
+        open ftp://anonymous:@$ATEM_IP; 
+        cd \"$ATEM_DIR\"; 
+        get \"$file\" -o \"$LOCAL_PATH\"
+        "
+        [[ -f "$LOCAL_PATH" ]] && echo "   ✅ Saved." || echo "   ❌ Failed."
     fi
-
     ((COUNT++))
-done <<< "$TARGET_FILES"
+done <<< "$LATEST_MP4"
 
-echo
-echo "🎉 Done! Files are on your Desktop."
+echo "🎉 All downloads complete!"
