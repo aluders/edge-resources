@@ -5,11 +5,9 @@ export default {
     const API_KEY = env.YOUTUBE_API_KEY;
     const CACHE_TTL = 21600; // 6 hours
     const CACHE_KEY = `https://cache.local/latest-nonlive-video/${CHANNEL_ID}`;
-
     const cache = caches.default;
     const cacheRequest = new Request(CACHE_KEY);
     const url = new URL(request.url);
-
     const isEmbedMode = url.searchParams.has("embed");
 
     // Try cache first unless ?refresh
