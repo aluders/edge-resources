@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v10 - On-Demand)
+# ATEM MONITOR AUTO-INSTALLER (v11 - Precision Dates)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -133,7 +133,7 @@ if [[ "\${1:-}" == "--on-demand" ]]; then
 fi
 
 # ===================================================
-# TIME QUALIFIERS (Skipped if On-Demand Mode)
+# TIME QUALIFIERS
 # ===================================================
 CURRENT_DAY=\$(date +%u)   # 1=Mon, 7=Sun
 CURRENT_HOUR=\$(date +%H)
@@ -144,7 +144,7 @@ if [ "\$ON_DEMAND_MODE" = false ]; then
 fi
 
 # ===================================================
-# MAIN
+# MAIN LOGIC
 # ===================================================
 log "⏳ Waiting 5 seconds..."
 sleep 5
@@ -160,44 +160,48 @@ if ! command -v lftp >/dev/null 2>&1; then die "lftp missing."; fi
 mkdir -p "\$DEST_DIR"
 if ! ping -c 1 -W 1 "\$ATEM_IP" >/dev/null 2>&1; then die "ATEM unreachable."; fi
 
-# List
-log "📂 Listing files..."
-RAW_LIST=\$(lftp -c "set net:max-retries 1; set net:timeout \$TIMEOUT; open ftp://anonymous:@\$ATEM_IP; cd \$ATEM_DIR; ls") || die "FTP Error"
+# List files using 'cls' to force ISO Date format (YYYY-MM-DD)
+log "📂 Listing files (ISO Mode)..."
+RAW_LIST=\$(lftp -c "
+set net:max-retries 1; 
+set net:timeout \$TIMEOUT; 
+open ftp://anonymous:@\$ATEM_IP; 
+cd \$ATEM_DIR; 
+cls --1 --date-iso
+") || die "FTP Error (cls failed)"
+
 if [[ -z "\$RAW_LIST" ]]; then die "No files returned."; fi
 
+# Parse List: Expecting "YYYY-MM-DD HH:MM filename"
+# Example: 2026-01-04 12:19 CPC 13.mp4
 TMP_LIST=\$(echo "\$RAW_LIST" | awk '{
-    name=\$9; for (i=10; i<=NF; i++) name=name" "\$i
+    date=\$1
+    time=\$2
+    
+    # Reassemble filename from column 3 onwards (handling spaces)
+    name=\$3; for (i=4; i<=NF; i++) name=name" "\$i
+    
+    # Filter out junk
     if (name ~ /^._/) next
     if (tolower(name) !~ /\.mp4\$/) next
-    print \$6, \$7, name
+    
+    # Output: YYYY-MM-DD | filename
+    print date "|" name
 }')
+
 if [[ -z "\$TMP_LIST" ]]; then die "No .mp4 files found."; fi
 
-# Dates (Year Rollover Fix)
-FILES=""
-CURRENT_YEAR=\$(date +%Y)
-NOW_SEC=\$(date +%s)
-while IFS= read -r line; do
-    month=\$(echo "\$line" | awk '{print \$1}')
-    day=\$(echo "\$line" | awk '{print \$2}')
-    file=\$(echo "\$line" | cut -d' ' -f3-)
-    datekey=\$(date -d "\$month \$day \$CURRENT_YEAR" +"%Y-%m-%d" 2>/dev/null || true)
-    if [[ ! -z "\$datekey" ]]; then
-        file_sec=\$(date -d "\$datekey" +%s)
-        if [ "\$file_sec" -gt "\$((NOW_SEC + 86400))" ]; then
-            PREV_YEAR=\$((CURRENT_YEAR - 1))
-            datekey=\$(date -d "\$month \$day \$PREV_YEAR" +"%Y-%m-%d")
-        fi
-        FILES+="\${datekey}|\${file}"$'\n'
-    fi
-done <<< "\$TMP_LIST"
+# Find Latest Date (Sort by date column)
+LATEST_DATE=\$(echo "\$TMP_LIST" | cut -d'|' -f1 | sort -u | tail -n 1)
 
-LATEST_DATE=\$(echo "\$FILES" | cut -d'|' -f1 | sort -u | tail -n 1)
-if [[ -z "\$LATEST_DATE" ]]; then die "No dates found."; fi
+if [[ -z "\$LATEST_DATE" ]]; then die "Could not determine dates."; fi
 
-log "📅 Latest Date: \$LATEST_DATE"
-LATEST_MP4=\$(echo "\$FILES" | awk -F'|' -v d="\$LATEST_DATE" '\$1==d {print \$2}' | sort)
-if [[ -z "\$LATEST_MP4" ]]; then die "No files for date."; fi
+log "📅 Latest Date Found: \$LATEST_DATE"
+
+# Filter files matching only the latest date
+LATEST_MP4=\$(echo "\$TMP_LIST" | awk -F'|' -v d="\$LATEST_DATE" '\$1==d {print \$2}' | sort)
+
+if [[ -z "\$LATEST_MP4" ]]; then die "No files found for \$LATEST_DATE"; fi
 
 # Download
 FILE_PREFIX=\$(date -d "\$LATEST_DATE" +"%Y-%m%d")
@@ -251,6 +255,6 @@ if ! grep -q "alias checkatem" "$BASHRC"; then echo "alias checkatem='sudo syste
 if ! grep -q "alias logatem" "$BASHRC"; then echo "alias logatem='sudo journalctl -u atem-monitor -f'" >> "$BASHRC"; fi
 
 echo "================================================="
-echo "✅ UPDATED TO v10 (On-Demand Mode Added)"
-echo "   Use: ~/atem-download.sh --on-demand"
+echo "✅ UPDATED TO v11 (Precision Date Parsing)"
+echo "   We now ask ATEM for the ISO date (YYYY-MM-DD)"
 echo "================================================="
