@@ -63,7 +63,7 @@ export default {
         targetVideo = vData.items[0];
       }
 
-      // 💾 Cache It (For 4 Hours)
+      // 💾 Cache It
       const responseBody = new Response(targetVideo.id, { 
         headers: { "Content-Type": "text/plain" } 
       });
