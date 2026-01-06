@@ -32,7 +32,7 @@ sudo crontab -e
 0 0 * * 6 /sbin/shutdown -r now
 
 #alias for easy status checks
-sudo nano ~/.bashrc
+nano ~/.bashrc
 
 alias checkmpv='sudo systemctl status mpv --no-pager -l'
 alias editmpv='sudo nano /etc/systemd/system/mpv.service'
