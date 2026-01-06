@@ -33,6 +33,9 @@ sudo crontab -e
 
 #alias for easy status checks
 sudo nano ~/.bashrc
+
 alias checkmpv='sudo systemctl status mpv --no-pager -l'
 alias editmpv='sudo nano /etc/systemd/system/mpv.service'
 alias reloadmpv='sudo systemctl daemon-reload && sudo systemctl restart mpv'
+
+source ~/.bashrc
