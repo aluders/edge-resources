@@ -6,7 +6,6 @@
 C_RESET="\033[0m"
 C_HEADER="\033[34m"     # blue
 C_KEY="\033[32m"        # green
-C_DETECTED="\033[35m"   # purple/magenta
 
 # ---------------------------------------------------
 # Flags
@@ -32,41 +31,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------
-# Connection Type Detection
-# ---------------------------------------------------
-detect_type() {
-  local org_lc=$(echo "$1" | tr '[:upper:]' '[:lower:]')
-
-  if echo "$org_lc" | grep -q "starlink"; then
-    if echo "$org_lc" | grep -Eq "residential"; then echo "Starlink Residential"; return; fi
-    if echo "$org_lc" | grep -Eq "business|premium"; then echo "Starlink Business"; return; fi
-    if echo "$org_lc" | grep -Eq "mobility|mobile|rv"; then echo "Starlink Mobility"; return; fi
-    if echo "$org_lc" | grep -q "maritime"; then echo "Starlink Maritime"; return; fi
-    if echo "$org_lc" | grep -q "aviation"; then echo "Starlink Aviation"; return; fi
-    echo "Starlink"; return
-  fi
-
-  if echo "$org_lc" | grep -q "cloudflare"; then echo "Cloudflare / WARP"; return; fi
-  if echo "$org_lc" | grep -Eq "vpn|nord|proton|mullvad|private internet|pia|express|surfshark|cyberghost"; then echo "VPN"; return; fi
-  if echo "$org_lc" | grep -Eq "amazon|aws|google|digitalocean|linode|microsoft|ovh|contabo|hetzner"; then echo "Hosting Provider"; return; fi
-
-  echo ""
-}
-
-# ---------------------------------------------------
 # Raw JSON Mode
 # ---------------------------------------------------
 raw_output() {
-  raw=$(curl -s "https://ipinfo.io/$1/json" | sed '/"readme"/d')
-
-  org=$(echo "$raw" | grep -o '"org": *"[^"]*"' | sed 's/"org": "//; s/"$//')
-  detected=$(detect_type "$org")
-
-  if [[ -n "$detected" ]]; then
-    echo "$raw" | jq --arg dt "$detected" '. + { detected_type: $dt }'
-  else
-    echo "$raw"
-  fi
+  # Simply return the JSON from ipinfo without modification
+  curl -s "https://ipinfo.io/$1/json" | sed '/"readme"/d'
 }
 
 # ---------------------------------------------------
@@ -78,9 +47,8 @@ pretty_output() {
 
   raw=$(curl -s "https://ipinfo.io/$ip/json" | sed '/"readme"/d')
 
-  echo -e "${C_HEADER}==============================="
-  echo "          $section"
-  echo -e "===============================${C_RESET}"
+  # Condensed Header (One line)
+  echo -e "${C_HEADER}--- $section ---${C_RESET}"
 
   # JSON → readable text
   cleaned=$(echo "$raw" \
@@ -101,14 +69,6 @@ pretty_output() {
     val="${line#*:}"
     echo -e "${C_KEY}${key}${C_RESET}: ${val}"
   done <<< "$cleaned"
-
-  # Detection type
-  org=$(echo "$raw" | grep -o '"org": *"[^"]*"' | sed 's/"org": "//; s/"$//')
-  detected=$(detect_type "$org")
-
-  if [[ -n "$detected" ]]; then
-    echo -e "${C_DETECTED}detected type:${C_RESET} ${detected}"
-  fi
 
   echo
 }
