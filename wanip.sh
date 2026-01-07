@@ -34,7 +34,6 @@ done
 # Raw JSON Mode
 # ---------------------------------------------------
 raw_output() {
-  # Simply return the JSON from ipinfo without modification
   curl -s "https://ipinfo.io/$1/json" | sed '/"readme"/d'
 }
 
@@ -47,30 +46,24 @@ pretty_output() {
 
   raw=$(curl -s "https://ipinfo.io/$ip/json" | sed '/"readme"/d')
 
-  # Condensed Header (One line)
   echo -e "${C_HEADER}--- $section ---${C_RESET}"
 
-  # JSON → readable text
   cleaned=$(echo "$raw" \
     | sed 's/[{}"]//g' \
     | sed 's/^ *//g' \
     | sed '/^$/d'
   )
 
-  # Remove *JSON commas only* — keep commas inside values intact
   cleaned=$(echo "$cleaned" \
     | sed 's/,$//g' \
     | sed 's/: /:/g'
   )
 
-  # Print with color
   while IFS= read -r line; do
     key="${line%%:*}"
     val="${line#*:}"
     echo -e "${C_KEY}${key}${C_RESET}: ${val}"
   done <<< "$cleaned"
-
-  echo
 }
 
 # ---------------------------------------------------
