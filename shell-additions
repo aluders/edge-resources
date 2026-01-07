@@ -38,7 +38,7 @@ wanip() {
   fi
 }
 
-# dig version
+# dig version (dnsutils if not already installed)
 wanip() {
   echo "IPv4 Address:"
   # query 1.1.1.1 directly
