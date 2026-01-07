@@ -18,6 +18,7 @@ cat() {
     command cat "$@" && echo
 }
 
+# curl version
 wanip() {
   echo "IPv4 Address:"
   ipv4=$(curl -4 -s https://ipinfo.io/ip)
@@ -30,6 +31,28 @@ wanip() {
   echo
   echo "IPv6 Address:"
   ipv6=$(curl -6 -s https://v6.ipinfo.io/ip)
+  if [[ -n "$ipv6" ]]; then
+    echo "$ipv6"
+  else
+    echo "Not available"
+  fi
+}
+
+# dig version
+wanip() {
+  echo "IPv4 Address:"
+  # query 1.1.1.1 directly
+  ipv4=$(dig @1.1.1.1 -4 +short whoami.cloudflare. ch txt | tr -d '"')
+  if [[ -n "$ipv4" ]]; then
+    echo "$ipv4"
+  else
+    echo "Not available"
+  fi
+
+  echo
+  echo "IPv6 Address:"
+  # query Cloudflare's IPv6 DNS server directly
+  ipv6=$(dig @2606:4700:4700::1111 -6 +short whoami.cloudflare. ch txt | tr -d '"')
   if [[ -n "$ipv6" ]]; then
     echo "$ipv6"
   else
