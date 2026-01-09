@@ -8,7 +8,7 @@ IFS=$'\n'
 #       CONFIGURATION
 # ================================
 # Default presets if the user does NOT supply --preset
-DEFAULT_SOFT_PRESET="medium"   # x265 options: ultrafast, superfast, medium, slow, veryslow
+DEFAULT_SOFT_PRESET="medium"   # x265 options: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow, placebo
 DEFAULT_HARD_PRESET="speed"    # Mac Hardware options: speed, balanced, quality
 
 # Default Encoder
