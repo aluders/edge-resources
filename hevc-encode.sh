@@ -1,11 +1,23 @@
 #!/bin/bash
 # Convert all .mp4 files under a directory to H.265 using HandBrakeCLI (software or hardware)
-# fd is used for safe recursive file searching
 
 set -euo pipefail
 IFS=$'\n'
 
-# --- Check requirements ---
+# ================================
+#       CONFIGURATION
+# ================================
+# Default presets if the user does NOT supply --preset
+DEFAULT_SOFT_PRESET="medium"   # x265 options: ultrafast, superfast, medium, slow, veryslow
+DEFAULT_HARD_PRESET="speed"    # Mac Hardware options: speed, balanced, quality
+
+# Default Encoder
+ENCODER="x265"                 # Default to software
+CURRENT_PRESET="$DEFAULT_SOFT_PRESET"
+
+# ================================
+#       Requirements Check
+# ================================
 command -v fd >/dev/null 2>&1 || { echo "❌ fd not found. Install via: brew install fd"; exit 1; }
 command -v HandBrakeCLI >/dev/null 2>&1 || { echo "❌ HandBrakeCLI not found. Install via: brew install handbrake"; exit 1; }
 
@@ -14,9 +26,9 @@ command -v HandBrakeCLI >/dev/null 2>&1 || { echo "❌ HandBrakeCLI not found. I
 # ================================
 DELETE_SOURCE=false
 DRY_RUN=false
-ENCODER="x265"
 QUALITY=18
 FORCE=false
+USER_PROVIDED_PRESET=false
 
 # ================================
 #      Parse command-line args
@@ -27,9 +39,26 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --delete-source) DELETE_SOURCE=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
-        --hardware) ENCODER="vt_h265"; shift ;;
+        
+        --hardware) 
+            ENCODER="vt_h265"
+            # Switch to hardware default ONLY if user hasn't manually set a preset yet
+            if [[ "$USER_PROVIDED_PRESET" = false ]]; then
+                CURRENT_PRESET="$DEFAULT_HARD_PRESET"
+            fi
+            shift 
+            ;;
+            
         --q) QUALITY="$2"; shift 2 ;;
+        
+        --preset) 
+            CURRENT_PRESET="$2"
+            USER_PROVIDED_PRESET=true
+            shift 2 
+            ;;
+            
         --force) FORCE=true; shift ;;
+        
         *)
             if [[ -z "$START_DIR" ]]; then
                 START_DIR="$1"
@@ -57,7 +86,6 @@ if [[ -z "$START_DIR" ]]; then
     echo ""
 fi
 
-# Expand tilde (~) and resolve absolute path
 START_DIR="$(eval echo "$START_DIR")"
 
 if [[ ! -d "$START_DIR" ]]; then
@@ -68,6 +96,7 @@ fi
 START_DIR="$(realpath "$START_DIR")"
 
 echo "🎬 Searching for .mp4 files in: $START_DIR"
+echo "⚙️  Settings: Encoder=$ENCODER | Preset=$CURRENT_PRESET | Quality=$QUALITY"
 echo
 
 # ================================
@@ -109,16 +138,13 @@ for input in "${FILES[@]}"; do
         continue
     fi
 
-    # --preset "Production Standard": Removes resolution/FPS limits
-    # --all-audio: Keeps every audio track (languages, commentary)
-    # --all-subtitles: Keeps soft subs
-    # --crop 0:0:0:0: Prevents auto-cropping of black bars
     HandBrakeCLI \
         --preset "Production Standard" \
         -i "$input" \
         -o "$output" \
         -e "$ENCODER" \
         -q "$QUALITY" \
+        --encoder-preset "$CURRENT_PRESET" \
         --aencoder copy --all-audio \
         --all-subtitles \
         --crop 0:0:0:0 \
