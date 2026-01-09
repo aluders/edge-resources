@@ -19,7 +19,7 @@ QUALITY=18
 FORCE=false
 
 # ================================
-#     Parse command-line args
+#      Parse command-line args
 # ================================
 START_DIR=""
 
@@ -32,7 +32,8 @@ while [[ $# -gt 0 ]]; do
         --force) FORCE=true; shift ;;
         *)
             if [[ -z "$START_DIR" ]]; then
-                START_DIR="$(realpath "$1")"
+                # Store the arg if provided, but don't validate yet
+                START_DIR="$1"
                 shift
             else
                 echo "❌ Unknown argument: $1"
@@ -42,15 +43,33 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ================================
+#      Prompt if no Dir provided
+# ================================
 if [[ -z "$START_DIR" ]]; then
-    echo "Usage: $0 <directory> [flags]"
+    # -p prints the prompt text, -r prevents backslash escaping
+    read -r -p "📁 Enter directory to encode [Default: Current Directory]: " USER_INPUT
+    
+    if [[ -z "$USER_INPUT" ]]; then
+        START_DIR="."
+        echo "   ...Using current directory."
+    else
+        START_DIR="$USER_INPUT"
+    fi
+    echo "" 
+fi
+
+# Convert to absolute path and validate
+# We use eval echo to handle tilde expansion (e.g. ~/Movies) if user typed it manually
+START_DIR="$(eval echo "$START_DIR")"
+
+if [[ ! -d "$START_DIR" ]]; then
+    echo "❌ Error: '$START_DIR' is not a valid directory."
     exit 1
 fi
 
-if [[ ! -d "$START_DIR" ]]; then
-    echo "❌ '$START_DIR' is not a directory."
-    exit 1
-fi
+# Get the clean absolute path
+START_DIR="$(realpath "$START_DIR")"
 
 echo "🎬 Searching for .mp4 files in: $START_DIR"
 echo
@@ -74,7 +93,7 @@ echo "Found $TOTAL file(s)."
 echo
 
 # ================================
-#          Process files
+#           Process files
 # ================================
 for input in "${FILES[@]}"; do
     base="${input%.*}"
