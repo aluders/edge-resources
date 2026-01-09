@@ -32,7 +32,6 @@ while [[ $# -gt 0 ]]; do
         --force) FORCE=true; shift ;;
         *)
             if [[ -z "$START_DIR" ]]; then
-                # Store the arg if provided, but don't validate yet
                 START_DIR="$1"
                 shift
             else
@@ -47,7 +46,6 @@ done
 #      Prompt if no Dir provided
 # ================================
 if [[ -z "$START_DIR" ]]; then
-    # -p prints the prompt text, -r prevents backslash escaping
     read -r -p "📁 Enter directory to encode [Default: Current Directory]: " USER_INPUT
     
     if [[ -z "$USER_INPUT" ]]; then
@@ -56,11 +54,10 @@ if [[ -z "$START_DIR" ]]; then
     else
         START_DIR="$USER_INPUT"
     fi
-    echo "" 
+    echo ""
 fi
 
-# Convert to absolute path and validate
-# We use eval echo to handle tilde expansion (e.g. ~/Movies) if user typed it manually
+# Expand tilde (~) and resolve absolute path
 START_DIR="$(eval echo "$START_DIR")"
 
 if [[ ! -d "$START_DIR" ]]; then
@@ -68,7 +65,6 @@ if [[ ! -d "$START_DIR" ]]; then
     exit 1
 fi
 
-# Get the clean absolute path
 START_DIR="$(realpath "$START_DIR")"
 
 echo "🎬 Searching for .mp4 files in: $START_DIR"
@@ -113,12 +109,19 @@ for input in "${FILES[@]}"; do
         continue
     fi
 
+    # --preset "Production Standard": Removes resolution/FPS limits
+    # --all-audio: Keeps every audio track (languages, commentary)
+    # --all-subtitles: Keeps soft subs
+    # --crop 0:0:0:0: Prevents auto-cropping of black bars
     HandBrakeCLI \
+        --preset "Production Standard" \
         -i "$input" \
         -o "$output" \
         -e "$ENCODER" \
         -q "$QUALITY" \
-        --aencoder copy \
+        --aencoder copy --all-audio \
+        --all-subtitles \
+        --crop 0:0:0:0 \
         --optimize \
         --verbose=0
 
