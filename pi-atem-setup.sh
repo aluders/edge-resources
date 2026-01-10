@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v12 - Multi-Email Support)
+# ATEM MONITOR AUTO-INSTALLER (v16 - Clean Config)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -95,11 +95,7 @@ SMTP_PORT="587"
 SMTP_USER="your_email@gmail.com"
 SMTP_PASS="your_app_password"
 EMAIL_FROM="your_email@gmail.com"
-
-# FOR MULTIPLE RECIPIENTS: Separate with commas
-# Example: "me@gmail.com, wife@gmail.com"
-EMAIL_TO="your_email@gmail.com"
-
+EMAIL_TO="your_email@gmail.com, second_email@gmail.com"
 EMAIL_SUBJECT_PREFIX="[ATEM-Pi]"
 
 # ===================================================
@@ -164,26 +160,46 @@ if ! command -v lftp >/dev/null 2>&1; then die "lftp missing."; fi
 mkdir -p "\$DEST_DIR"
 if ! ping -c 1 -W 1 "\$ATEM_IP" >/dev/null 2>&1; then die "ATEM unreachable."; fi
 
-# List files using 'cls' to force ISO Date format (YYYY-MM-DD)
+# List files using strict ISO formatting
 log "📂 Listing files (ISO Mode)..."
 RAW_LIST=\$(lftp -c "
 set net:max-retries 1; 
 set net:timeout \$TIMEOUT; 
 open ftp://anonymous:@\$ATEM_IP; 
 cd \$ATEM_DIR; 
-cls --1 --date-iso
+cls --long --time-style=long-iso
 ") || die "FTP Error (cls failed)"
 
 if [[ -z "\$RAW_LIST" ]]; then die "No files returned."; fi
 
-# Parse List: Expecting "YYYY-MM-DD HH:MM filename"
-# Example: 2026-01-04 12:19 CPC 13.mp4
+# Parse List (Universal Parser)
 TMP_LIST=\$(echo "\$RAW_LIST" | awk '{
-    date=\$1
-    time=\$2
-    name=\$3; for (i=4; i<=NF; i++) name=name" "\$i
-    if (name ~ /^._/) next
+    date_idx = 0
+    # Find the column containing the ISO date
+    for (i=1; i<=NF; i++) {
+        if (\$i ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}\$/) {
+            date_idx = i
+            break
+        }
+    }
+
+    if (date_idx == 0) next # Skip lines without a date
+
+    date = \$date_idx
+    
+    # Filename typically starts 2 columns after date (Date -> Time -> Name)
+    name_start = date_idx + 2
+    
+    name = ""
+    for (i=name_start; i<=NF; i++) {
+        name = name \$i " "
+    }
+    # Trim trailing space
+    sub(/ \$/, "", name)
+
+    if (name == "") next
     if (tolower(name) !~ /\.mp4\$/) next
+    
     print date "|" name
 }')
 
@@ -191,7 +207,9 @@ if [[ -z "\$TMP_LIST" ]]; then die "No .mp4 files found."; fi
 
 # Find Latest Date
 LATEST_DATE=\$(echo "\$TMP_LIST" | cut -d'|' -f1 | sort -u | tail -n 1)
+
 if [[ -z "\$LATEST_DATE" ]]; then die "Could not determine dates."; fi
+
 log "📅 Latest Date Found: \$LATEST_DATE"
 
 # Filter files
@@ -250,8 +268,6 @@ if ! grep -q "alias checkatem" "$BASHRC"; then echo "alias checkatem='sudo syste
 if ! grep -q "alias logatem" "$BASHRC"; then echo "alias logatem='sudo journalctl -u atem-monitor -f'" >> "$BASHRC"; fi
 
 echo "================================================="
-echo "✅ UPDATED TO v12"
-echo "   - Precision Dates (ISO Fix)"
-echo "   - Multi-Email Support (Edit file to add commas)"
-echo "   - On-Demand Mode"
+echo "✅ UPDATED TO v16"
+echo "   - Simplified Email Config Section"
 echo "================================================="
