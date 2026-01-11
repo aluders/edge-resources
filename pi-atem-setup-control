@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v21 - Consistent Flags)
+# ATEM MONITOR AUTO-INSTALLER (v22 - Clean Config)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -75,16 +75,9 @@ SMTP_SERVER="smtp.gmail.com"
 SMTP_PORT="587"
 SMTP_USER="your_email@gmail.com"
 SMTP_PASS="your_app_password"
-
-# "From" Address (Must match SMTP User usually)
 EMAIL_FROM="your_email@gmail.com"
-
-# "From" Name (The friendly name shown in inbox)
 EMAIL_FROM_NAME="ATEM Monitor"
-
-# Recipients (Comma separated)
 EMAIL_TO="your_email@gmail.com, second_email@gmail.com"
-
 EMAIL_SUBJECT_PREFIX="[ATEM-Pi]"
 EOF
     chown "$CURRENT_USER:$CURRENT_USER" "$CONFIG_FILE"
@@ -224,7 +217,7 @@ setInterval(() => {
 myAtem.connect(ATEM_IP);
 EOF
 
-# 8. CREATE CONTROL SCRIPT (Updated Flag Name)
+# 8. CREATE CONTROL SCRIPT
 echo ">>> Creating Control Script at $CONTROL_SCRIPT..."
 cat > "$CONTROL_SCRIPT" <<EOF
 #!/bin/bash
@@ -398,9 +391,6 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v21 (Consistent Flags)"
-echo "   New Testing Commands:"
-echo "   ~/atem-control.sh --test-email"
-echo "   ~/atem-control.sh --test-record"
-echo "   ~/atem-control.sh --test-stream"
+echo "✅ UPDATED TO v22 (Clean Config)"
+echo "   - Config comments simplified."
 echo "================================================="
