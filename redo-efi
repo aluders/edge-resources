@@ -3,3 +3,5 @@ create a new fat32 efi boot partition and copy the boot files to it from windows
 bcdboot x:\windows /s y:
 
 where x is the windows partition and y is the efi partition
+
+after the process is complete you can remove the drive letter fromm the efi partition
