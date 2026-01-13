@@ -1,3 +1,5 @@
+# irm https://raw.githubusercontent.com/aluders/edge-resources/main/wifi-passwords.ps1 | iex
+
 # Get the list of all Wi-Fi profiles
 $wlanShow = netsh wlan show profiles
 $profiles = $wlanShow | Select-String "All User Profile" | ForEach-Object { 
