@@ -1,3 +1,4 @@
+# elevated powershell -- run either command below
 # irm https://raw.githubusercontent.com/aluders/edge-resources/main/wifi-passwords.ps1 | iex
 # irm passwords.vcc.net | iex
 
