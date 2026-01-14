@@ -1,6 +1,5 @@
-# elevated powershell -- run either command below
-# irm https://raw.githubusercontent.com/aluders/edge-resources/main/wifi-passwords.ps1 | iex
-# irm passwords.vcc.net | iex
+# elevated powershell
+# irm wifipass.vcc.net | iex
 
 # Get the list of all Wi-Fi profiles
 $wlanShow = netsh wlan show profiles
