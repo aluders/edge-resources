@@ -1,3 +1,6 @@
+# elevated powershell
+# irm spooler.vcc.net | iex
+
 # 1. Check for Administrator privileges
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
