@@ -13,7 +13,7 @@ if (-not $isAdmin) {
 
 # Header
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "   Print Spooler Reset Script (PowerShell)  " -ForegroundColor Cyan
+Write-Host "        Print Spooler Reset Script"           -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
