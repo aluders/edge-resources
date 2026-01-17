@@ -12,7 +12,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ============================================
-echo   Print Spooler Reset Script (Batch Only)
+echo   Print Spooler Reset Script
 echo ============================================
 echo.
 
