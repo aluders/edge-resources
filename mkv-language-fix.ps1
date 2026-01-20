@@ -27,40 +27,57 @@ if (-not (Test-Path $Path)) {
 
 Write-Host "Scanning folder: $Path" -ForegroundColor Cyan
 
-# --- CHANGED: Added "| Sort-Object FullName" to process folders sequentially ---
-$files = Get-ChildItem -Path $Path -Recurse -Filter *.mp4 | Sort-Object FullName
+# --- CHANGED: Filter for both .mp4 and .mkv ---
+$files = Get-ChildItem -Path $Path -Recurse -Include *.mp4, *.mkv | Sort-Object FullName
 
 if ($files.Count -eq 0) {
-    Write-Host "No .mp4 files found." -ForegroundColor Yellow
+    Write-Host "No .mp4 or .mkv files found." -ForegroundColor Yellow
     Exit
 }
 
 # --- MODE ANNOUNCEMENTS ---
 if ($Clean) {
     Write-Host "--- CLEAN MODE ACTIVE ---" -ForegroundColor Magenta
-    Write-Host "Deleting .mp4 files ONLY if a matching .mkv exists." -ForegroundColor Magenta
+    Write-Host "Deleting source files ONLY if a processed version exists." -ForegroundColor Magenta
 }
 elseif ($Test) {
     Write-Host "--- TEST MODE ACTIVE ---" -ForegroundColor Magenta
-    Write-Host "Processing only the first file found (Alphabetically)." -ForegroundColor Magenta
+    Write-Host "Processing only the first file found." -ForegroundColor Magenta
 }
 else {
     Write-Host "Found $($files.Count) files to process..." -ForegroundColor Cyan
 }
 
 foreach ($file in $files) {
-    $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($file.BaseName + ".mkv")
+    # --- DETERMINE OUTPUT FILENAME ---
+    if ($file.Extension -eq ".mp4") {
+        # MP4 -> MKV
+        $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($file.BaseName + ".mkv")
+    }
+    elseif ($file.Extension -eq ".mkv") {
+        # Skip if this is already an output file (prevents processing .en.mkv files)
+        if ($file.Name -like "*.en.mkv") {
+            Write-Host "Skipping output file: $($file.Name)" -ForegroundColor DarkGray
+            continue
+        }
+        # MKV -> .en.MKV
+        $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($file.BaseName + ".en.mkv")
+    }
 
     # --- CLEAN LOGIC ---
     if ($Clean) {
         if (Test-Path $outputFile) {
-            Remove-Item $file.FullName -Force
-            Write-Host "Deleted: $($file.Name) (MKV verified)" -ForegroundColor Green
+            # Double check we aren't deleting the output file by mistake
+            if ($file.FullName -eq $outputFile) {
+                Write-Host "Safety Check: Source and Output are identical. Skipping delete." -ForegroundColor Red
+            } else {
+                Remove-Item $file.FullName -Force
+                Write-Host "Deleted source: $($file.Name) (Processed version verified)" -ForegroundColor Green
+            }
         } else {
-            Write-Host "Skipped: $($file.Name) (No matching MKV found)" -ForegroundColor Red
+            Write-Host "Skipped delete: $($file.Name) (No processed version found)" -ForegroundColor Red
         }
 
-        # If testing clean mode, stop after one
         if ($Test) { break }
         continue
     }
@@ -69,7 +86,6 @@ foreach ($file in $files) {
     Write-Host "Processing: $($file.Name)" -ForegroundColor Yellow
 
     try {
-        # Inspect file for tracks
         $jsonOutput = & $mkvmergePath -J $file.FullName
         $fileInfo = $jsonOutput | ConvertFrom-Json
     }
@@ -78,7 +94,6 @@ foreach ($file in $files) {
         continue
     }
 
-    # Build Arguments
     $langArgs = @()
     if ($fileInfo.tracks) {
         foreach ($track in $fileInfo.tracks) {
@@ -93,7 +108,6 @@ foreach ($file in $files) {
         }
     }
 
-    # Execute mkvmerge
     $argumentList = @("-o", "$outputFile") + $langArgs + @("$($file.FullName)")
 
     & $mkvmergePath $argumentList | Out-Null
