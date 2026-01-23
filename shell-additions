@@ -10,6 +10,8 @@ alias bat='bat --paging=never'
 
 alias ff='fastfetch'
 
+alias cleardns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
+
 curl() {
     command curl "$@" && echo
 }
