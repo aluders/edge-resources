@@ -20,7 +20,7 @@ cat() {
     command cat "$@" && echo
 }
 
-# curl version
+# curl version (generally more reliable)
 wanip() {
   echo "IPv4 Address:"
   ipv4=$(curl -4 -s https://ipinfo.io/ip)
