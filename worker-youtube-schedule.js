@@ -67,7 +67,7 @@ export default {
         `✅ Inside Go-Live Window (${currentHour}:${pt.minute} PT) cron="${event.cron}". Starting Double-Check Loop.`
       );
 
-      // Two attempts 30s apart (kept from your original)
+      // Two attempts 30s apart
       ctx.waitUntil(
         (async () => {
           console.log("🚀 Attempt 1/2");
