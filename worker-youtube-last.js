@@ -1,18 +1,54 @@
+/********************************************************************
+  Latest Non-Live Video Redirect Worker
+  + Developer Mode gate for ?flags
+  --------------------------------------------------
+  Dev Mode behavior:
+    - DEVELOPER_MODE = "OFF": disables manual/cache-busting flags (?refresh)
+                              and diagnostic-style flags if you add any later.
+                              Normal operation (redirect) still works.
+    - DEVELOPER_MODE = "ON" : allows ?refresh (and any future ?flags).
+********************************************************************/
+
+/********************************************************************
+  DEVELOPER MODE
+********************************************************************/
+const DEVELOPER_MODE = "OFF"; // "ON" or "OFF"
+function devModeOn() {
+  return String(DEVELOPER_MODE).trim().toUpperCase() === "ON";
+}
+
 export default {
   async fetch(request, env) {
     const CHANNEL_ID = "UCxZ8LTstrCOotf74qO0dOFA";
     const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
     const API_KEY = env.YOUTUBE_API_KEY;
+
     const CACHE_TTL = 21600; // 6 hours
     const CACHE_KEY = `https://cache.local/latest-nonlive-video/${CHANNEL_ID}`;
     const cache = caches.default;
     const cacheRequest = new Request(CACHE_KEY);
+
     const url = new URL(request.url);
     const isEmbedMode = url.searchParams.has("embed");
 
-    // Try cache first unless ?refresh
+    // ------------------------------------------------------------
+    // DEV MODE GATE: disable all ?flag endpoints unless ON
+    // For this worker, the only "flag" today is ?refresh.
+    // (We intentionally do NOT treat ?embed as a dev flag.)
+    // ------------------------------------------------------------
+    const hasDevFlags = url.searchParams.has("refresh");
+    if (hasDevFlags && !devModeOn()) {
+      // If someone tries to force refresh while dev mode is OFF,
+      // behave like the flag doesn't exist and just use normal behavior.
+      url.searchParams.delete("refresh");
+      // (continue normally)
+    }
+
+    // Try cache first unless dev-mode refresh is allowed AND present
     let cachedResponse = await cache.match(cacheRequest);
-    if (cachedResponse && !url.searchParams.has("refresh")) {
+    const allowRefresh = devModeOn() && url.searchParams.has("refresh");
+
+    if (cachedResponse && !allowRefresh) {
       return rewriteRedirect(cachedResponse, isEmbedMode);
     }
 
@@ -26,7 +62,7 @@ export default {
         part: "snippet",
         playlistId: UPLOADS_PLAYLIST_ID,
         maxResults: "10",
-        key: API_KEY,
+        key: API_KEY
       });
 
       const playlistUrl = `https://www.googleapis.com/youtube/v3/playlistItems?${playlistParams}`;
@@ -53,7 +89,7 @@ export default {
       const videosParams = new URLSearchParams({
         part: "snippet,liveStreamingDetails",
         id: videoIds.join(","),
-        key: API_KEY,
+        key: API_KEY
       });
 
       const videosUrl = `https://www.googleapis.com/youtube/v3/videos?${videosParams}`;
@@ -82,11 +118,11 @@ export default {
 
       // Store canonical representation (videoId only)
       const stored = new Response(videoId, {
-        headers: { "Content-Type": "text/plain" },
+        headers: { "Content-Type": "text/plain" }
       });
 
       await cache.put(cacheRequest, stored.clone(), {
-        expirationTtl: CACHE_TTL,
+        expirationTtl: CACHE_TTL
       });
 
       return redirectForMode(videoId, isEmbedMode);
@@ -98,16 +134,14 @@ export default {
         return rewriteRedirect(cachedResponse, isEmbedMode);
       }
 
-      return new Response("Server error: " + err.message, { status: 500 });
+      return new Response("Server error: " + (err?.message || String(err)), { status: 500 });
     }
-  },
+  }
 };
 
 // Convert cached videoId -> correct redirect
 function rewriteRedirect(cachedResponse, isEmbedMode) {
-  return cachedResponse.text().then((videoId) =>
-    redirectForMode(videoId, isEmbedMode)
-  );
+  return cachedResponse.text().then((videoId) => redirectForMode(videoId, isEmbedMode));
 }
 
 // Emit either embed URL or watch URL
