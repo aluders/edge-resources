@@ -7,7 +7,7 @@
   Improvements:
     - Use event.scheduledTime for cron time (more accurate window checks)
     - Better logs + safe handling of 409 / non-OK responses
-    - Keep your existing scheduleNextSunday DST logic intact
+    - Keep existing scheduleNextSunday DST logic intact
 ********************************************************************/
 
 /********************************************************************
