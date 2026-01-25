@@ -1,4 +1,16 @@
 /********************************************************************
+  CPC YouTube Scheduler + Go-Live Worker (Merged Fix)
+  --------------------------------------------------
+  Key fix:
+    - liveBroadcasts.list cannot use BOTH mine=true and broadcastStatus=...
+    - We now list with mine=true (+ broadcastType=event) and filter in code.
+  Improvements:
+    - Use event.scheduledTime for cron time (more accurate window checks)
+    - Better logs + safe handling of 409 / non-OK responses
+    - Keep your existing scheduleNextSunday DST logic intact
+********************************************************************/
+
+/********************************************************************
   CONFIGURATION
 ********************************************************************/
 // STREAM SCHEDULE: When the event technically starts (for the Title/Metadata)
@@ -32,38 +44,46 @@ async function safeJson(response) {
 export default {
   async scheduled(event, env, ctx) {
     // 1. THURSDAY SCHEDULING (Run blindly based on cron string)
-    if (event.cron.includes("thu")) {
-      console.log("📅 Scheduling Cron Triggered");
+    if ((event.cron || "").includes("thu")) {
+      console.log("📅 Scheduling Cron Triggered:", event.cron);
       ctx.waitUntil(scheduleNextSunday(env));
       return;
     }
 
     // 2. SUNDAY GO-LIVE (Run selectively based on time window)
-    const pt = getPacificTimeParts(new Date());
-    const currentHour = parseInt(pt.hour);
-    const currentMin = parseInt(pt.minute);
+    // Use event.scheduledTime so your logs/window checks align with cron minute.
+    const now = event?.scheduledTime ? new Date(event.scheduledTime) : new Date();
+    const pt = getPacificTimeParts(now);
+    const currentHour = parseInt(pt.hour, 10);
+    const currentMin = parseInt(pt.minute, 10);
 
     // Check if we are inside the "Go Live" window (10:28 to 10:35)
-    if (currentHour === GO_LIVE_HOUR && currentMin >= GO_LIVE_MIN_START && currentMin <= GO_LIVE_MIN_END) {
-      console.log(`✅ Inside Go-Live Window (${currentHour}:${currentMin} PT). Starting Double-Check Loop.`);
-      
-      // We wrap this in a blocking function to ensure the wait happens
-      ctx.waitUntil((async () => {
-        // ATTEMPT 1 (Immediate)
-        console.log("🚀 Attempt 1/2");
-        await goLiveUpcoming(env);
+    if (
+      currentHour === GO_LIVE_HOUR &&
+      currentMin >= GO_LIVE_MIN_START &&
+      currentMin <= GO_LIVE_MIN_END
+    ) {
+      console.log(
+        `✅ Inside Go-Live Window (${currentHour}:${pt.minute} PT) cron="${event.cron}". Starting Double-Check Loop.`
+      );
 
-        // WAIT 30 SECONDS
-        console.log("⏳ Waiting 30s for Attempt 2...");
-        await new Promise(resolve => setTimeout(resolve, 30000));
+      // Two attempts 30s apart (kept from your original)
+      ctx.waitUntil(
+        (async () => {
+          console.log("🚀 Attempt 1/2");
+          await goLiveUpcoming(env);
 
-        // ATTEMPT 2 (30s later)
-        console.log("🚀 Attempt 2/2");
-        await goLiveUpcoming(env);
-      })());
+          console.log("⏳ Waiting 30s for Attempt 2...");
+          await new Promise((resolve) => setTimeout(resolve, 30000));
 
+          console.log("🚀 Attempt 2/2");
+          await goLiveUpcoming(env);
+        })()
+      );
     } else {
-      console.log(`⏭️ Cron fired at ${currentHour}:${currentMin} PT. Outside window. Skipping.`);
+      console.log(
+        `⏭️ Cron fired at ${currentHour}:${pt.minute} PT (cron="${event.cron}"). Outside window. Skipping.`
+      );
     }
   },
 
@@ -76,21 +96,21 @@ export default {
     if (url.searchParams.has("keys")) {
       const token = await getAccessToken(env);
       if (!token) return new Response("OAuth Failed", { status: 500 });
-      
+
       // Fetch all stream keys associated with this channel
       const res = await fetch(
-        "https://youtube.googleapis.com/youtube/v3/liveStreams?part=id,snippet&mine=true", 
+        "https://youtube.googleapis.com/youtube/v3/liveStreams?part=id,snippet&mine=true",
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      
+
       const data = await safeJson(res);
-      
+
       if (!data.items) return new Response(JSON.stringify(data, null, 2));
 
       // Return a clean list to read easily (SECURITY UPDATE: Removed actual key)
-      const summary = data.items.map(item => ({
+      const summary = data.items.map((item) => ({
         TITLE: item.snippet.title,
-        STREAM_ID: item.id  // <--- This is the ID you need for Cloudflare
+        STREAM_ID: item.id // <--- This is the ID you need for Cloudflare
       }));
 
       return new Response(JSON.stringify(summary, null, 2), {
@@ -104,13 +124,15 @@ export default {
     if (url.searchParams.has("test")) {
       const token = await getAccessToken(env);
       let oauthStatus = token ? "OAuth OK" : "OAuth ERROR: No token returned";
-      
+
       const pt = getPacificTimeParts(new Date());
-      
+
       return new Response(
-        `${oauthStatus}\n` + 
-        `Server Time: ${pt.month}/${pt.day} ${pt.hour}:${pt.minute} PT\n` +
-        `Window: ${GO_LIVE_HOUR}:${GO_LIVE_MIN_START} - ${GO_LIVE_HOUR}:${GO_LIVE_MIN_END}`,
+        `${oauthStatus}\n` +
+          `Server Time: ${pt.month}/${pt.day} ${pt.hour}:${pt.minute} PT\n` +
+          `Window: ${GO_LIVE_HOUR}:${pad2(GO_LIVE_MIN_START)} - ${GO_LIVE_HOUR}:${pad2(
+            GO_LIVE_MIN_END
+          )}`,
         { status: 200, headers: { "Content-Type": "text/plain" } }
       );
     }
@@ -120,7 +142,8 @@ export default {
     }
 
     if (url.searchParams.has("golive")) {
-      return new Response(await goLiveUpcoming(env), { status: 200 });
+      await goLiveUpcoming(env);
+      return new Response("GoLive attempted (check logs).", { status: 200 });
     }
 
     return new Response("OK", { status: 200 });
@@ -138,8 +161,8 @@ async function scheduleNextSunday(env) {
     // 1. Calculate Next Sunday Date
     const now = new Date();
     const today = now.getUTCDay(); // 0 is Sunday
-    const daysUntilSunday = (7 - today) % 7 || 7; 
-    
+    const daysUntilSunday = (7 - today) % 7 || 7;
+
     const nextSunday = new Date(now);
     nextSunday.setUTCDate(now.getUTCDate() + daysUntilSunday);
 
@@ -148,17 +171,17 @@ async function scheduleNextSunday(env) {
     const d = nextSunday.getUTCDate();
     const y = nextSunday.getUTCFullYear();
     const title = `CPC Live - ${m}/${d}/${y}`;
-    
+
     // 3. Set Start Time (AUTO-CORRECT FOR DST)
     // First, try setting UTC based on the assumption we are in Standard time or Daylight
     // We set 17:MM UTC (which is 10:MM PDT / 9:MM PST)
     nextSunday.setUTCHours(17, SCHEDULE_MINUTE_PT, 0, 0);
-    
+
     // Check what time this is in Pacific
     const checkPT = getPacificTimeParts(nextSunday);
-    
+
     // If it resulted in HOUR - 1 (e.g. 9:30 instead of 10:30), add 1 hour
-    if (parseInt(checkPT.hour) === SCHEDULE_HOUR_PT - 1) {
+    if (parseInt(checkPT.hour, 10) === SCHEDULE_HOUR_PT - 1) {
       nextSunday.setUTCHours(18, SCHEDULE_MINUTE_PT, 0, 0); // Shift to 18:30 UTC
     }
 
@@ -167,11 +190,11 @@ async function scheduleNextSunday(env) {
 
     // --- DUPLICATE CHECK ---
     const existing = await findVideoInUploads(apiKey, title, 15);
-    if (existing)
-      return `⚠️ Already scheduled: ${title}\nvideoId=${existing}`;
+    if (existing) return `⚠️ Already scheduled: ${title}\nvideoId=${existing}`;
 
     // --- CREATE BROADCAST ---
     const token = await getAccessToken(env);
+    if (!token) return "❌ OAuth token failed (scheduleNextSunday)";
 
     const createRes = await fetch(
       "https://youtube.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status",
@@ -203,8 +226,7 @@ async function scheduleNextSunday(env) {
     );
 
     const create = await safeJson(createRes);
-    if (!create.id)
-      return `❌ Broadcast creation failed:\n${JSON.stringify(create)}`;
+    if (!create.id) return `❌ Broadcast creation failed:\n${JSON.stringify(create)}`;
 
     const broadcastId = create.id;
 
@@ -218,7 +240,6 @@ async function scheduleNextSunday(env) {
     );
 
     // --- ID OPTIMIZATION ---
-    // Use the broadcastId directly as the videoId (no playlist search needed)
     const videoId = broadcastId;
 
     // --- UPLOAD THUMBNAIL & UPDATE CATEGORY ---
@@ -237,37 +258,54 @@ async function scheduleNextSunday(env) {
 }
 
 /********************************************************************
-  GO LIVE HANDLER (ROBUST WINDOW + DOUBLE CHECK)
+  GO LIVE HANDLER (FIXED LIST CALL)
+  - Uses mine=true (valid), filters in code by PT date
+  - Works regardless of lifecycle status (upcoming/ready/testing)
 ********************************************************************/
 async function goLiveUpcoming(env) {
   try {
     const token = await getAccessToken(env);
     if (!token) {
-        console.log("❌ OAuth token failed");
-        return;
-    }
-
-    // 1. Get "Today" in Pacific Time
-    const nowPT = getPacificTimeParts(new Date());
-    
-    // 2. Fetch ALL upcoming broadcasts
-    const res = await fetch(
-      "https://youtube.googleapis.com/youtube/v3/liveBroadcasts?part=id,snippet,status&broadcastStatus=upcoming&mine=true&maxResults=5",
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    const data = await safeJson(res);
-
-    if (!data.items || data.items.length === 0) {
-      console.log("ℹ️ No upcoming broadcasts found. (Already live?)");
+      console.log("❌ OAuth token failed");
       return;
     }
 
-    // 3. Find the broadcast that is scheduled for TODAY
-    const match = data.items.find(item => {
-      const scheduledDate = new Date(item.snippet.scheduledStartTime);
+    // "Today" in Pacific Time
+    const nowPT = getPacificTimeParts(new Date());
+
+    // ✅ VALID: mine=true only (no broadcastStatus)
+    const res = await fetch(
+      "https://youtube.googleapis.com/youtube/v3/liveBroadcasts" +
+        "?part=id,snippet,status" +
+        "&mine=true" +
+        "&broadcastType=event" +
+        "&maxResults=25",
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    const data = await safeJson(res);
+
+    if (data._parseError) {
+      console.log("❌ liveBroadcasts.list parse error:", data.raw);
+      return;
+    }
+    if (!res.ok) {
+      console.log(`❌ liveBroadcasts.list failed HTTP ${res.status}:`, JSON.stringify(data));
+      return;
+    }
+    if (!data.items || data.items.length === 0) {
+      console.log("ℹ️ No broadcasts returned for mine=true.");
+      return;
+    }
+
+    // Find broadcasts scheduled for TODAY (PT)
+    const todays = data.items.filter((item) => {
+      const scheduledStr = item.snippet?.scheduledStartTime;
+      if (!scheduledStr) return false;
+
+      const scheduledDate = new Date(scheduledStr);
       const scheduledPT = getPacificTimeParts(scheduledDate);
 
-      // Compare strict Day/Month/Year
       return (
         scheduledPT.day === nowPT.day &&
         scheduledPT.month === nowPT.month &&
@@ -275,17 +313,40 @@ async function goLiveUpcoming(env) {
       );
     });
 
-    if (!match) {
-      console.log(`❌ Found streams, but none scheduled for today.`);
+    if (todays.length === 0) {
+      console.log("❌ Found broadcasts, but none scheduled for today (PT).");
+      console.log("Today PT:", nowPT);
+      console.log(
+        "First few items:",
+        data.items.slice(0, 5).map((x) => ({
+          title: x.snippet?.title,
+          id: x.id,
+          scheduledStartTime: x.snippet?.scheduledStartTime,
+          lifeCycleStatus: x.status?.lifeCycleStatus,
+          privacyStatus: x.status?.privacyStatus
+        }))
+      );
       return;
     }
 
+    // Prefer transitionable lifecycle states
+    const pref = ["testing", "ready", "upcoming", "live", "complete"];
+    const score = (it) => {
+      const s = (it.status?.lifeCycleStatus || "").toLowerCase();
+      const idx = pref.indexOf(s);
+      return idx === -1 ? 999 : idx;
+    };
+    todays.sort((a, b) => score(a) - score(b));
+
+    const match = todays[0];
     const broadcastId = match.id;
-    const title = match.snippet.title;
+    const title = match.snippet?.title;
 
-    console.log(`Found matching stream: ${title} (${broadcastId}). Sending Live Transition...`);
+    console.log(
+      `🎯 Selected: ${title} (${broadcastId}) lifeCycle=${match.status?.lifeCycleStatus} privacy=${match.status?.privacyStatus}`
+    );
 
-    // 4. Transition to Live
+    // Transition to Live
     const tr = await fetch(
       "https://youtube.googleapis.com/youtube/v3/liveBroadcasts/transition" +
         `?part=id,snippet,status` +
@@ -299,12 +360,18 @@ async function goLiveUpcoming(env) {
     const transition = await safeJson(tr);
 
     if (tr.status === 409) {
-       console.log(`⚠️ Transition returned 409 (Stream likely already live/starting).`);
-    } else {
-       console.log(`✅ GO LIVE COMMAND SENT: ${JSON.stringify(transition)}`);
+      console.log(`⚠️ Transition returned 409 (already live/starting or invalid state). Treating as non-fatal.`);
+      console.log(JSON.stringify(transition, null, 2));
+      return;
     }
 
-    return;
+    if (!tr.ok) {
+      console.log(`❌ Transition failed HTTP ${tr.status}`);
+      console.log(JSON.stringify(transition, null, 2));
+      return;
+    }
+
+    console.log(`✅ GO LIVE COMMAND SENT: ${JSON.stringify(transition)}`);
   } catch (err) {
     console.log("❌ goLiveUpcoming error: " + err.toString());
   }
@@ -321,19 +388,21 @@ function getPacificTimeParts(date) {
     day: "numeric",
     hour: "numeric",
     minute: "numeric",
-    hour12: false 
+    hour12: false
   });
 
   const parts = formatter.formatToParts(date);
   const p = {};
-  parts.forEach(({ type, value }) => { p[type] = value; });
-  
+  parts.forEach(({ type, value }) => {
+    p[type] = value;
+  });
+
   return {
     year: p.year,
     month: p.month,
     day: p.day,
-    hour: p.hour, 
-    minute: p.minute.padStart(2, '0')
+    hour: p.hour,
+    minute: p.minute.padStart(2, "0")
   };
 }
 
@@ -365,10 +434,7 @@ async function findVideoInUploads(apiKey, targetTitle, attempts = 15) {
       key: apiKey
     });
 
-    const res = await fetch(
-      `https://www.googleapis.com/youtube/v3/playlistItems?${params}`
-    );
-
+    const res = await fetch(`https://www.googleapis.com/youtube/v3/playlistItems?${params}`);
     const json = await safeJson(res);
 
     if (json.items) {
@@ -378,31 +444,28 @@ async function findVideoInUploads(apiKey, targetTitle, attempts = 15) {
         }
       }
     }
-    if (i < attempts) await new Promise(r => setTimeout(r, 2000));
+    if (i < attempts) await new Promise((r) => setTimeout(r, 2000));
   }
   return null;
 }
 
 async function updateVideoCategory(accessToken, videoId, title, description) {
   try {
-    const res = await fetch(
-      "https://youtube.googleapis.com/youtube/v3/videos?part=snippet",
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          id: videoId,
-          snippet: {
-            title,
-            description,
-            categoryId: CATEGORY_ID
-          }
-        })
-      }
-    );
+    const res = await fetch("https://youtube.googleapis.com/youtube/v3/videos?part=snippet", {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        id: videoId,
+        snippet: {
+          title,
+          description,
+          categoryId: CATEGORY_ID
+        }
+      })
+    });
     const json = await safeJson(res);
     return res.ok ? "Category OK" : `❌ Category PATCH failed: ${JSON.stringify(json)}`;
   } catch (err) {
@@ -414,11 +477,11 @@ async function uploadThumbnail(accessToken, videoId) {
   try {
     const cacheBuster = `?t=${Date.now()}`;
     const img = await fetch(THUMBNAIL_URL + cacheBuster, {
-      cf: { cacheTtl: 0 } 
+      cf: { cacheTtl: 0 }
     });
-    
+
     if (!img.ok) {
-       return `❌ Failed to fetch source image (HTTP ${img.status})`;
+      return `❌ Failed to fetch source image (HTTP ${img.status})`;
     }
 
     const imgBuf = await img.arrayBuffer();
@@ -450,4 +513,12 @@ async function uploadThumbnail(accessToken, videoId) {
   } catch (err) {
     return `❌ Thumb error: ${err.toString()}`;
   }
+}
+
+/********************************************************************
+  SMALL UTILS
+********************************************************************/
+function pad2(n) {
+  const s = String(n);
+  return s.length === 1 ? `0${s}` : s;
 }
