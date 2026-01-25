@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Scheduler + Go-Live Worker (Merged Fix)
+  YouTube Scheduler + Go-Live Worker
   --------------------------------------------------
   Key fix:
     - liveBroadcasts.list cannot use BOTH mine=true and broadcastStatus=...
