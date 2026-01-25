@@ -1,5 +1,5 @@
 /********************************************************************
-  CPC YouTube Scheduler + Go-Live Worker (Merged Fix)
+  YouTube Scheduler + Go-Live Worker (Merged Fix)
   --------------------------------------------------
   Key fix:
     - liveBroadcasts.list cannot use BOTH mine=true and broadcastStatus=...
