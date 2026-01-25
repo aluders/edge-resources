@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Redirect Worker (simple-v7)
+  YouTube Redirect Worker
   + Developer Mode gate for ?flags
   --------------------------------------------------
   Dev Mode behavior:
