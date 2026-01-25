@@ -101,25 +101,27 @@ foreach ($file in $files) {
     # --- STEP B: LOOK FOR EXTERNAL SUBS ---
     $subDir = Join-Path -Path $file.DirectoryName -ChildPath "Subs"
     $specificSubFolder = Join-Path -Path $subDir -ChildPath $file.BaseName
-    
+
     $srtArgs = @()
-    
+
     if (Test-Path $specificSubFolder) {
-        # Loop through ALL .srt files found
-        $srtFiles = Get-ChildItem -Path $specificSubFolder -Filter *.srt
-        
+        # Loop through ALL .srt files found, but FORCE deterministic ordering:
+        # non-SDH first, SDH second (then by name)
+        $srtFiles = Get-ChildItem -Path $specificSubFolder -Filter *.srt |
+            Sort-Object @{ Expression = { $_.Name -match 'SDH' }; Ascending = $true }, Name
+
         foreach ($srt in $srtFiles) {
             Write-Host "  + Found Subtitle: $($srt.Name)" -ForegroundColor Cyan
-            
-            # Use 0:eng for language
+
+            # Use 0:eng for language (track 0 of the upcoming subtitle file)
             $srtArgs += "--language"
-            $srtArgs += "0:eng" 
-            
+            $srtArgs += "0:eng"
+
             # Check for SDH
             if ($srt.Name -match "SDH") {
                 Write-Host "    (Marking as SDH)" -ForegroundColor DarkCyan
-                
-                # FIXED: correct mkvmerge option name
+
+                # Correct mkvmerge option name
                 $srtArgs += "--hearing-impaired-flag"
                 $srtArgs += "0:1"
             }
@@ -137,9 +139,9 @@ foreach ($file in $files) {
     # Check for Success (0) or Warning (1)
     if ($LASTEXITCODE -le 1) {
         if ($LASTEXITCODE -eq 1) {
-             Write-Host "  Success (with Warnings): $outputFile" -ForegroundColor Green
+            Write-Host "  Success (with Warnings): $outputFile" -ForegroundColor Green
         } else {
-             Write-Host "  Success: $outputFile" -ForegroundColor Green
+            Write-Host "  Success: $outputFile" -ForegroundColor Green
         }
     } else {
         Write-Host "  Failed to convert (Exit Code $LASTEXITCODE)" -ForegroundColor Red
