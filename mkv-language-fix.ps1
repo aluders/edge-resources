@@ -8,7 +8,7 @@ param(
 $mkvmergePath = "C:\Program Files\MKVToolNix\mkvmerge.exe"
 # ---------------------
 
-# 1. SETUP: Verify mkvmerge exists (skip check if just cleaning)
+# 1. SETUP
 if (-not $Clean) {
     if (-not (Test-Path $mkvmergePath)) {
         if (Get-Command "mkvmerge" -ErrorAction SilentlyContinue) {
@@ -26,8 +26,6 @@ if (-not (Test-Path $Path)) {
 }
 
 Write-Host "Scanning folder: $Path" -ForegroundColor Cyan
-
-# --- CHANGED: Filter for both .mp4 and .mkv ---
 $files = Get-ChildItem -Path $Path -Recurse -Include *.mp4, *.mkv | Sort-Object FullName
 
 if ($files.Count -eq 0) {
@@ -51,40 +49,32 @@ else {
 foreach ($file in $files) {
     # --- DETERMINE OUTPUT FILENAME ---
     if ($file.Extension -eq ".mp4") {
-        # MP4 -> MKV
         $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($file.BaseName + ".mkv")
     }
     elseif ($file.Extension -eq ".mkv") {
-        # Skip if this is already an output file (prevents processing .en.mkv files)
-        if ($file.Name -like "*.en.mkv") {
-            Write-Host "Skipping output file: $($file.Name)" -ForegroundColor DarkGray
-            continue
-        }
-        # MKV -> .en.MKV
+        if ($file.Name -like "*.en.mkv") { continue }
         $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($file.BaseName + ".en.mkv")
     }
 
     # --- CLEAN LOGIC ---
     if ($Clean) {
         if (Test-Path $outputFile) {
-            # Double check we aren't deleting the output file by mistake
             if ($file.FullName -eq $outputFile) {
                 Write-Host "Safety Check: Source and Output are identical. Skipping delete." -ForegroundColor Red
             } else {
                 Remove-Item $file.FullName -Force
-                Write-Host "Deleted source: $($file.Name) (Processed version verified)" -ForegroundColor Green
+                Write-Host "Deleted source: $($file.Name)" -ForegroundColor Green
             }
         } else {
             Write-Host "Skipped delete: $($file.Name) (No processed version found)" -ForegroundColor Red
         }
-
         if ($Test) { break }
         continue
     }
 
-    # --- CONVERSION LOGIC ---
     Write-Host "Processing: $($file.Name)" -ForegroundColor Yellow
 
+    # --- STEP A: INSPECT VIDEO FILE ---
     try {
         $jsonOutput = & $mkvmergePath -J $file.FullName
         $fileInfo = $jsonOutput | ConvertFrom-Json
@@ -94,28 +84,68 @@ foreach ($file in $files) {
         continue
     }
 
-    $langArgs = @()
+    $videoArgs = @()
     if ($fileInfo.tracks) {
         foreach ($track in $fileInfo.tracks) {
             if ($track.type -eq "video") {
-                $langArgs += "--language"
-                $langArgs += "$($track.id):eng"
+                $videoArgs += "--language"
+                $videoArgs += "$($track.id):eng"
             }
             elseif ($track.type -eq "audio") {
-                $langArgs += "--language"
-                $langArgs += "$($track.id):eng"
+                $videoArgs += "--language"
+                $videoArgs += "$($track.id):eng"
             }
         }
     }
 
-    $argumentList = @("-o", "$outputFile") + $langArgs + @("$($file.FullName)")
+    # --- STEP B: LOOK FOR EXTERNAL SUBS ---
+    $subDir = Join-Path -Path $file.DirectoryName -ChildPath "Subs"
+    $specificSubFolder = Join-Path -Path $subDir -ChildPath $file.BaseName
+    
+    $srtArgs = @()
+    
+    if (Test-Path $specificSubFolder) {
+        # Loop through ALL .srt files found
+        $srtFiles = Get-ChildItem -Path $specificSubFolder -Filter *.srt
+        
+        foreach ($srt in $srtFiles) {
+            Write-Host "  + Found Subtitle: $($srt.Name)" -ForegroundColor Cyan
+            
+            # Use 0:eng for language
+            $srtArgs += "--language"
+            $srtArgs += "0:eng" 
+            
+            # Check for SDH
+            if ($srt.Name -match "SDH") {
+                Write-Host "    (Marking as SDH)" -ForegroundColor DarkCyan
+                
+                # FIXED: correct mkvmerge option name
+                $srtArgs += "--hearing-impaired-flag"
+                $srtArgs += "0:1"
+            }
 
-    & $mkvmergePath $argumentList | Out-Null
+            $srtArgs += "$($srt.FullName)"
+        }
+    }
 
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  Success: $outputFile" -ForegroundColor Green
+    # --- STEP C: EXECUTE MERGE ---
+    $argumentList = @("-o", "$outputFile") + $videoArgs + @("$($file.FullName)") + $srtArgs
+
+    # Run command and capture output
+    $mergeResult = & $mkvmergePath $argumentList 2>&1
+
+    # Check for Success (0) or Warning (1)
+    if ($LASTEXITCODE -le 1) {
+        if ($LASTEXITCODE -eq 1) {
+             Write-Host "  Success (with Warnings): $outputFile" -ForegroundColor Green
+        } else {
+             Write-Host "  Success: $outputFile" -ForegroundColor Green
+        }
     } else {
-        Write-Host "  Failed to convert." -ForegroundColor Red
+        Write-Host "  Failed to convert (Exit Code $LASTEXITCODE)" -ForegroundColor Red
+        Write-Host "  --- ERROR OUTPUT ---" -ForegroundColor Red
+        $mergeResult | Select-Object -Last 5 | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+        Write-Host "  --------------------" -ForegroundColor Red
     }
 
     if ($Test) {
