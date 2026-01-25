@@ -8,6 +8,10 @@
     - Use event.scheduledTime for cron time (more accurate window checks)
     - Better logs + safe handling of 409 / non-OK responses
     - Keep existing scheduleNextSunday DST logic intact
+
+  Dev Mode:
+    - When DEVELOPER_MODE is "OFF": all ?flag endpoints are disabled (cron-only)
+    - When DEVELOPER_MODE is "ON" : ?keys, ?test, ?schedule, ?golive are enabled
 ********************************************************************/
 
 /********************************************************************
@@ -25,6 +29,17 @@ const GO_LIVE_MIN_END = 35;   // Stop trying at 10:35
 const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
 const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29"; // Nonprofits & Activism
+
+/********************************************************************
+  DEVELOPER MODE
+  - "OFF" = cron-only. All ?flag endpoints disabled.
+  - "ON"  = enables ?keys, ?test, ?schedule, ?golive.
+********************************************************************/
+const DEVELOPER_MODE = "OFF"; // <-- set to "ON" temporarily when you need manual endpoints
+
+function devModeOn() {
+  return String(DEVELOPER_MODE).trim().toUpperCase() === "ON";
+}
 
 /********************************************************************
   SAFE JSON PARSER
@@ -89,6 +104,20 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // ------------------------------------------------------------
+    // DEV MODE GATE: disable all ?flag endpoints unless ON
+    // ------------------------------------------------------------
+    const hasAnyFlags =
+      url.searchParams.has("keys") ||
+      url.searchParams.has("test") ||
+      url.searchParams.has("schedule") ||
+      url.searchParams.has("golive");
+
+    if (hasAnyFlags && !devModeOn()) {
+      // 404 makes it look like the endpoints do not exist
+      return new Response("Not Found", { status: 404 });
+    }
 
     /**************************************
      HELPER: FIND STREAM IDs (?keys)
