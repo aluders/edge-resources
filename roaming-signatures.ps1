@@ -1,5 +1,5 @@
 # Disable-OutlookRoamingSignatures.ps1
-# Usage: irm ://your-url.com | iex
+# Usage: irm signatures.vcc.net | iex
 
 $valueNames = @(
     "DisableRoamingSignatures",
