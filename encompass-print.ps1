@@ -8,9 +8,11 @@ if (-not $isAdmin) {
     return
 }
 
-# Configuration (FIXED PATH)
-$regPath = "Registry::HKEY_CURRENT_CONFIG\Software\Encompass"
 $groupName = "Everyone"
+
+# IMPORTANT:
+# Don't ACL HKCC directly. Use its backing key under HKLM.
+$regPath = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Hardware Profiles\Current\Software\Encompass"
 
 # Header
 Write-Host "============================================" -ForegroundColor Cyan
@@ -18,7 +20,7 @@ Write-Host "      Encompass Printer Registry Fix        " -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 3. Check and Create Registry Key
+# 2. Check and Create Registry Key
 Write-Host "Checking Registry Key..." -NoNewline
 
 if (-not (Test-Path -LiteralPath $regPath)) {
@@ -35,19 +37,16 @@ if (-not (Test-Path -LiteralPath $regPath)) {
     Write-Host " [EXISTS]" -ForegroundColor Green
 }
 
-# 4. Apply Permissions (Everyone -> Full Control)
+# 3. Apply Permissions (Everyone -> Full Control)
 Write-Host "Setting 'Full Control' for '$groupName'..." -NoNewline
 
 try {
-    # Ensure the key exists before ACL work
-    if (-not (Test-Path -LiteralPath $regPath)) {
-        throw "Registry key was not found at '$regPath' even after creation."
-    }
+    # (Optional) debug line - uncomment if needed
+    # Write-Host "`nDEBUG: Using path: $regPath" -ForegroundColor DarkGray
 
     $acl = Get-Acl -LiteralPath $regPath -ErrorAction Stop
 
-    # Create the new rule: Everyone, FullControl, Allow
-    $accessRule = New-Object System.Security.AccessControl.RegistryAccessRule(
+    $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
         $groupName,
         "FullControl",
         "ContainerInherit,ObjectInherit",
@@ -55,8 +54,22 @@ try {
         "Allow"
     )
 
-    # Set (replace) the rule so we don't keep stacking duplicates
-    $acl.SetAccessRule($accessRule)
+    # Set (replace) rule so it doesn't duplicate endlessly
+    $acl.SetAccessRule($rule)
 
-    # Apply the modified ACL back to the registry
-    Set-Acl -LiteralPath $regPath -AclOb
+    Set-Acl -LiteralPath $regPath -AclObject $acl -ErrorAction Stop
+
+    Write-Host " [OK]" -ForegroundColor Green
+}
+catch {
+    Write-Host " [FAILED]" -ForegroundColor Red
+    Write-Host "Error setting permissions: $($_.Exception.Message)" -ForegroundColor Red
+    return
+}
+
+# Footer
+Write-Host ""
+Write-Host "--------------------------------------------" -ForegroundColor Cyan
+Write-Host "Registry updated successfully." -ForegroundColor Green
+Write-Host "IMPORTANT: Please RESTART the computer for changes to take effect." -ForegroundColor Yellow
+Write-Host "--------------------------------------------" -ForegroundColor Cyan
