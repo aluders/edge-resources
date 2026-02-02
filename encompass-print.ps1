@@ -1,74 +1,70 @@
 # 1. Check for Administrator privileges
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if (-not $isAdmin) {
+if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "ERROR: Administrator privileges required." -ForegroundColor Red
-    Write-Host "Please close this window, right-click PowerShell, select 'Run as Administrator', and run the command again." -ForegroundColor Yellow
     return
 }
 
-$subKeyPath = "Software\Encompass"
-$groupName  = "Everyone"
+# Configuration
+$RegKeyPath = "Software\Encompass" # Path relative to HKEY_CURRENT_CONFIG
+$UserGroup = "Everyone"
 
-# Header
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "      Encompass Printer Registry Fix        " -ForegroundColor Cyan
+Write-Host "      Encompass Printer Registry Fix (v2)   " -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host ""
 
-# 2. Create/Open the key in HKCC using .NET (reliable for HKEY_CURRENT_CONFIG)
-Write-Host "Checking Registry Key..." -NoNewline
-try {
-    $base = [Microsoft.Win32.Registry]::CurrentConfig
-    $key  = $base.CreateSubKey($subKeyPath)   # creates if missing, opens if exists
-    if ($null -eq $key) { throw "Failed to open or create HKCC:\$subKeyPath" }
+# 2. Ensure the key exists using .NET (Avoids PSDrive issues)
+$configKey = [Microsoft.Win32.Registry]::CurrentConfig
+$encompassKey = $configKey.OpenSubKey($RegKeyPath, $true)
 
-    Write-Host " [OK]" -ForegroundColor Green
+if ($null -eq $encompassKey) {
+    Write-Host "Creating Encompass key..." -NoNewline
+    try {
+        $encompassKey = $configKey.CreateSubKey($RegKeyPath)
+        Write-Host " [OK]" -ForegroundColor Green
+    } catch {
+        Write-Host " [FAILED]" -ForegroundColor Red
+        Write-Output $_.Exception.Message
+        return
+    }
+} else {
+    Write-Host "Encompass key already exists." -ForegroundColor Gray
 }
-catch {
-    Write-Host " [FAILED]" -ForegroundColor Red
-    Write-Host "Error creating/opening key: $($_.Exception.Message)" -ForegroundColor Red
-    return
-}
 
-# 3. Apply Permissions (Everyone -> Full Control) using RegistrySecurity
-Write-Host "Setting 'Full Control' for '$groupName'..." -NoNewline
+# 3. Apply Permissions using RegistrySecurity object
+Write-Host "Applying 'Full Control' for $UserGroup..." -NoNewline
+
 try {
-    # Use SID directly (more reliable than name resolution)
-    $everyoneSid = New-Object System.Security.Principal.SecurityIdentifier(
-        [System.Security.Principal.WellKnownSidType]::WorldSid,
-        $null
-    )
+    # Get the existing security settings
+    $acl = $encompassKey.GetAccessControl()
 
-    $sec = $key.GetAccessControl()
-
+    # Define the "Full Control" rule for "Everyone"
+    # RegistryRights: FullControl
+    # InheritanceFlags: ContainerInherit + ObjectInherit (applies to subkeys/values)
+    # PropagationFlags: None
+    # AccessControlType: Allow
     $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
-        $everyoneSid,
-        "FullControl",
-        "ContainerInherit,ObjectInherit",
-        "None",
+        $UserGroup, 
+        "FullControl", 
+        "ContainerInherit, ObjectInherit", 
+        "None", 
         "Allow"
     )
 
-    # Replace/Set rule (prevents duplicates on repeated runs)
-    $sec.SetAccessRule($rule)
-
-    $key.SetAccessControl($sec)
+    # Set the rule and apply it
+    $acl.SetAccessRule($rule)
+    $encompassKey.SetAccessControl($acl)
+    
     Write-Host " [OK]" -ForegroundColor Green
 }
 catch {
     Write-Host " [FAILED]" -ForegroundColor Red
-    Write-Host "Error setting permissions: $($_.Exception.Message)" -ForegroundColor Red
-    return
+    Write-Output $_.Exception.Message
 }
 finally {
-    if ($key) { $key.Close() }
+    if ($encompassKey) { $encompassKey.Close() }
 }
 
-# Footer
 Write-Host ""
-Write-Host "--------------------------------------------" -ForegroundColor Cyan
-Write-Host "Registry updated successfully." -ForegroundColor Green
-Write-Host "IMPORTANT: Please RESTART the computer for changes to take effect." -ForegroundColor Yellow
-Write-Host "--------------------------------------------" -ForegroundColor Cyan
+Write-Host "Done! Please RESTART the computer." -ForegroundColor Yellow
+Write-Host "--------------------------------------------"
