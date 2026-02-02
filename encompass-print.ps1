@@ -5,7 +5,12 @@ $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::A
 if (-not $isAdmin) {
     Write-Host "ERROR: Administrator privileges required." -ForegroundColor Red
     Write-Host "Please close this window, right-click PowerShell, select 'Run as Administrator', and run the command again." -ForegroundColor Yellow
-    return # Stop execution
+    return
+}
+
+# 2. Ensure HKCC Drive is mapped
+if (-not (Get-PSDrive -Name HKCC -ErrorAction SilentlyContinue)) {
+    New-PSDrive -Name HKCC -PSProvider Registry -Root HKEY_CURRENT_CONFIG | Out-Null
 }
 
 # Configuration
@@ -18,7 +23,7 @@ Write-Host "      Encompass Printer Registry Fix        " -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 2. Check and Create Registry Key
+# 3. Check and Create Registry Key
 Write-Host "Checking Registry Key..." -NoNewline
 
 if (-not (Test-Path $regPath)) {
@@ -35,7 +40,7 @@ if (-not (Test-Path $regPath)) {
     Write-Host " [EXISTS]" -ForegroundColor Green
 }
 
-# 3. Apply Permissions (Everyone -> Full Control)
+# 4. Apply Permissions (Everyone -> Full Control)
 Write-Host "Setting 'Full Control' for '$groupName'..." -NoNewline
 
 try {
