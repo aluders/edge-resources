@@ -8,11 +8,8 @@ if (-not $isAdmin) {
     return
 }
 
-$groupName = "Everyone"
-
-# IMPORTANT:
-# Don't ACL HKCC directly. Use its backing key under HKLM.
-$regPath = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Hardware Profiles\Current\Software\Encompass"
+$subKeyPath = "Software\Encompass"
+$groupName  = "Everyone"
 
 # Header
 Write-Host "============================================" -ForegroundColor Cyan
@@ -20,51 +17,53 @@ Write-Host "      Encompass Printer Registry Fix        " -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 2. Check and Create Registry Key
+# 2. Create/Open the key in HKCC using .NET (reliable for HKEY_CURRENT_CONFIG)
 Write-Host "Checking Registry Key..." -NoNewline
+try {
+    $base = [Microsoft.Win32.Registry]::CurrentConfig
+    $key  = $base.CreateSubKey($subKeyPath)   # creates if missing, opens if exists
+    if ($null -eq $key) { throw "Failed to open or create HKCC:\$subKeyPath" }
 
-if (-not (Test-Path -LiteralPath $regPath)) {
-    try {
-        New-Item -Path $regPath -Force -ErrorAction Stop | Out-Null
-        Write-Host " [CREATED]" -ForegroundColor Yellow
-    }
-    catch {
-        Write-Host " [FAILED]" -ForegroundColor Red
-        Write-Host "Error creating key: $($_.Exception.Message)" -ForegroundColor Red
-        return
-    }
-} else {
-    Write-Host " [EXISTS]" -ForegroundColor Green
+    Write-Host " [OK]" -ForegroundColor Green
+}
+catch {
+    Write-Host " [FAILED]" -ForegroundColor Red
+    Write-Host "Error creating/opening key: $($_.Exception.Message)" -ForegroundColor Red
+    return
 }
 
-# 3. Apply Permissions (Everyone -> Full Control)
+# 3. Apply Permissions (Everyone -> Full Control) using RegistrySecurity
 Write-Host "Setting 'Full Control' for '$groupName'..." -NoNewline
-
 try {
-    # (Optional) debug line - uncomment if needed
-    # Write-Host "`nDEBUG: Using path: $regPath" -ForegroundColor DarkGray
+    # Use SID directly (more reliable than name resolution)
+    $everyoneSid = New-Object System.Security.Principal.SecurityIdentifier(
+        [System.Security.Principal.WellKnownSidType]::WorldSid,
+        $null
+    )
 
-    $acl = Get-Acl -LiteralPath $regPath -ErrorAction Stop
+    $sec = $key.GetAccessControl()
 
     $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
-        $groupName,
+        $everyoneSid,
         "FullControl",
         "ContainerInherit,ObjectInherit",
         "None",
         "Allow"
     )
 
-    # Set (replace) rule so it doesn't duplicate endlessly
-    $acl.SetAccessRule($rule)
+    # Replace/Set rule (prevents duplicates on repeated runs)
+    $sec.SetAccessRule($rule)
 
-    Set-Acl -LiteralPath $regPath -AclObject $acl -ErrorAction Stop
-
+    $key.SetAccessControl($sec)
     Write-Host " [OK]" -ForegroundColor Green
 }
 catch {
     Write-Host " [FAILED]" -ForegroundColor Red
     Write-Host "Error setting permissions: $($_.Exception.Message)" -ForegroundColor Red
     return
+}
+finally {
+    if ($key) { $key.Close() }
 }
 
 # Footer
