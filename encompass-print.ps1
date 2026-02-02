@@ -8,13 +8,8 @@ if (-not $isAdmin) {
     return
 }
 
-# 2. Ensure HKCC Drive is mapped
-if (-not (Get-PSDrive -Name HKCC -ErrorAction SilentlyContinue)) {
-    New-PSDrive -Name HKCC -PSProvider Registry -Root HKEY_CURRENT_CONFIG | Out-Null
-}
-
-# Configuration
-$regPath = "HKCC:\Software\Encompass"
+# Configuration (NO HKCC: drive needed)
+$regPath   = "Registry::HKEY_CURRENT_CONFIG\Software\Encompass"
 $groupName = "Everyone"
 
 # Header
@@ -23,10 +18,10 @@ Write-Host "      Encompass Printer Registry Fix        " -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 3. Check and Create Registry Key
+# 2. Check and Create Registry Key
 Write-Host "Checking Registry Key..." -NoNewline
 
-if (-not (Test-Path $regPath)) {
+if (-not (Test-Path -LiteralPath $regPath)) {
     try {
         New-Item -Path $regPath -Force -ErrorAction Stop | Out-Null
         Write-Host " [CREATED]" -ForegroundColor Yellow
@@ -40,23 +35,24 @@ if (-not (Test-Path $regPath)) {
     Write-Host " [EXISTS]" -ForegroundColor Green
 }
 
-# 4. Apply Permissions (Everyone -> Full Control)
+# 3. Apply Permissions (Everyone -> Full Control)
 Write-Host "Setting 'Full Control' for '$groupName'..." -NoNewline
 
 try {
-    # Get current Access Control List (ACL)
-    $acl = Get-Acl -Path $regPath
-    
-    # Create the new rule: Everyone, FullControl, Allow
-    $permission = "$groupName","FullControl","Allow"
-    $accessRule = New-Object System.Security.AccessControl.RegistryAccessRule $permission
-    
-    # Add the rule to the ACL object
-    $acl.AddAccessRule($accessRule)
-    
-    # Apply the modified ACL back to the registry
-    Set-Acl -Path $regPath -AclObject $acl -ErrorAction Stop
-    
+    $acl = Get-Acl -LiteralPath $regPath
+
+    # Everyone, FullControl, Allow
+    $accessRule = New-Object System.Security.AccessControl.RegistryAccessRule(
+        $groupName,
+        "FullControl",
+        "ContainerInherit,ObjectInherit",
+        "None",
+        "Allow"
+    )
+
+    $acl.SetAccessRule($accessRule)
+    Set-Acl -LiteralPath $regPath -AclObject $acl -ErrorAction Stop
+
     Write-Host " [OK]" -ForegroundColor Green
 }
 catch {
@@ -65,7 +61,7 @@ catch {
     return
 }
 
-# Footer & Restart Prompt
+# Footer
 Write-Host ""
 Write-Host "--------------------------------------------" -ForegroundColor Cyan
 Write-Host "Registry updated successfully." -ForegroundColor Green
