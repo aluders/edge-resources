@@ -8,7 +8,7 @@ if (-not $isAdmin) {
     return
 }
 
-# Configuration (NO HKCC: drive needed)
+# Configuration (USE REGISTRY PROVIDER PATH)
 $regPath   = "Registry::HKEY_CURRENT_CONFIG\Software\Encompass"
 $groupName = "Everyone"
 
@@ -35,14 +35,20 @@ if (-not (Test-Path -LiteralPath $regPath)) {
     Write-Host " [EXISTS]" -ForegroundColor Green
 }
 
+# Safety: confirm it actually exists before ACL work
+if (-not (Test-Path -LiteralPath $regPath)) {
+    Write-Host " [FAILED]" -ForegroundColor Red
+    Write-Host "Key still not found after creation. Aborting." -ForegroundColor Red
+    return
+}
+
 # 3. Apply Permissions (Everyone -> Full Control)
 Write-Host "Setting 'Full Control' for '$groupName'..." -NoNewline
 
 try {
     $acl = Get-Acl -LiteralPath $regPath
 
-    # Everyone, FullControl, Allow
-    $accessRule = New-Object System.Security.AccessControl.RegistryAccessRule(
+    $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
         $groupName,
         "FullControl",
         "ContainerInherit,ObjectInherit",
@@ -50,7 +56,9 @@ try {
         "Allow"
     )
 
-    $acl.SetAccessRule($accessRule)
+    # Set (replace) rather than endlessly adding duplicates
+    $acl.SetAccessRule($rule)
+
     Set-Acl -LiteralPath $regPath -AclObject $acl -ErrorAction Stop
 
     Write-Host " [OK]" -ForegroundColor Green
