@@ -6,6 +6,7 @@
 # Usage: backblaze.sh <APP_ID> <APP_KEY> <BUCKET_ID> <LOCAL_FILE_PATH>
 # Example: backblaze.sh 0000 786ab2d4e74301d0 46df5f1b1744f265994b051f /path/to/file.iso
 # No spaces in filename/path is helpful
+# Likewise, easiest to run from file location
 
 # Initialize variables from positional arguments
 APP_ID="$1"
