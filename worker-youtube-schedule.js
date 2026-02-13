@@ -27,6 +27,7 @@ const GO_LIVE_MIN_END = 35;
 const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
 const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29";
+const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616";
 
 const DEVELOPER_MODE = "OFF";
 
@@ -469,10 +470,10 @@ async function scheduleNextSunday(env) {
 
     // Bind stream
     logSubSection("Binding Stream");
-    logKeyValue("Stream ID", env.YT_STREAM_ID);
+    logKeyValue("Stream ID", YT_STREAM_ID);
     
     const bindRes = await fetch(
-      `https://youtube.googleapis.com/youtube/v3/liveBroadcasts/bind?id=${broadcastId}&part=id,contentDetails&streamId=${env.YT_STREAM_ID}`,
+      `https://youtube.googleapis.com/youtube/v3/liveBroadcasts/bind?id=${broadcastId}&part=id,contentDetails&streamId=${YT_STREAM_ID}`,
       {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` }
