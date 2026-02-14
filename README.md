@@ -19,7 +19,7 @@ This repository contains various resources categorized by their primary function
 * **Home Assistant:** YAML configurations and automation logic for smart home integration via Cloudflare Tunnels.
 
 ### 🔌 Networking & Infrastructure
-* **Ubiquiti / EdgeRouter:** Configuration snippets and optimization scripts for EdgeOS (v3.0+) and UniFi environments.
-* **Network Utilities:** Tools for monitoring uptime (Uptime Kuma) and managing VPS instances (WireGuard, Mailcow).
+* **Ubiquiti / EdgeRouter:** Configuration snippets and optimization scripts for EdgeOS and UniFi environments.
+* **Network Utilities:** Tools for monitoring uptime and managing VPS instances (WireGuard, Mailcow).
 
 ---
