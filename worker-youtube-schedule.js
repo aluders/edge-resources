@@ -27,7 +27,7 @@ const GO_LIVE_MIN_END = 35;
 const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
 const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29";
-const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616";
+const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616"; // YouTube stream ID for binding
 
 const DEVELOPER_MODE = "OFF";
 
@@ -559,27 +559,9 @@ async function goLiveToday(env) {
       return "NOT_FOUND";
     }
 
-    logKeyValue("Total Broadcasts", data.items.length);
+    logKeyValue("Total Broadcasts Found", data.items.length);
     
-    // Log all broadcasts found
-    logSubSection("All Broadcasts");
-    data.items.forEach((item, idx) => {
-      const scheduledStr = item.snippet?.scheduledStartTime;
-      const scheduledPT = scheduledStr ? getPacificTimeParts(new Date(scheduledStr)) : null;
-      
-      console.log(`\n  [${idx + 1}] ${item.snippet?.title}`);
-      logKeyValue("    ID", item.id);
-      logKeyValue("    Scheduled (UTC)", scheduledStr || "N/A");
-      if (scheduledPT) {
-        logKeyValue("    Scheduled (PT)", `${scheduledPT.month}/${scheduledPT.day}/${scheduledPT.year} ${scheduledPT.hour}:${scheduledPT.minute}`);
-      }
-      logKeyValue("    State", item.status?.lifeCycleStatus || "unknown");
-      logKeyValue("    Privacy", item.status?.privacyStatus || "unknown");
-    });
-
-    // Filter for today's broadcasts
-    logSubSection("Filtering for Today");
-    
+    // Filter for today's broadcasts first
     const todaysBroadcasts = data.items.filter((item) => {
       const scheduledStr = item.snippet?.scheduledStartTime;
       if (!scheduledStr) return false;
@@ -595,15 +577,31 @@ async function goLiveToday(env) {
 
     logKeyValue("Today's Broadcasts", todaysBroadcasts.length);
     
+    // Only log detailed info for today's broadcasts
+    if (todaysBroadcasts.length > 0) {
+      logSubSection("Today's Broadcast Details");
+      todaysBroadcasts.forEach((item, idx) => {
+        const scheduledStr = item.snippet?.scheduledStartTime;
+        const scheduledPT = scheduledStr ? getPacificTimeParts(new Date(scheduledStr)) : null;
+        
+        console.log(`\n  [${idx + 1}] ${item.snippet?.title}`);
+        logKeyValue("    ID", item.id);
+        logKeyValue("    Scheduled (UTC)", scheduledStr || "N/A");
+        if (scheduledPT) {
+          logKeyValue("    Scheduled (PT)", `${scheduledPT.month}/${scheduledPT.day}/${scheduledPT.year} ${scheduledPT.hour}:${scheduledPT.minute}`);
+        }
+        logKeyValue("    State", item.status?.lifeCycleStatus || "unknown");
+        logKeyValue("    Privacy", item.status?.privacyStatus || "unknown");
+      });
+    }
+
+    // Filter for today's broadcasts
+    logSubSection("Selection Process");
+    
     if (todaysBroadcasts.length === 0) {
       console.log("❌ No broadcasts match today's date");
       return "NOT_FOUND";
     }
-
-    todaysBroadcasts.forEach((item, idx) => {
-      console.log(`\n  Match [${idx + 1}]: ${item.snippet?.title}`);
-      logKeyValue("    State", item.status?.lifeCycleStatus);
-    });
 
     // Check if any are already live
     logSubSection("Checking Current State");
