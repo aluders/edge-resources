@@ -4,9 +4,9 @@ A collection of utility scripts, configurations, and automation tools for IT inf
 
 ---
 
-## 📂 Repository Structure
+## 📂 Repository
 
-This repository contains various resources categorized by their primary function:
+This repository contains various resources. Some categories include...
 
 ### 🛠️ Automation & Scripting
 * **PowerShell / Bash:** Specialized scripts for remote IT management, including printer spooler resets, RDP connection checks, and system maintenance.
