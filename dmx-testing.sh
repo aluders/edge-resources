@@ -1,22 +1,20 @@
 #!/bin/bash
 
 # --- 1. DYNAMIC PATH SETUP ---
-# Automatically finds your home directory so it works on any Mac
-VENV_PATH="$HOME/Scripts/dmx_env"
-mkdir -p "$HOME/Scripts"
+# The environment is now hidden in your home directory: ~/.dmx_env
+VENV_PATH="$HOME/.dmx_env"
 
-# --- 2. ENVIRONMENT MANAGEMENT ---
+# --- 2. SILENT ENVIRONMENT MANAGEMENT ---
 if [ ! -d "$VENV_PATH" ]; then
-    echo "[*] Initializing environment in $VENV_PATH..."
+    echo "[*] First run: Creating hidden environment at $VENV_PATH..."
     python3 -m venv "$VENV_PATH"
 fi
 
-# Upgrade pip and install dependencies silently
+# Silently ensure pip and pyserial are current
 "$VENV_PATH/bin/python3" -m pip install --upgrade --quiet pip pyserial
 
 # --- 3. EXECUTE PYTHON ---
-# We use the '-' flag to tell Python to read the script from stdin
-# and the '$@' to pass through the --test flag.
+# We use the '-' flag so Python reads the code from the pipe while accepting --test
 "$VENV_PATH/bin/python3" - "$@" << 'EOF'
 import serial
 import serial.tools.list_ports
@@ -43,11 +41,11 @@ def find_ftdi():
 def send_dmx(ser, data):
     if TEST_MODE: return
     try:
-        # Precise timing for the FT232RL chipset
+        # Precise DMX512 timing for the FT232RL
         ser.break_condition = True
         time.sleep(0.0001) # Break
         ser.break_condition = False
-        time.sleep(0.00001) # MAB
+        time.sleep(0.00001) # Mark After Break (MAB)
         ser.write(bytearray([0x00] + data))
     except:
         pass
@@ -61,6 +59,7 @@ def dmx_loop(port):
         
         while running:
             if mode == "fade":
+                # Sine wave pulse: $$v = \lfloor (1 + \sin(t)) \times 127.5 \rfloor$$
                 val = int((1 + math.sin(counter)) * 127.5)
                 universe = [val] * 512
                 counter += 0.05
@@ -75,7 +74,7 @@ def dmx_loop(port):
                 time.sleep(0.06) 
 
             send_dmx(ser, universe)
-            time.sleep(0.04) # ~25Hz refresh rate
+            time.sleep(0.04)
         
         # --- EXIT FADE ---
         print("\n[*] Fading out universe...")
@@ -100,7 +99,7 @@ if __name__ == "__main__":
         print("\n[-] Error: FT232RL not found. (Use --test for virtual mode)")
         sys.exit(1)
     
-    # Non-daemon thread ensures the process waits for the fade-out to finish
+    # Non-daemon thread ensures the script waits for the fade-out to finish
     dmx_thread = threading.Thread(target=dmx_loop, args=(path,))
     dmx_thread.start()
     
@@ -118,7 +117,7 @@ if __name__ == "__main__":
     
     try:
         while running:
-            # Re-opening TTY for input allows keyboard reading during pipe
+            # Re-opening TTY allows keyboard input during a script pipe
             with open('/dev/tty', 'r') as tty:
                 sys.stdout.write("DMX Controller> ")
                 sys.stdout.flush()
@@ -144,6 +143,6 @@ if __name__ == "__main__":
     except (EOFError, KeyboardInterrupt):
         running = False
 
-    # Wait for the background thread to finish its fade and print messages
+    # Force the main process to wait until the fade thread finishes
     dmx_thread.join()
 EOF
