@@ -4,6 +4,7 @@
 TAUTULLI_IP="192.168.1.XXX" 
 TAUTULLI_PORT="8181"
 API_KEY="YOUR_API_KEY_HERE"
+# api key is under tautulli > settings > web interface > api
 
 VENV_DIR="$HOME/.plex_audit_venv"
 
