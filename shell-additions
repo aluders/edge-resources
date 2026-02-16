@@ -21,7 +21,7 @@ cat() {
 }
 
 # curl version (generally more reliable)
-wanip() {
+wancurl() {
   echo "IPv4 Address:"
   ipv4=$(curl -4 -s https://ipinfo.io/ip)
   if [[ -n "$ipv4" ]]; then
@@ -41,7 +41,7 @@ wanip() {
 }
 
 # dig version (dnsutils if not already installed)
-wanip() {
+wandig() {
   echo "IPv4 Address:"
   # query 1.1.1.1 directly
   ipv4=$(dig @1.1.1.1 -4 +short whoami.cloudflare. ch txt | tr -d '"')
