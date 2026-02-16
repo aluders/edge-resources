@@ -14,6 +14,7 @@ alias bat='bat --paging=never'
 alias ff='fastfetch'
 alias cleardns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
 alias ls="eza --icons=always"
+alias l="eza -lah --header --icons=always --group-directories-first"
 
 # ---- Functions ----
 curl() {
