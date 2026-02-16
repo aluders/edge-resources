@@ -4,8 +4,8 @@
 # Tautulli API Key Location: Settings > Web Interface > API
 # 
 # Usage:
-# plex_tools          # Current activity by default
-# plex_tools --users  # User list with the --users flag
+# tautulli.sh          # Current activity by default
+# tautulli.sh --users  # User list with the --users flag
 
 TAUTULLI_IP="192.168.1.XXX" 
 TAUTULLI_PORT="8181"
