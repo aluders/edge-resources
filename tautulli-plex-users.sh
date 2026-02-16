@@ -9,13 +9,12 @@ VENV_DIR="$HOME/.plex_audit_venv"
 
 # --- Visual Status Messages ---
 if [ ! -d "$VENV_DIR" ]; then
-    echo "Creating virtual environment on macOS..."
+    echo "Creating virtual environment in home directory..."
     python3 -m venv "$VENV_DIR"
 fi
 
 source "$VENV_DIR/bin/activate"
 
-# Keep the message, but hide the messy pip output
 echo "Checking environment and dependencies..."
 pip install --upgrade pip requests &> /dev/null
 
@@ -40,16 +39,20 @@ try:
 
     users = data['response']['data']
     
+    # Filter out IDs 0 and 1
+    filtered_users = [u for u in users if str(u.get('user_id')) not in ['0', '1']]
+    
     # Final Output
     print(f"\n{'PLEX USERNAME':<25} | {'EMAIL ADDRESS':<35} | {'ID'}")
     print("-" * 75)
 
-    for user in sorted(users, key=lambda x: (x.get('username') or "").lower()):
+    for user in sorted(filtered_users, key=lambda x: (x.get('username') or "").lower()):
         uname = user.get('username') or "N/A"
         email = user.get('email') or "No Email"
         uid = user.get('user_id', '???')
         print(f"{uname:<25} | {email:<35} | {uid}")
-    print("")
+    
+    print(f"\nTotal Shared Users: {len(filtered_users)}\n")
 
 except Exception as e:
     print(f"\nConnection failed: {e}")
