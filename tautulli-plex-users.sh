@@ -15,7 +15,7 @@ VENV_DIR="$HOME/.plex_audit_venv"
 
 # --- Network Check ---
 if ! ping -c 1 -t 1 "$TAUTULLI_IP" &> /dev/null; then
-    echo "Error: Tautulli at $TAUTULLI_IP is unreachable."
+    echo -e "\033[0;31mError: Tautulli at $TAUTULLI_IP is unreachable.\033[0m"
     exit 1
 fi
 
@@ -37,6 +37,15 @@ python3 - "$1" <<EOF
 import requests
 import sys
 
+# Color Codes
+CYAN = '\033[0;36m'
+GREEN = '\033[0;32m'
+YELLOW = '\033[1;33m'
+RED = '\033[0;31m'
+BLUE = '\033[0;34m'
+BOLD = '\033[1m'
+END = '\033[0m'
+
 mode = sys.argv[1] if len(sys.argv) > 1 else "activity"
 base_url = f"http://${TAUTULLI_IP}:${TAUTULLI_PORT}/api/v2"
 
@@ -47,7 +56,7 @@ def get_data(cmd):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"\nConnection failed: {e}")
+        print(f"\n{RED}Connection failed: {e}{END}")
         sys.exit(1)
 
 if mode == "--users":
@@ -56,23 +65,23 @@ if mode == "--users":
     users = data['response']['data']
     filtered_users = [u for u in users if str(u.get('user_id')) not in ['0', '1']]
     
-    print(f"\n{'PLEX USERNAME':<25} | {'EMAIL ADDRESS':<35} | {'ID'}")
+    print(f"\n{BOLD}{CYAN}{'PLEX USERNAME':<25} | {'EMAIL ADDRESS':<35} | {'ID'}{END}")
     print("-" * 75)
     for user in sorted(filtered_users, key=lambda x: (x.get('username') or "").lower()):
         uname = user.get('username') or "N/A"
         email = user.get('email') or "No Email"
         uid = user.get('user_id', '???')
-        print(f"{uname:<25} | {email:<35} | {uid}")
-    print(f"\nTotal Shared Users: {len(filtered_users)}\n")
+        print(f"{GREEN}{uname:<25}{END} | {email:<35} | {BLUE}{uid}{END}")
+    print(f"\n{BOLD}Total Shared Users: {len(filtered_users)}{END}\n")
 
 else:
-    # --- LIVE ACTIVITY MODE (Vertical List Format) ---
+    # --- LIVE ACTIVITY MODE ---
     data = get_data('get_activity')
     activity = data['response']['data']
     sessions = activity.get('sessions', [])
     stream_count = activity.get('stream_count', '0')
 
-    print(f"\n--- CURRENT PLEX ACTIVITY ({stream_count} Streams) ---")
+    print(f"\n{BOLD}{YELLOW}--- CURRENT PLEX ACTIVITY ({stream_count} Streams) ---{END}")
     
     if not sessions:
         print("No active streams at the moment.")
@@ -81,13 +90,17 @@ else:
             user = s.get('user', 'Unknown')
             title = s.get('full_title') if s.get('media_type') == 'movie' else f"{s.get('grandparent_title')} - {s.get('title')}"
             
-            print(f"\n[ {user.upper()} ]")
-            print(f"  Watching: {title}")
+            # Highlight Quality (Red for Transcode, Green for Direct)
+            decision = s.get('video_decision', 'Direct').title()
+            q_color = RED if "Transcode" in decision else GREEN
+            
+            print(f"\n{BOLD}{CYAN}[ {user.upper()} ]{END}")
+            print(f"  Watching: {YELLOW}{title}{END}")
             print(f"  Device:   {s.get('platform', 'Unknown')} ({s.get('product', 'Plex')})")
-            print(f"  Quality:  {s.get('video_decision', 'Direct').title()} - {s.get('video_resolution', '???')}")
-            print(f"  Network:  {s.get('ip_address', '0.0.0.0')} @ {float(s.get('bandwidth', 0)) / 1000:.1f} Mbps")
-            print(f"  Progress: {s.get('progress_percent', '0')}% complete")
-            print("-" * 40)
+            print(f"  Quality:  {q_color}{decision}{END} - {s.get('video_resolution', '???')}")
+            print(f"  Network:  {BLUE}{s.get('ip_address', '0.0.0.0')}{END} @ {BOLD}{float(s.get('bandwidth', 0)) / 1000:.1f} Mbps{END}")
+            print(f"  Progress: {GREEN}{s.get('progress_percent', '0')}%{END} complete")
+            print(f"{CYAN}" + "-" * 40 + f"{END}")
     print("")
 
 EOF
