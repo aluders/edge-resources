@@ -7,7 +7,9 @@ uvcdownloader.py
 2. Fetches firmware info from Ubiquiti.
 3. Downloads the last N versions for a specific platform.
 4. Verifies SHA256 checksums.
-5. FIX: Uses a Browser User-Agent to bypass HTTP 403 Forbidden errors.
+5. Uses a Browser User-Agent to bypass HTTP 403 Forbidden errors.
+6. Dynamic Platform Discovery via --list.
+7. Graceful Ctrl+C exit.
 """
 
 import urllib.request
@@ -20,6 +22,20 @@ import shutil
 
 # This User-Agent mimics a standard Chrome browser on macOS
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# Internal descriptions for known platforms
+KNOWN_PLATFORMS = {
+    "sav530q": "G5 Series (All), G4 Instant",
+    "s5l":     "G4 Series (Bullet/Dome/Pro/PTZ/Doorbell)",
+    "s2l":     "G3 Series (Flex/Bullet/Dome/Pro/Micro)",
+    "s3l":     "G3 Instant Only",
+    "cv22":    "AI Series (Bullet, Pro, DSLR)",
+    "cv2":     "AI 360 Only",
+    "mav":     "AI Theta, AI Theta Pro",
+    "a5s":     "Legacy G2 (Stick, Dome)",
+    "m2m":     "Legacy G2 (Micro)",
+    "p6l":     "G4 Instant (Alternative Platform)"
+}
 
 def fetch_data(url):
     try:
@@ -46,7 +62,6 @@ def download_file(url, save_path):
     try:
         print(f"  Downloading...", end="", flush=True)
         
-        # Create a request with the browser User-Agent
         req = urllib.request.Request(url)
         req.add_header('User-Agent', USER_AGENT)
         
@@ -59,150 +74,203 @@ def download_file(url, save_path):
         print(f"\n  Failed to download {url}: {e}")
         return False
 
-def interactive_mode():
-    print("="*60)
-    print(" UNIFI PROTECT FIRMWARE DOWNLOADER")
-    print("="*60)
-    print("\nPLATFORM CHEAT SHEET:")
-    print(f"  {'PLATFORM':<12} {'SERIES':<15} {'MODELS'}")
-    print("-" * 60)
-    print(f"  {'sav530q':<12} {'G5 & G4 Inst':<15} G5 (All Models), G4 Instant")
-    print(f"  {'s5l':<12} {'G4 Series':<15} G4 Bullet/Dome/Pro/PTZ/Doorbell")
-    print(f"  {'s2l':<12} {'G3 Series':<15} G3 Flex/Bullet/Dome/Pro/Micro")
-    print(f"  {'s3l':<12} {'G3 Instant':<15} G3 Instant Only")
-    print(f"  {'cv22':<12} {'AI Series':<15} AI Bullet, AI Pro, AI DSLR")
-    print(f"  {'cv2':<12} {'AI 360':<15} AI 360 Only")
-    print(f"  {'mav':<12} {'Theta':<15} AI Theta, AI Theta Pro")
-    print("-" * 60)
-
-    # 1. Get Platform
-    while True:
-        platform_input = input("\nEnter Platform (e.g., sav530q): ").strip()
-        if platform_input:
-            platform = platform_input
-            break
-        print("Error: Platform is required.")
-
-    # 2. Get Count
-    while True:
-        count_input = input("Number of versions to download [default: 30]: ").strip()
-        if not count_input:
-            count = 30
-            break
-        if count_input.isdigit():
-            count = int(count_input)
-            break
-        print("Error: Please enter a valid number.")
-
-    # 3. Get Output Directory
-    output_input = input("Output Directory [default: ./]: ").strip()
+def discover_platforms():
+    """Fetches the latest firmware for ALL devices to discover unique platforms."""
+    print("Contacting Ubiquiti API to discover platforms...")
     
-    if output_input:
-        output_base = os.path.expanduser(output_input)
-    else:
-        output_base = "."
+    # We fetch the 'latest' endpoint which returns one record per device type
+    url = "https://fw-update.ui.com/api/firmware-latest?filter=eq~~product~~uvc&filter=eq~~channel~~release&sort=platform"
+    data = fetch_data(url)
+    
+    if not data:
+        print("Failed to contact API.")
+        return []
 
-    print("\n" + "="*60 + "\n")
-    return platform, count, output_base
+    firmware_list = data.get("_embedded", {}).get("firmware", [])
+    
+    # Extract unique platforms
+    found_platforms = set()
+    for fw in firmware_list:
+        p = fw.get("platform")
+        if p:
+            found_platforms.add(p)
+    
+    return sorted(list(found_platforms))
+
+def print_platform_list():
+    platforms = discover_platforms()
+    
+    print("\n" + "="*60)
+    print(f" AVAILABLE PLATFORMS (Found {len(platforms)})")
+    print("="*60)
+    print(f"  {'PLATFORM':<15} {'DESCRIPTION'}")
+    print("-" * 60)
+    
+    for p in platforms:
+        # Check if we have a known description, otherwise leave blank
+        desc = KNOWN_PLATFORMS.get(p, "Unknown / Other Device")
+        print(f"  {p:<15} {desc}")
+    
+    print("-" * 60)
+    print("  (List fetched live from fw-update.ui.com)\n")
+
+def interactive_mode():
+    try:
+        print("="*60)
+        print(" UNIFI PROTECT FIRMWARE DOWNLOADER")
+        print("="*60)
+        
+        # Show list immediately
+        print_platform_list()
+        
+        # 1. Get Platform
+        while True:
+            platform_input = input("\nEnter Platform [default: sav530q]: ").strip()
+            
+            if not platform_input:
+                platform = "sav530q"
+                print(f"Using default: {platform}")
+                break
+            else:
+                platform = platform_input
+                break
+
+        # 2. Get Count
+        while True:
+            count_input = input("Number of versions to download [default: 30]: ").strip()
+            
+            if not count_input:
+                count = 30
+                break
+            if count_input.isdigit():
+                count = int(count_input)
+                break
+            print("Error: Please enter a valid number.")
+
+        # 3. Get Output Directory
+        output_input = input("Output Directory [default: ./]: ").strip()
+        
+        if output_input:
+            output_base = os.path.expanduser(output_input)
+        else:
+            output_base = "."
+
+        print("\n" + "="*60 + "\n")
+        return platform, count, output_base
+
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+        sys.exit(0)
 
 def main():
     parser = argparse.ArgumentParser(description="Download & Verify Ubiquiti Camera Firmware.")
     parser.add_argument("-p", "--platform", dest="platform", help="The camera platform (e.g., sav530q)")
     parser.add_argument("-c", "--count", dest="count", type=int, default=30, help="Number of recent versions to download")
     parser.add_argument("-o", "--output", dest="output", default=".", help="Base directory to save files")
+    parser.add_argument("-l", "--list", action="store_true", help="List all available platforms from API and exit")
 
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
 
-    # DECIDE MODE: Interactive vs Command Line
-    if args.platform:
-        platform = args.platform
-        count = args.count
-        output_base = os.path.expanduser(args.output)
-    else:
-        platform, count, output_base = interactive_mode()
+        # HANDLE --list ARGUMENT
+        if args.list:
+            print_platform_list()
+            sys.exit(0)
 
-    # --- MAIN LOGIC ---
+        # DECIDE MODE: Interactive vs Command Line
+        if args.platform:
+            platform = args.platform
+            count = args.count
+            output_base = os.path.expanduser(args.output)
+        else:
+            platform, count, output_base = interactive_mode()
 
-    # Fetch all records
-    url = f"https://fw-update.ui.com/api/firmware?filter=eq~~product~~uvc&filter=eq~~channel~~release&filter=eq~~platform~~{platform}&sort=version&limit=999"
+        # --- MAIN LOGIC ---
 
-    print(f"Fetching firmware list for platform: {platform}...")
-    data = fetch_data(url)
-    
-    if not data:
-        print("Failed to retrieve data. Check your internet connection.")
-        sys.exit(1)
+        # Fetch all records for the selected platform
+        url = f"https://fw-update.ui.com/api/firmware?filter=eq~~product~~uvc&filter=eq~~channel~~release&filter=eq~~platform~~{platform}&sort=version&limit=999"
 
-    firmware_list = data.get("_embedded", {}).get("firmware", [])
-
-    if not firmware_list:
-        print(f"No firmware found for platform '{platform}'. Check your spelling.")
-        sys.exit(1)
-
-    recent_firmware = firmware_list[-count:]
-    
-    print(f"Found {len(firmware_list)} total. Processing the latest {len(recent_firmware)} versions...\n")
-
-    for fw in recent_firmware:
-        version = fw.get('version')
-        download_url = fw.get('_links', {}).get('data', {}).get('href')
-        expected_hash = fw.get('sha256_checksum')
+        print(f"Fetching firmware list for platform: {platform}...")
+        data = fetch_data(url)
         
-        if not version or not download_url:
-            continue
+        if not data:
+            print("Failed to retrieve data. Check your internet connection.")
+            sys.exit(1)
 
-        safe_version = version.replace("/", "_")
-        dir_path = os.path.join(output_base, "protect", platform, safe_version)
+        firmware_list = data.get("_embedded", {}).get("firmware", [])
+
+        if not firmware_list:
+            print(f"No firmware found for platform '{platform}'. Check your spelling or use --list.")
+            sys.exit(1)
+
+        recent_firmware = firmware_list[-count:]
         
-        if not os.path.exists(dir_path):
-            try:
-                os.makedirs(dir_path)
-            except OSError as e:
-                print(f"Error creating directory {dir_path}: {e}")
+        print(f"Found {len(firmware_list)} total. Processing the latest {len(recent_firmware)} versions...\n")
+
+        for fw in recent_firmware:
+            version = fw.get('version')
+            download_url = fw.get('_links', {}).get('data', {}).get('href')
+            expected_hash = fw.get('sha256_checksum')
+            
+            if not version or not download_url:
                 continue
 
-        filename = download_url.split('/')[-1]
-        file_path = os.path.join(dir_path, filename)
-
-        print(f"[{version}]")
-
-        # 1. Check existing file
-        if os.path.exists(file_path):
-            if expected_hash:
-                current_hash = get_file_hash(file_path)
-                if current_hash == expected_hash:
-                    print(f"  Skipping: File exists and verified.")
+            safe_version = version.replace("/", "_")
+            dir_path = os.path.join(output_base, "protect", platform, safe_version)
+            
+            if not os.path.exists(dir_path):
+                try:
+                    os.makedirs(dir_path)
+                except OSError as e:
+                    print(f"Error creating directory {dir_path}: {e}")
                     continue
-                else:
-                    print(f"  WARNING: Checksum Mismatch. Re-downloading.")
-                    try:
-                        os.remove(file_path)
-                    except OSError as e:
-                        print(f"  Error removing file: {e}")
+
+            filename = download_url.split('/')[-1]
+            file_path = os.path.join(dir_path, filename)
+
+            print(f"[{version}]")
+
+            # 1. Check existing file
+            if os.path.exists(file_path):
+                if expected_hash:
+                    current_hash = get_file_hash(file_path)
+                    if current_hash == expected_hash:
+                        print(f"  Skipping: File exists and verified.")
                         continue
-            else:
-                print(f"  Skipping: File exists (No checksum available).")
-                continue
-
-        # 2. Download
-        if download_file(download_url, file_path):
-            # 3. Verify
-            if expected_hash:
-                print(f"  Verifying...", end="", flush=True)
-                new_hash = get_file_hash(file_path)
-                if new_hash == expected_hash:
-                    print(" OK.")
+                    else:
+                        print(f"  WARNING: Checksum Mismatch. Re-downloading.")
+                        try:
+                            os.remove(file_path)
+                        except OSError as e:
+                            print(f"  Error removing file: {e}")
+                            continue
                 else:
-                    print(" FAILED!")
-                    print(f"  Expected: {expected_hash}")
-                    print(f"  Actual:   {new_hash}")
-                    print("  Removing corrupted file.")
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-        
-        print("-" * 60)
+                    print(f"  Skipping: File exists (No checksum available).")
+                    continue
 
-    print("\nAll tasks complete.")
+            # 2. Download
+            if download_file(download_url, file_path):
+                # 3. Verify
+                if expected_hash:
+                    print(f"  Verifying...", end="", flush=True)
+                    new_hash = get_file_hash(file_path)
+                    if new_hash == expected_hash:
+                        print(" OK.")
+                    else:
+                        print(" FAILED!")
+                        print(f"  Expected: {expected_hash}")
+                        print(f"  Actual:   {new_hash}")
+                        print("  Removing corrupted file.")
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+            
+            print("-" * 60)
+
+        print("\nAll tasks complete.")
+
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
