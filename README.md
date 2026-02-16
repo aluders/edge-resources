@@ -19,7 +19,7 @@ Some categories include...
 * **Home Assistant:** YAML configurations and automation logic for smart home integration via Cloudflare Tunnels.
 
 ### 🔌 Networking & Infrastructure
-* **Ubiquiti / EdgeRouter:** Configuration snippets and optimization scripts for EdgeOS and UniFi environments.
+* **Ubiquiti / EdgeMax:** Configuration snippets and optimization scripts for EdgeOS and UniFi environments.
 * **Network Utilities:** Tools for monitoring uptime, managing VPS instances, wireguard, etc.
 
 ---
