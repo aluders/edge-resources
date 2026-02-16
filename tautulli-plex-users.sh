@@ -1,12 +1,19 @@
 #!/bin/bash
 
 # --- Configuration ---
+# Tautulli API Key Location: Settings > Web Interface > API
 TAUTULLI_IP="192.168.1.XXX" 
 TAUTULLI_PORT="8181"
 API_KEY="YOUR_API_KEY_HERE"
-# api key is under tautulli > settings > web interface > api
 
 VENV_DIR="$HOME/.plex_audit_venv"
+
+# --- Network Check ---
+# Sends 1 ping with a 1-second timeout
+if ! ping -c 1 -t 1 "$TAUTULLI_IP" &> /dev/null; then
+    echo "Error: Tautulli at $TAUTULLI_IP is unreachable."
+    exit 1
+fi
 
 # --- Visual Status Messages ---
 if [ ! -d "$VENV_DIR" ]; then
