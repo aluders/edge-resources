@@ -104,3 +104,4 @@ source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
 
 # Syntax highlighting must be the LAST thing sourced
 source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=yellow'
