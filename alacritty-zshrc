@@ -1,0 +1,85 @@
+# Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
+# Initialization code that may require console input (password prompts, [y/n]
+# confirmations, etc.) must go above this block; everything else may go below.
+if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
+fi
+
+# ---- Aliases ----
+alias glances='glances --disable-bg --disable-plugin cpu'
+alias speed='speedtest'
+alias doggo='doggo --nameserver https://cloudflare-dns.com/dns-query'
+alias bat='bat --paging=never'
+alias ff='fastfetch'
+alias cleardns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
+alias ls="eza --icons=always"
+
+# ---- Functions ----
+curl() {
+    command curl "$@" && echo
+}
+
+cat() {
+    command cat "$@" && echo
+}
+
+# curl version (generally more reliable)
+wanip() {
+  echo "IPv4 Address:"
+  ipv4=$(curl -4 -s https://ipinfo.io/ip)
+  if [[ -n "$ipv4" ]]; then
+    echo "$ipv4"
+  else
+    echo "Not available"
+  fi
+
+  echo
+  echo "IPv6 Address:"
+  ipv6=$(curl -6 -s https://v6.ipinfo.io/ip)
+  if [[ -n "$ipv6" ]]; then
+    echo "$ipv6"
+  else
+    echo "Not available"
+  fi
+}
+
+# ---- Exports ----
+export PATH="/opt/homebrew/opt/ruby/bin:$PATH"
+export LDFLAGS="-L/opt/homebrew/opt/ruby/lib"
+export CPPFLAGS="-I/opt/homebrew/opt/ruby/include"
+export PATH="$HOME/scripts:$PATH"
+
+# ---- Theme ----
+source /opt/homebrew/share/powerlevel10k/powerlevel10k.zsh-theme
+
+# To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
+[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+
+# ---- History Setup ----
+HISTFILE=$HOME/.zhistory
+SAVEHIST=1000
+HISTSIZE=999
+setopt share_history
+setopt hist_expire_dups_first
+setopt hist_ignore_dups
+setopt hist_verify
+
+# ---- Key Bindings ----
+bindkey '^[[A' history-search-backward
+bindkey '^[[B' history-search-forward
+
+# ---- Tab Completion (ADDED THIS) ----
+# Initialize the completion system
+autoload -Uz compinit
+compinit
+
+# Case-insensitive completion (typing 'cd doc' matches 'Documents')
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+# Use a selection menu when you hit tab
+zstyle ':completion:*' menu select
+
+# ---- Plugins ----
+source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+
+# Syntax highlighting must be the LAST thing sourced
+source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
