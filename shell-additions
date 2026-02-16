@@ -1,4 +1,4 @@
-alias ls='colorls'
+alias ls="eza --icons=always"
 
 alias glances='glances --disable-bg --disable-plugin cpu'
 
