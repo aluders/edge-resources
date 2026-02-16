@@ -12,7 +12,7 @@ fi
 
 # 2. Set Mode: Check for elevated privileges
 if [[ $EUID -ne 0 ]]; then
-   echo "Error: You must run this script as root to set the system time."
+   echo "You must run this script as root to set the system time."
    echo "Try: sudo $0"
    echo "Or : $0 --check"
    exit 1
