@@ -6,7 +6,6 @@ set -euo pipefail
 # ================================
 
 # Cloudflare allowed origin ports (non-privileged only)
-# The script will try these in order until it finds a free one.
 ALLOWED_PORTS=(
   8080
   8880
@@ -72,7 +71,6 @@ PORT=""
 echo "🔍 Scanning for an open allowed port..."
 
 for CANDIDATE in "${ALLOWED_PORTS[@]}"; do
-  # Check if port is in use (lsof returns 0 if found, 1 if not found)
   if ! lsof -iTCP:"$CANDIDATE" -sTCP:LISTEN >/dev/null 2>&1; then
     PORT="$CANDIDATE"
     echo "✅ Found available port: $PORT"
@@ -98,7 +96,80 @@ echo
 
 cd "$SHARE_DIR"
 
-python3 -m http.server "$PORT" >"$TMP_PY_LOG" 2>&1 &
+# START PYTHON SERVER (Custom script to hide dotfiles)
+python3 -c "
+import http.server
+import socketserver
+import os
+
+PORT = $PORT
+DIRECTORY = '.'
+
+class HiddenFileHandler(http.server.SimpleHTTPRequestHandler):
+    def list_directory(self, path):
+        # Override list_directory to filter out dotfiles
+        try:
+            list = os.listdir(path)
+        except OSError:
+            self.send_error(404, 'No permission to list directory')
+            return None
+        # Sort and filter hidden files
+        list.sort(key=lambda a: a.lower())
+        list = [x for x in list if not x.startswith('.')]
+        
+        # Generate the HTML listing manually
+        r = []
+        try:
+            displaypath = urllib.parse.unquote(self.path, errors='surrogatepass')
+        except AttributeError:
+            displaypath = urllib.parse.unquote(self.path)
+            
+        displaypath = html.escape(displaypath, quote=False)
+        enc = sys.getfilesystemencoding()
+        title = 'Directory listing for %s' % displaypath
+        r.append('<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">')
+        r.append('<html>\n<head>')
+        r.append('<meta http-equiv=\"Content-Type\" content=\"text/html; charset=%s\">' % enc)
+        r.append('<title>%s</title>\n</head>' % title)
+        r.append('<body>\n<h1>%s</h1>' % title)
+        r.append('<hr>\n<ul>')
+        
+        for name in list:
+            fullname = os.path.join(path, name)
+            displayname = linkname = name
+            # Append / for directories or @ for symlinks
+            if os.path.isdir(fullname):
+                displayname = name + '/'
+                linkname = name + '/'
+            if os.path.islink(fullname):
+                displayname = name + '@'
+                # Note: Default SimpleHTTPRequestHandler does not follow symlinks in the listing display logic usually
+            
+            r.append('<li><a href=\"%s\">%s</a></li>' % (urllib.parse.quote(linkname, errors='surrogatepass'), html.escape(displayname, quote=False)))
+        
+        r.append('</ul>\n<hr>\n</body>\n</html>\n')
+        encoded = '\n'.join(r).encode(enc, 'surrogateescape')
+        f = io.BytesIO()
+        f.write(encoded)
+        f.seek(0)
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html; charset=%s' % enc)
+        self.send_header('Content-Length', str(len(encoded)))
+        self.end_headers()
+        return f
+
+# Fallback to standard handler logic for serving files
+import sys
+import urllib.parse
+import html
+import io
+
+Handler = HiddenFileHandler
+with socketserver.TCPServer(('', PORT), Handler) as httpd:
+    print('Serving at port', PORT)
+    httpd.serve_forever()
+" >"$TMP_PY_LOG" 2>&1 &
+
 PY_PID=$!
 
 sleep 1
