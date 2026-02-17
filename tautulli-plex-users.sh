@@ -69,8 +69,9 @@ if mode == "--users":
     print(f"\n{BOLD}{CYAN}{'PLEX USERNAME':<25} | {'EMAIL ADDRESS':<35} | {'ID'}{END}")
     print("-" * 75)
     for user in sorted(filtered_users, key=lambda x: (x.get('username') or "").lower()):
-        uname = user.get('username') or "N/A"
-        email = (user.get('email') or "No Email").lower() # Lowercase emails
+        # Force BOTH username and email to lowercase
+        uname = (user.get('username') or "N/A").lower()
+        email = (user.get('email') or "No Email").lower()
         uid = user.get('user_id', '???')
         print(f"{GREEN}{uname:<25}{END} | {email:<35} | {BLUE}{uid}{END}")
     print(f"\n{BOLD}Total Shared Users: {len(filtered_users)}{END}\n")
@@ -91,7 +92,6 @@ else:
             email = s.get('email', 'unknown email').lower() # Lowercase emails
             title = s.get('full_title') if s.get('media_type') == 'movie' else f"{s.get('grandparent_title')} - {s.get('title')}"
             
-            # Decision & Container Logic
             v_decision = s.get('video_decision', 'Direct').title()
             a_decision = s.get('audio_decision', 'Direct').title()
             
@@ -99,13 +99,11 @@ else:
             dst_cont = s.get('transcode_container', '???').upper()
             container = f"{src_cont} -> {dst_cont}" if "Transcode" in v_decision else src_cont
             
-            # HW Transcoding Check
             hw_active = s.get('hw_decode_title') or s.get('hw_encode_title')
             hw_tag = f" {MAGENTA}[HW]{END}" if hw_active else ""
             
-            # Smart Resolution Logic
+            # Resolution Logic with interlaced detection
             raw_res = str(s.get('video_resolution', '???'))
-            # Check for interlaced metadata
             is_interlaced = s.get('video_frame_rate') == '29.97' or 'i' in str(s.get('video_full_resolution', '')).lower()
             
             if raw_res.isdigit():
@@ -117,7 +115,6 @@ else:
             v_codec = s.get('video_codec', '???').upper()
             q_color = RED if "Transcode" in v_decision else GREEN
             
-            # Bandwidth Fix
             raw_bw = s.get('bandwidth')
             bw_val = float(raw_bw) / 1000 if raw_bw else 0.0
 
