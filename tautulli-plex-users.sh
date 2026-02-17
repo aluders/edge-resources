@@ -43,6 +43,7 @@ GREEN = '\033[0;32m'
 YELLOW = '\033[1;33m'
 RED = '\033[0;31m'
 BLUE = '\033[0;34m'
+MAGENTA = '\033[0;35m'
 BOLD = '\033[1m'
 END = '\033[0m'
 
@@ -69,7 +70,7 @@ if mode == "--users":
     print("-" * 75)
     for user in sorted(filtered_users, key=lambda x: (x.get('username') or "").lower()):
         uname = user.get('username') or "N/A"
-        email = user.get('email') or "No Email"
+        email = (user.get('email') or "No Email").lower()
         uid = user.get('user_id', '???')
         print(f"{GREEN}{uname:<25}{END} | {email:<35} | {BLUE}{uid}{END}")
     print(f"\n{BOLD}Total Shared Users: {len(filtered_users)}{END}\n")
@@ -87,24 +88,34 @@ else:
         print("No active streams at the moment.")
     else:
         for s in sessions:
-            user = s.get('user', 'Unknown')
+            email = s.get('email', 'unknown email').lower()
             title = s.get('full_title') if s.get('media_type') == 'movie' else f"{s.get('grandparent_title')} - {s.get('title')}"
             
-            decision = s.get('video_decision', 'Direct').title()
-            q_color = RED if "Transcode" in decision else GREEN
+            # Decision & Container Logic
+            v_decision = s.get('video_decision', 'Direct').title()
+            a_decision = s.get('audio_decision', 'Direct').title()
+            container = f"{s.get('container', '???').upper()} -> {s.get('transcode_container', '???').upper()}" if "Transcode" in v_decision else s.get('container', '???').upper()
             
-            # --- Robust Bandwidth Logic ---
-            # Use .get() with a default of 0, then check if it's an empty string
+            # HW Transcoding Check
+            hw_active = s.get('hw_decode_title') or s.get('hw_encode_title')
+            hw_tag = f" {MAGENTA}[HW]{END}" if hw_active else ""
+            
+            # Smart Resolution Formatting (Handles 1080, 1080i, 4K, etc.)
+            res = s.get('video_resolution', '???')
+            if res.isdigit():
+                res = f"{res}p"
+            
+            q_color = RED if "Transcode" in v_decision else GREEN
+            
+            # Bandwidth Fix
             raw_bw = s.get('bandwidth')
-            if not raw_bw: # Handles None or empty string ""
-                bw_val = 0.0
-            else:
-                bw_val = float(raw_bw) / 1000
+            bw_val = float(raw_bw) / 1000 if raw_bw else 0.0
 
-            print(f"\n{BOLD}{CYAN}[ {user.upper()} ]{END}")
+            print(f"\n{BOLD}{CYAN}[ {email} ]{END}")
             print(f"  Watching: {YELLOW}{title}{END}")
-            print(f"  Device:   {s.get('platform', 'Unknown')} ({s.get('product', 'Plex')})")
-            print(f"  Quality:  {q_color}{decision}{END} - {s.get('video_resolution', '???')}")
+            print(f"  Player:   {s.get('platform', 'Unknown')} ({s.get('player', 'Plex')})")
+            print(f"  Stream:   {q_color}{v_decision}{END} ({res}) | {container}{hw_tag}")
+            print(f"  Audio:    {a_decision} ({s.get('audio_codec', '???').upper()} {s.get('audio_channels', '???')}ch)")
             print(f"  Network:  {BLUE}{s.get('ip_address', '0.0.0.0')}{END} @ {BOLD}{bw_val:.1f} Mbps{END}")
             print(f"  Progress: {GREEN}{s.get('progress_percent', '0')}%{END} complete")
             print(f"{CYAN}" + "-" * 40 + f"{END}")
