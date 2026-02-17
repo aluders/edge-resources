@@ -1,4 +1,5 @@
 # ensure transition to efi is already done
-# otherwise mbr2gpt
+# otherwise...
+mbr2gpt
 # then load nvme driver before clone/image
 sc.exe config stornvme start= boot
