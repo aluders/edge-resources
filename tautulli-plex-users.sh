@@ -90,15 +90,22 @@ else:
             user = s.get('user', 'Unknown')
             title = s.get('full_title') if s.get('media_type') == 'movie' else f"{s.get('grandparent_title')} - {s.get('title')}"
             
-            # Highlight Quality (Red for Transcode, Green for Direct)
             decision = s.get('video_decision', 'Direct').title()
             q_color = RED if "Transcode" in decision else GREEN
             
+            # --- Robust Bandwidth Logic ---
+            # Use .get() with a default of 0, then check if it's an empty string
+            raw_bw = s.get('bandwidth')
+            if not raw_bw: # Handles None or empty string ""
+                bw_val = 0.0
+            else:
+                bw_val = float(raw_bw) / 1000
+
             print(f"\n{BOLD}{CYAN}[ {user.upper()} ]{END}")
             print(f"  Watching: {YELLOW}{title}{END}")
             print(f"  Device:   {s.get('platform', 'Unknown')} ({s.get('product', 'Plex')})")
             print(f"  Quality:  {q_color}{decision}{END} - {s.get('video_resolution', '???')}")
-            print(f"  Network:  {BLUE}{s.get('ip_address', '0.0.0.0')}{END} @ {BOLD}{float(s.get('bandwidth', 0)) / 1000:.1f} Mbps{END}")
+            print(f"  Network:  {BLUE}{s.get('ip_address', '0.0.0.0')}{END} @ {BOLD}{bw_val:.1f} Mbps{END}")
             print(f"  Progress: {GREEN}{s.get('progress_percent', '0')}%{END} complete")
             print(f"{CYAN}" + "-" * 40 + f"{END}")
     print("")
