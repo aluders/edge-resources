@@ -70,7 +70,7 @@ if mode == "--users":
     print("-" * 75)
     for user in sorted(filtered_users, key=lambda x: (x.get('username') or "").lower()):
         uname = user.get('username') or "N/A"
-        email = (user.get('email') or "No Email").lower()
+        email = (user.get('email') or "No Email").lower() # Lowercase emails
         uid = user.get('user_id', '???')
         print(f"{GREEN}{uname:<25}{END} | {email:<35} | {BLUE}{uid}{END}")
     print(f"\n{BOLD}Total Shared Users: {len(filtered_users)}{END}\n")
@@ -88,23 +88,33 @@ else:
         print("No active streams at the moment.")
     else:
         for s in sessions:
-            email = s.get('email', 'unknown email').lower()
+            email = s.get('email', 'unknown email').lower() # Lowercase emails
             title = s.get('full_title') if s.get('media_type') == 'movie' else f"{s.get('grandparent_title')} - {s.get('title')}"
             
             # Decision & Container Logic
             v_decision = s.get('video_decision', 'Direct').title()
             a_decision = s.get('audio_decision', 'Direct').title()
-            container = f"{s.get('container', '???').upper()} -> {s.get('transcode_container', '???').upper()}" if "Transcode" in v_decision else s.get('container', '???').upper()
+            
+            src_cont = s.get('container', '???').upper()
+            dst_cont = s.get('transcode_container', '???').upper()
+            container = f"{src_cont} -> {dst_cont}" if "Transcode" in v_decision else src_cont
             
             # HW Transcoding Check
             hw_active = s.get('hw_decode_title') or s.get('hw_encode_title')
             hw_tag = f" {MAGENTA}[HW]{END}" if hw_active else ""
             
-            # Smart Resolution Formatting (Handles 1080, 1080i, 4K, etc.)
-            res = s.get('video_resolution', '???')
-            if res.isdigit():
-                res = f"{res}p"
+            # Smart Resolution Logic
+            raw_res = str(s.get('video_resolution', '???'))
+            # Check for interlaced metadata
+            is_interlaced = s.get('video_frame_rate') == '29.97' or 'i' in str(s.get('video_full_resolution', '')).lower()
             
+            if raw_res.isdigit():
+                suffix = 'i' if is_interlaced else 'p'
+                res = f"{raw_res}{suffix}"
+            else:
+                res = raw_res
+            
+            v_codec = s.get('video_codec', '???').upper()
             q_color = RED if "Transcode" in v_decision else GREEN
             
             # Bandwidth Fix
@@ -114,7 +124,7 @@ else:
             print(f"\n{BOLD}{CYAN}[ {email} ]{END}")
             print(f"  Watching: {YELLOW}{title}{END}")
             print(f"  Player:   {s.get('platform', 'Unknown')} ({s.get('player', 'Plex')})")
-            print(f"  Stream:   {q_color}{v_decision}{END} ({res}) | {container}{hw_tag}")
+            print(f"  Video:    {q_color}{v_decision}{END} ({v_codec} {res}) | {container}{hw_tag}")
             print(f"  Audio:    {a_decision} ({s.get('audio_codec', '???').upper()} {s.get('audio_channels', '???')}ch)")
             print(f"  Network:  {BLUE}{s.get('ip_address', '0.0.0.0')}{END} @ {BOLD}{bw_val:.1f} Mbps{END}")
             print(f"  Progress: {GREEN}{s.get('progress_percent', '0')}%{END} complete")
