@@ -25,7 +25,7 @@ cat() {
     command cat "$@" && echo
 }
 
-wanip() {
+wancurl() {
   echo "IPv4 Address:"
   ipv4=$(curl -4 -s https://ipinfo.io/ip)
   if [[ -n "$ipv4" ]]; then
