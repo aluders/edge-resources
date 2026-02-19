@@ -9,6 +9,7 @@ fi
 # ---- Aliases ----
 alias glances='glances --disable-bg --disable-plugin cpu'
 alias speed='speedtest'
+# alias speed='speedtest-cli --secure'
 alias doggo='doggo --nameserver https://cloudflare-dns.com/dns-query'
 alias bat='bat --paging=never'
 alias ff='fastfetch'
