@@ -1,0 +1,14 @@
+# powershell
+winget install --id Ookla.Speedtest.CLI -e
+
+# mac
+brew tap teamookla/speedtest
+brew update
+brew install speedtest --force
+
+# *** native mac test ***
+networkquality -v
+
+# debian
+curl -s https://install.speedtest.net/app/cli/install.deb.sh | sudo bash
+sudo apt-get install speedtest
