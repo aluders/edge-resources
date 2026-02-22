@@ -11,7 +11,7 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 BOLD='\033[1m'
 DIM='\033[2m'
-END='\033[0m'
+RESET='\033[0m'
 
 # --- Suggested Defaults ---
 SUGGESTED_MODEL="llama3.2"
@@ -24,26 +24,26 @@ SUGGESTED_TOKENS=300
 # ----------------------------------------------------------
 usage() {
   echo ""
-  echo -e "${BOLD}${YELLOW}━━━  OLLAMA BENCHMARK  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
-  echo -e "  ${BOLD}Usage:${END}   ./ollama-bench.sh ${CYAN}<model>${END} ${CYAN}<prompt>${END} ${DIM}[trials] [tokens]${END}"
+  echo -e "${BOLD}${YELLOW}━━━  OLLAMA BENCHMARK  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  echo -e "  ${BOLD}Usage:${RESET}   ./ollama-bench.sh ${CYAN}<model>${RESET} ${CYAN}<prompt>${RESET} ${DIM}[trials] [tokens]${RESET}"
   echo ""
-  echo -e "  ${BOLD}model${END}    Ollama model name                  ${DIM}(required)${END}"
-  echo -e "  ${BOLD}prompt${END}   Prompt string to benchmark         ${DIM}(required)${END}"
-  echo -e "  ${BOLD}trials${END}   Number of runs                     ${DIM}(default: $SUGGESTED_TRIALS)${END}"
-  echo -e "  ${BOLD}tokens${END}   Max tokens to generate             ${DIM}(default: $SUGGESTED_TOKENS)${END}"
+  echo -e "  ${BOLD}model${RESET}    Ollama model name                  ${DIM}(required)${RESET}"
+  echo -e "  ${BOLD}prompt${RESET}   Prompt string to benchmark         ${DIM}(required)${RESET}"
+  echo -e "  ${BOLD}trials${RESET}   Number of runs                     ${DIM}(default: $SUGGESTED_TRIALS)${RESET}"
+  echo -e "  ${BOLD}tokens${RESET}   Max tokens to generate             ${DIM}(default: $SUGGESTED_TOKENS)${RESET}"
   echo ""
 
   if command -v ollama >/dev/null 2>&1; then
-    echo -e "  ${BOLD}${CYAN}Models available on this machine:${END}"
+    echo -e "  ${BOLD}${CYAN}Models available on this machine:${RESET}"
     ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | while read -r m; do
-      echo -e "    ${GREEN}•${END} $m"
+      echo -e "    ${GREEN}•${RESET} $m"
     done
     echo ""
   fi
 
-  echo -e "  ${BOLD}Suggested test:${END}"
-  echo -e "    ${DIM}./ollama-bench.sh $SUGGESTED_MODEL \"$SUGGESTED_PROMPT\" $SUGGESTED_TRIALS $SUGGESTED_TOKENS${END}"
-  echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
+  echo -e "  ${BOLD}Suggested test:${RESET}"
+  echo -e "    ${DIM}./ollama-bench.sh $SUGGESTED_MODEL \"$SUGGESTED_PROMPT\" $SUGGESTED_TRIALS $SUGGESTED_TOKENS${RESET}"
+  echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   echo ""
 }
 
@@ -68,10 +68,10 @@ interactive_mode() {
     if command -v ollama >/dev/null 2>&1; then
       mapfile -t MODELS < <(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')
       if [ "${#MODELS[@]}" -gt 0 ]; then
-        echo -e "  ${BOLD}${CYAN}Available models:${END}"
+        echo -e "  ${BOLD}${CYAN}Available models:${RESET}"
         for idx in "${!MODELS[@]}"; do
-          printf "    ${GREEN}[%d]${END} %s\n" "$((idx+1))" "${MODELS[$idx]}"
-        done | while IFS= read -r line; do echo -e "$line"; done
+          echo -e "    ${GREEN}[$((idx+1))]${RESET} ${MODELS[$idx]}"
+        done
         echo ""
         printf "  Select model number or type name [default: $SUGGESTED_MODEL]: "
         read -r model_input
@@ -107,16 +107,16 @@ interactive_mode() {
     TOKENS="${TOKENS:-$SUGGESTED_TOKENS}"
 
     echo ""
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
-    echo -e "  ${BOLD}About to run:${END}"
-    echo -e "    ${DIM}./ollama-bench.sh $MODEL \"$PROMPT\" $TRIALS $TOKENS${END}"
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "  ${BOLD}About to run:${RESET}"
+    echo -e "    ${DIM}./ollama-bench.sh $MODEL \"$PROMPT\" $TRIALS $TOKENS${RESET}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
     echo ""
     printf "  Proceed? [Y/n]: "
     read -r confirm
     confirm="${confirm:-Y}"
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-      echo -e "\n  ${RED}Aborted.${END}\n"
+      echo -e "\n  ${RED}Aborted.${RESET}\n"
       exit 0
     fi
   fi
@@ -143,9 +143,9 @@ fi
 # Ensure coreutils (gdate) is installed
 # ----------------------------------------------------------
 if ! command -v gdate >/dev/null 2>&1; then
-  echo -e "\n  ${PURPLE}coreutils is required. Installing with Homebrew...${END}"
+  echo -e "\n  ${PURPLE}coreutils is required. Installing with Homebrew...${RESET}"
   brew install coreutils || {
-    echo -e "  ${RED}Error: Homebrew installation of coreutils failed.${END}"
+    echo -e "  ${RED}Error: Homebrew installation of coreutils failed.${RESET}"
     exit 1
   }
 fi
@@ -156,13 +156,13 @@ DATE_CMD="gdate"
 # Benchmark header
 # ----------------------------------------------------------
 echo ""
-echo -e "${BOLD}${YELLOW}━━━  OLLAMA BENCHMARK  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
-echo -e "  ${BOLD}Model:${END}       ${CYAN}$MODEL${END}"
-echo -e "  ${BOLD}Prompt:${END}      ${YELLOW}\"$PROMPT\"${END}"
-echo -e "  ${BOLD}Trials:${END}      $TRIALS"
-echo -e "  ${BOLD}Max tokens:${END}  $TOKENS"
-echo -e "  ${BOLD}Timer:${END}       ${DIM}$DATE_CMD (ms resolution)${END}"
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
+echo -e "${BOLD}${YELLOW}━━━  OLLAMA BENCHMARK  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "  ${BOLD}Model:${RESET}       ${CYAN}$MODEL${RESET}"
+echo -e "  ${BOLD}Prompt:${RESET}      ${YELLOW}\"$PROMPT\"${RESET}"
+echo -e "  ${BOLD}Trials:${RESET}      $TRIALS"
+echo -e "  ${BOLD}Max tokens:${RESET}  $TOKENS"
+echo -e "  ${BOLD}Timer:${RESET}       ${DIM}$DATE_CMD (ms resolution)${RESET}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 
 total_tps=0
 total_latency=0
@@ -174,7 +174,7 @@ max_tps=""
 # ----------------------------------------------------------
 for i in $(seq 1 $TRIALS); do
   echo ""
-  echo -e "${BOLD}${CYAN}── Trial $i / $TRIALS ──────────────────────────────────────────────────${END}"
+  echo -e "${BOLD}${CYAN}── Trial $i / $TRIALS ──────────────────────────────────────────────────${RESET}"
 
   START=$($DATE_CMD +%s%3N)
   FIRST_BYTE_TIME=""
@@ -187,10 +187,10 @@ for i in $(seq 1 $TRIALS); do
     fi
   done < <(OLLAMA_NUM_PREDICT="$TOKENS" ollama run "$MODEL" "$PROMPT")
 
-  END=$($DATE_CMD +%s%3N)
+  END_TIME=$($DATE_CMD +%s%3N)
 
   LATENCY=$((FIRST_BYTE_TIME - START))
-  TOTAL_TIME=$((END - START))
+  TOTAL_TIME=$((END_TIME - START))
   TOKEN_COUNT=$(echo "$OUTPUT" | wc -w | tr -d ' ')
 
   if [ "$TOTAL_TIME" -gt 0 ]; then
@@ -199,11 +199,11 @@ for i in $(seq 1 $TRIALS); do
     TPS=0
   fi
 
-  echo -e "  ${BOLD}First-token latency:${END}  ${GREEN}${LATENCY} ms${END}"
-  echo -e "  ${BOLD}Total time:${END}           ${LATENCY} ms → ${TOTAL_TIME} ms"
-  echo -e "  ${BOLD}Tokens (words):${END}       $TOKEN_COUNT"
-  echo -e "  ${BOLD}Tokens/sec:${END}           ${YELLOW}${TPS} tok/s${END}"
-  echo -e "${CYAN}$(printf '─%.0s' {1..65})${END}"
+  echo -e "  ${BOLD}First-token latency:${RESET}  ${GREEN}${LATENCY} ms${RESET}"
+  echo -e "  ${BOLD}Total time:${RESET}           ${TOTAL_TIME} ms"
+  echo -e "  ${BOLD}Tokens (words):${RESET}       $TOKEN_COUNT"
+  echo -e "  ${BOLD}Tokens/sec:${RESET}           ${YELLOW}${TPS} tok/s${RESET}"
+  echo -e "${CYAN}$(printf '─%.0s' {1..65})${RESET}"
 
   total_latency=$(echo "$total_latency + $LATENCY" | bc)
   total_tps=$(echo "$total_tps + $TPS" | bc)
@@ -223,11 +223,11 @@ avg_latency=$(echo "scale=2; $total_latency / $TRIALS" | bc)
 avg_tps=$(echo "scale=2; $total_tps / $TRIALS" | bc)
 
 echo ""
-echo -e "${BOLD}${YELLOW}━━━  RESULTS  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
-echo -e "  ${BOLD}Trials run:${END}           $TRIALS"
-echo -e "  ${BOLD}Avg first-token lag:${END}  ${GREEN}${avg_latency} ms${END}"
-echo -e "  ${BOLD}Avg tokens/sec:${END}       ${YELLOW}${avg_tps} tok/s${END}"
-echo -e "  ${BOLD}Min tokens/sec:${END}       ${PURPLE}${min_tps} tok/s${END}"
-echo -e "  ${BOLD}Max tokens/sec:${END}       ${CYAN}${max_tps} tok/s${END}"
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
+echo -e "${BOLD}${YELLOW}━━━  RESULTS  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "  ${BOLD}Trials run:${RESET}           $TRIALS"
+echo -e "  ${BOLD}Avg first-token lag:${RESET}  ${GREEN}${avg_latency} ms${RESET}"
+echo -e "  ${BOLD}Avg tokens/sec:${RESET}       ${YELLOW}${avg_tps} tok/s${RESET}"
+echo -e "  ${BOLD}Min tokens/sec:${RESET}       ${PURPLE}${min_tps} tok/s${RESET}"
+echo -e "  ${BOLD}Max tokens/sec:${RESET}       ${CYAN}${max_tps} tok/s${RESET}"
+echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
