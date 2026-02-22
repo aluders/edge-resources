@@ -7,7 +7,6 @@ CYAN='\033[0;36m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 PURPLE='\033[0;35m'
-BLUE='\033[0;34m'
 RED='\033[0;31m'
 BOLD='\033[1m'
 DIM='\033[2m'
@@ -63,62 +62,7 @@ interactive_mode() {
     TRIALS="$SUGGESTED_TRIALS"
     TOKENS="$SUGGESTED_TOKENS"
   else
-    echo ""
-
-    if command -v ollama >/dev/null 2>&1; then
-      mapfile -t MODELS < <(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')
-      if [ "${#MODELS[@]}" -gt 0 ]; then
-        echo -e "  ${BOLD}${CYAN}Available models:${RESET}"
-        for idx in "${!MODELS[@]}"; do
-          echo -e "    ${GREEN}[$((idx+1))]${RESET} ${MODELS[$idx]}"
-        done
-        echo ""
-        printf "  Select model number or type name [default: $SUGGESTED_MODEL]: "
-        read -r model_input
-        if [[ "$model_input" =~ ^[0-9]+$ ]] && [ "$model_input" -ge 1 ] && [ "$model_input" -le "${#MODELS[@]}" ]; then
-          MODEL="${MODELS[$((model_input-1))]}"
-        else
-          MODEL="${model_input:-$SUGGESTED_MODEL}"
-        fi
-      else
-        printf "  Enter model name [default: $SUGGESTED_MODEL]: "
-        read -r MODEL
-        MODEL="${MODEL:-$SUGGESTED_MODEL}"
-      fi
-    else
-      printf "  Enter model name [default: $SUGGESTED_MODEL]: "
-      read -r MODEL
-      MODEL="${MODEL:-$SUGGESTED_MODEL}"
-    fi
-
-    echo ""
-    printf "  Enter prompt [default: \"$SUGGESTED_PROMPT\"]: "
-    read -r PROMPT
-    PROMPT="${PROMPT:-$SUGGESTED_PROMPT}"
-
-    echo ""
-    printf "  Number of trials [default: $SUGGESTED_TRIALS]: "
-    read -r TRIALS
-    TRIALS="${TRIALS:-$SUGGESTED_TRIALS}"
-
-    echo ""
-    printf "  Max tokens [default: $SUGGESTED_TOKENS]: "
-    read -r TOKENS
-    TOKENS="${TOKENS:-$SUGGESTED_TOKENS}"
-
-    echo ""
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    echo -e "  ${BOLD}About to run:${RESET}"
-    echo -e "    ${DIM}./ollama-bench.sh $MODEL \"$PROMPT\" $TRIALS $TOKENS${RESET}"
-    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    echo ""
-    printf "  Proceed? [Y/n]: "
-    read -r confirm
-    confirm="${confirm:-Y}"
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-      echo -e "\n  ${RED}Aborted.${RESET}\n"
-      exit 0
-    fi
+    exit 0
   fi
 }
 
@@ -228,6 +172,6 @@ echo -e "  ${BOLD}Trials run:${RESET}           $TRIALS"
 echo -e "  ${BOLD}Avg first-token lag:${RESET}  ${GREEN}${avg_latency} ms${RESET}"
 echo -e "  ${BOLD}Avg tokens/sec:${RESET}       ${YELLOW}${avg_tps} tok/s${RESET}"
 echo -e "  ${BOLD}Min tokens/sec:${RESET}       ${PURPLE}${min_tps} tok/s${RESET}"
-echo -e "  ${BOLD}Max tokens/sec:${RESET}       ${CYAN}${max_tps} tok/s${RESET}"
+echo -e "  ${BOLD}Max tokens/sec:${RESET>       ${CYAN}${max_tps} tok/s${RESET}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo ""
