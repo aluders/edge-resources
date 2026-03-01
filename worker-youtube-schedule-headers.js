@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Scheduler + Go-Live Worker (SUPER VERBOSE LOGGING)
+  YouTube Scheduler + Go-Live Worker
   --------------------------------------------------
   DST Strategy:
     - TWO Sunday crons (17 and 18 UTC) ensure coverage year-round
