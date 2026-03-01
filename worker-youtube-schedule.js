@@ -5,7 +5,7 @@
     - TWO Sunday crons (17 and 18 UTC) ensure coverage year-round
     - During PST: 18:xx UTC = 10:xx PT ✅ (17:xx = 9:xx PT, skipped)
     - During PDT: 17:xx UTC = 10:xx PT ✅ (18:xx = 11:xx PT, skipped)
-    - Time window check (10:28-10:35 PT) filters which cron actually runs
+    - Time window check filters which cron actually runs
   
   Logging Improvements:
     - Every cron execution logged with full context
@@ -17,9 +17,11 @@
 /********************************************************************
   CONFIGURATION
 ********************************************************************/
+// STREAM SCHEDULE: When the event technically starts
 const SCHEDULE_HOUR_PT = 10;
 const SCHEDULE_MINUTE_PT = 30;
 
+// GO LIVE TIMING
 const GO_LIVE_HOUR_PT = 10;
 const GO_LIVE_MIN_START = 28;
 const GO_LIVE_MIN_END = 35;
@@ -27,7 +29,13 @@ const GO_LIVE_MIN_END = 35;
 const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
 const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29";
-const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616";
+const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616"; // YouTube stream ID for binding
+
+/********************************************************************
+  FEATURE TOGGLES
+********************************************************************/
+const ENABLE_SCHEDULING = true;
+const ENABLE_GO_LIVE = true;
 
 const DEVELOPER_MODE = "OFF";
 
@@ -93,6 +101,14 @@ export default {
     if (cronString === "0 6 * * thu") {
       logSection("THURSDAY SCHEDULING JOB");
       logKeyValue("Expected", "Schedule next Sunday's stream");
+      
+      if (!ENABLE_SCHEDULING) {
+        logKeyValue("Status", "⚠️ DISABLED");
+        console.log("⚠️ Scheduling is disabled via ENABLE_SCHEDULING flag");
+        console.log("Set ENABLE_SCHEDULING = true to enable");
+        return;
+      }
+      
       logKeyValue("Will Run", "scheduleNextSunday()");
       logKeyValue("Will NOT Run", "Go-Live logic (skipped)");
       ctx.waitUntil(scheduleNextSunday(env));
@@ -109,6 +125,15 @@ export default {
     }
     
     logSection("SUNDAY GO-LIVE CHECK");
+    
+    if (!ENABLE_GO_LIVE) {
+      logKeyValue("Status", "⚠️ DISABLED");
+      console.log("⚠️ Go-Live is disabled via ENABLE_GO_LIVE flag");
+      console.log("Set ENABLE_GO_LIVE = true to enable");
+      console.log("=".repeat(60) + "\n");
+      return;
+    }
+    
     logKeyValue("Will Run", "Go-Live logic (if in window)");
     logKeyValue("Will NOT Run", "Scheduling (Thursday only)");
     
