@@ -13,7 +13,6 @@
   
   Recent Updates:
     - Added browser-like headers to transition API call
-    - Window starts at 10:27 (earlier to avoid Sunday rush)
     - Feature toggles for scheduling, go-live, and logging verbosity
 ********************************************************************/
 
