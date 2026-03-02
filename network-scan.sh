@@ -127,6 +127,7 @@ scan_ports() {
       OPEN+=("${PORT}")
     fi
   done
+  # Write space-separated open ports, or nothing
   echo "${OPEN[*]}" > "$OUTFILE"
 }
 
@@ -139,30 +140,124 @@ echo -e "${CYAN}${DIVIDER}${RESET}"
 if [[ -z "$INTERFACE" ]]; then
   INTERFACE=$(route get default 2>/dev/null | awk '/interface:/ {print $2}' | head -1)
 fi
+
+# Build candidate list — all non-loopback interfaces with an IP
+build_candidates() {
+  CANDIDATES=()
+  while IFS= read -r IFACE; do
+    [[ "$IFACE" =~ ^lo ]] && continue
+    IFACE_IP=$(ifconfig "$IFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1)
+    [[ -z "$IFACE_IP" ]] && continue
+    # Label tunnels clearly
+    if [[ "$IFACE" =~ ^utun ]]; then
+      CANDIDATES+=("$IFACE ($IFACE_IP) [VPN tunnel]")
+    else
+      CANDIDATES+=("$IFACE ($IFACE_IP)")
+    fi
+  done < <(ifconfig -l 2>/dev/null | tr ' ' '\n')
+}
+
+# Prompt the user to pick an interface
+prompt_interface() {
+  build_candidates
+  if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
+    echo -e "  ${RED}Error:${RESET} No active network interfaces found." >&2
+    echo -e "${CYAN}${DIVIDER}${RESET}"; echo; exit 1
+  fi
+  echo -e "  ${BOLD}Available interfaces:${RESET}"
+  for i in "${!CANDIDATES[@]}"; do
+    echo -e "    ${CYAN}$((i+1))${RESET}  ${CANDIDATES[$i]}"
+  done
+  echo
+  while true; do
+    printf "  Select interface [1-%d]: " "${#CANDIDATES[@]}"
+    read -r CHOICE </dev/tty
+    if [[ "$CHOICE" =~ ^[0-9]+$ ]] && (( CHOICE >= 1 && CHOICE <= ${#CANDIDATES[@]} )); then
+      SELECTED="${CANDIDATES[$((CHOICE-1))]}"
+      INTERFACE="${SELECTED%% *}"
+      # Flag if user chose a tunnel so we can prompt for subnet later
+      [[ "$SELECTED" == *"[VPN tunnel]"* ]] && TUNNEL_SELECTED=true
+      break
+    fi
+    echo -e "  ${RED}Invalid choice.${RESET} Please enter a number between 1 and ${#CANDIDATES[@]}."
+  done
+  echo
+}
+
+TUNNEL_SELECTED=false
+
+# If no interface found, or it's a tunnel/VPN, prompt to pick
 if [[ -z "$INTERFACE" ]]; then
-  echo -e "  ${RED}Error:${RESET} Could not detect a network interface." >&2
-  echo -e "${CYAN}${DIVIDER}${RESET}"; echo; exit 1
+  echo -e "  ${YELLOW}Could not auto-detect an interface.${RESET}"
+  echo
+  prompt_interface
+elif [[ "$INTERFACE" =~ ^(utun|tun|ppp|ipsec) ]]; then
+  echo -e "  ${YELLOW}Default route is through a VPN tunnel (${INTERFACE}).${RESET}"
+  echo
+  prompt_interface
 fi
 
-LOCAL_IP=$(ipconfig getifaddr "$INTERFACE" 2>/dev/null)
+LOCAL_IP=$(ifconfig "$INTERFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1)
 if [[ -z "$LOCAL_IP" ]]; then
   echo -e "  ${RED}Error:${RESET} Interface ${BOLD}$INTERFACE${RESET} has no IP address." >&2
   echo -e "${CYAN}${DIVIDER}${RESET}"; echo; exit 1
 fi
 
-# ── Detect real subnet mask and compute scan range ────────────────────────────
-NETMASK=$(ipconfig getifnet "$INTERFACE" 2>/dev/null \
-  || ifconfig "$INTERFACE" 2>/dev/null | awk '/netmask/ {print $4}')
-
-if [[ "$NETMASK" =~ ^0x ]]; then
-  HEX="${NETMASK#0x}"
-  NETMASK=$(printf '%d.%d.%d.%d' \
-    $((16#${HEX:0:2})) $((16#${HEX:2:2})) \
-    $((16#${HEX:4:2})) $((16#${HEX:6:2})))
+# ── If a VPN tunnel was selected, prompt for the remote subnet ────────────────
+MANUAL_SUBNET=""
+if $TUNNEL_SELECTED; then
+  echo -e "  ${YELLOW}VPN tunnel selected — cannot auto-detect remote subnet.${RESET}"
+  echo
+  while true; do
+    printf "  Enter remote subnet to scan (e.g. 10.1.0.0/24): "
+    read -r MANUAL_SUBNET </dev/tty
+    # Validate CIDR format
+    if [[ "$MANUAL_SUBNET" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$ ]]; then
+      break
+    fi
+    echo -e "  ${RED}Invalid format.${RESET} Please use CIDR notation, e.g. 10.1.0.0/24"
+  done
+  echo
 fi
 
-[[ -z "$NETMASK" ]] && NETMASK="255.255.255.0"
+# ── Detect subnet and compute scan range ─────────────────────────────────────
+if [[ -n "$MANUAL_SUBNET" ]]; then
+  # Parse manually entered CIDR (e.g. 10.1.0.0/24)
+  NET_ADDR="${MANUAL_SUBNET%/*}"
+  PREFIX="${MANUAL_SUBNET#*/}"
+else
+  # Auto-detect from interface
+  NETMASK=$(ifconfig "$INTERFACE" 2>/dev/null | awk '/inet / {print $4}' | head -1)
 
+  if [[ "$NETMASK" =~ ^0x ]]; then
+    HEX="${NETMASK#0x}"
+    NETMASK=$(printf '%d.%d.%d.%d' \
+      $((16#${HEX:0:2})) $((16#${HEX:2:2})) \
+      $((16#${HEX:4:2})) $((16#${HEX:6:2})))
+  fi
+
+  # WireGuard utun interfaces often have no netmask field — parse prefix from address
+  if [[ -z "$NETMASK" || "$NETMASK" == "255.255.255.255" ]]; then
+    PREFIX_TMP=$(ifconfig "$INTERFACE" 2>/dev/null | awk '/inet / {
+      for(i=1;i<=NF;i++) if($i~/\/[0-9]+$/) {split($i,a,"/"); print a[2]; exit}
+      for(i=1;i<=NF;i++) if($i~/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/) {split($i,a,"/"); print a[2]; exit}
+    }')
+    if [[ -n "$PREFIX_TMP" && "$PREFIX_TMP" -gt 0 ]]; then
+      MASK_BITS=0
+      for (( b=0; b<PREFIX_TMP; b++ )); do
+        (( MASK_BITS = (MASK_BITS >> 1) | (1 << 31) ))
+      done
+      NETMASK=$(printf '%d.%d.%d.%d' \
+        $(( (MASK_BITS>>24)&255 )) $(( (MASK_BITS>>16)&255 )) \
+        $(( (MASK_BITS>>8)&255  )) $(( MASK_BITS&255 )))
+    fi
+  fi
+
+  [[ -z "$NETMASK" ]] && NETMASK="255.255.255.0"
+  PREFIX=""  # will be computed below
+fi
+
+# Convert IP and mask to integers
 ip_to_int() {
   local IFS=.
   read -r a b c d <<< "$1"
@@ -185,13 +280,27 @@ mask_to_prefix() {
 }
 
 LOCAL_INT=$(ip_to_int "$LOCAL_IP")
-MASK_INT=$(ip_to_int "$NETMASK")
-NET_INT=$(( LOCAL_INT & MASK_INT ))
+
+if [[ -n "$MANUAL_SUBNET" ]]; then
+  # Manual path: NET_ADDR and PREFIX already set from CIDR input
+  MASK_BITS=0
+  for (( b=0; b<PREFIX; b++ )); do
+    (( MASK_BITS = (MASK_BITS >> 1) | (1 << 31) ))
+  done
+  MASK_INT=$MASK_BITS
+  NET_INT=$(ip_to_int "$NET_ADDR")
+else
+  # Auto path: compute from NETMASK
+  MASK_INT=$(ip_to_int "$NETMASK")
+  NET_INT=$(( LOCAL_INT & MASK_INT ))
+  PREFIX=$(mask_to_prefix "$MASK_INT")
+  NET_ADDR=$(int_to_ip "$NET_INT")
+fi
+
 BCAST_INT=$(( NET_INT | (~MASK_INT & 0xFFFFFFFF) ))
-PREFIX=$(mask_to_prefix "$MASK_INT")
-NET_ADDR=$(int_to_ip "$NET_INT")
 SUBNET="${NET_ADDR}/${PREFIX}"
 
+# Build list of all host IPs in range (exclude network and broadcast addresses)
 ALL_IPS=()
 for (( host=NET_INT+1; host<BCAST_INT; host++ )); do
   ALL_IPS+=("$(int_to_ip $host)")
@@ -249,6 +358,7 @@ ARP_IPS=$(arp -an 2>/dev/null \
 ARP_NEW=0
 for IP in $ARP_IPS; do
   [[ "${IP##*.}" == "255" ]] && continue
+  # Check IP is within our subnet
   IP_INT=$(ip_to_int "$IP" 2>/dev/null) || continue
   (( (IP_INT & MASK_INT) != NET_INT )) && continue
   (( IP_INT <= NET_INT || IP_INT >= BCAST_INT )) && continue
@@ -305,7 +415,7 @@ done
 wait
 echo -e "  ${DIM}Phase 4/5 — Vendors:${RESET}      ${#SEEN_OUIS[@]} unique OUI(s) resolved ✓        "
 
-# ── Phase 5: Port scan (parallel per host) ───────────────────────────────────
+# ── Phase 5: Port scan (parallel per host, all ports per host in parallel) ────
 echo -ne "  ${DIM}Phase 5/5 — Port scan:${RESET}    scanning ${TOTAL_FOUND} host(s) × ${#SCAN_PORTS[@]} ports…\r"
 for IP in "${ALIVE_IPS[@]}"; do
   [[ "${IP##*.}" == "255" ]] && continue
@@ -332,6 +442,7 @@ echo
 for IP in "${ALIVE_IPS[@]}"; do
   [[ "${IP##*.}" == "255" ]] && continue
 
+  # MAC + OUI
   MAC=""; OUI=""
   MACFILE="${TMPDIR_SCAN}/mac_${IP}"
   if [[ -f "$MACFILE" ]]; then
@@ -339,25 +450,30 @@ for IP in "${ALIVE_IPS[@]}"; do
     MAC=$(sed -n '2p' "$MACFILE")
   fi
 
+  # Vendor
   VENDOR=""
   [[ -n "$OUI" && -f "${TMPDIR_SCAN}/oui_${OUI}" ]] && VENDOR=$(tr -d '\n' < "${TMPDIR_SCAN}/oui_${OUI}")
 
+  # Hostname
   HOSTNAME=""
   [[ -f "${TMPDIR_SCAN}/host_${IP}" ]] && HOSTNAME=$(tr -d '\n' < "${TMPDIR_SCAN}/host_${IP}")
 
+  # Open ports
   PORTS=""
   [[ -f "${TMPDIR_SCAN}/ports_${IP}" ]] && PORTS=$(tr -d '\n' < "${TMPDIR_SCAN}/ports_${IP}")
 
+  # Prefix marker — green ▶ for this machine, spaces otherwise
   if [[ "$IP" == "$LOCAL_IP" ]]; then
     PREFIX="${RED}▶ ${RESET}"
   else
     PREFIX="  "
   fi
 
+  # Pad plain values first, then colorize
   IP_PAD=$(printf   "%-16s" "$IP")
   MAC_PAD=$(printf  "%-19s" "${MAC:-—}")
-  VND_PAD=$(printf  "%-18s" "$VENDOR")
-  HOST_PAD=$(printf "%-20s" "$HOSTNAME")
+  VND_PAD=$(printf  "%-18s" "${VENDOR:0:18}")
+  HOST_PAD=$(printf "%-20s" "${HOSTNAME:0:20}")
 
   C_IP="${BLUE}${IP_PAD}${RESET}"
   C_MAC="${PURPLE}${MAC_PAD}${RESET}"
