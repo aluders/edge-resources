@@ -21,6 +21,7 @@ DIVIDER="━━━━━━━━━━━━━━━━━━━━━━━�
 INTERFACE=""
 TIMEOUT=1
 VERBOSE=false
+MANUAL_SUBNET=""
 
 # Ports to probe
 SCAN_PORTS=(21 22 80 443 8080 8443)
@@ -29,26 +30,41 @@ usage() {
   echo
   echo -e "  ${BOLD}${CYAN}NETWORK SCANNER${RESET}"
   echo -e "${CYAN}${DIVIDER}${RESET}"
-  echo -e "  ${BOLD}Usage:${RESET}  netscan ${CYAN}[-i INTERFACE]${RESET} ${PURPLE}[-t TIMEOUT]${RESET} ${DIM}[-v] [-h]${RESET}"
+  echo -e "  ${BOLD}Usage:${RESET}  netscan ${CYAN}[-i|--interface IFACE]${RESET} ${YELLOW}[-n|--network CIDR]${RESET} ${PURPLE}[-t|--timeout SEC]${RESET} ${DIM}[-v] [-h]${RESET}"
   echo
-  echo -e "  ${CYAN}-i INTERFACE${RESET}  Network interface to scan ${DIM}(default: auto-detect)${RESET}"
-  echo -e "  ${PURPLE}-t TIMEOUT${RESET}   Ping timeout in seconds ${DIM}(default: 1)${RESET}"
-  echo -e "  ${DIM}-v${RESET}           Verbose — show discovery methods used"
-  echo -e "  ${DIM}-h${RESET}           Show this help message"
+  echo -e "  ${CYAN}-i, --interface IFACE${RESET}   Network interface ${DIM}(default: auto-detect)${RESET}"
+  echo -e "  ${YELLOW}-n, --network CIDR${RESET}      Subnet to scan ${DIM}(e.g. 10.1.0.0/24)${RESET}"
+  echo -e "  ${PURPLE}-t, --timeout SEC${RESET}       Ping timeout in seconds ${DIM}(default: 1)${RESET}"
+  echo -e "  ${DIM}-v, --verbose${RESET}           Show discovery methods used"
+  echo -e "  ${DIM}-h, --help${RESET}              Show this help message"
   echo -e "${CYAN}${DIVIDER}${RESET}"
   echo
   exit 0
 }
 
-while getopts ":i:t:vh" opt; do
-  case $opt in
-    i) INTERFACE="$OPTARG" ;;
-    t) TIMEOUT="$OPTARG" ;;
-    v) VERBOSE=true ;;
-    h) usage ;;
-    :) echo -e "  ${RED}Error:${RESET} -$OPTARG requires an argument." >&2; exit 1 ;;
-    \?) echo -e "  ${RED}Error:${RESET} Unknown option -$OPTARG." >&2; exit 1 ;;
+# ── Argument parsing (short and long options) ─────────────────────────────────
+validate_cidr() {
+  if ! [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$ ]]; then
+    echo -e "  ${RED}Error:${RESET} Invalid CIDR format '${1}'. Use e.g. 10.1.0.0/24" >&2; exit 1
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)                usage ;;
+    -v|--verbose)             VERBOSE=true ;;
+    -i|--interface)           [[ -z "$2" ]] && { echo -e "  ${RED}Error:${RESET} $1 requires an argument." >&2; exit 1; }
+                              INTERFACE="$2"; shift ;;
+    -i=*|--interface=*)       INTERFACE="${1#*=}" ;;
+    -n|--network)             [[ -z "$2" ]] && { echo -e "  ${RED}Error:${RESET} $1 requires an argument." >&2; exit 1; }
+                              validate_cidr "$2"; MANUAL_SUBNET="$2"; shift ;;
+    -n=*|--network=*)         VAL="${1#*=}"; validate_cidr "$VAL"; MANUAL_SUBNET="$VAL" ;;
+    -t|--timeout)             [[ -z "$2" ]] && { echo -e "  ${RED}Error:${RESET} $1 requires an argument." >&2; exit 1; }
+                              TIMEOUT="$2"; shift ;;
+    -t=*|--timeout=*)         TIMEOUT="${1#*=}" ;;
+    *)                        echo -e "  ${RED}Error:${RESET} Unknown option $1" >&2; exit 1 ;;
   esac
+  shift
 done
 
 if ! [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
@@ -185,7 +201,6 @@ prompt_interface() {
 }
 
 TUNNEL_SELECTED=false
-
 # If no interface found, or it's a tunnel/VPN, prompt to pick
 if [[ -z "$INTERFACE" ]]; then
   echo -e "  ${YELLOW}Could not auto-detect an interface.${RESET}"
@@ -203,9 +218,8 @@ if [[ -z "$LOCAL_IP" ]]; then
   echo -e "${CYAN}${DIVIDER}${RESET}"; echo; exit 1
 fi
 
-# ── If a VPN tunnel was selected, prompt for the remote subnet ────────────────
-MANUAL_SUBNET=""
-if $TUNNEL_SELECTED; then
+# ── If a VPN tunnel was selected, prompt for remote subnet (unless --network given)
+if $TUNNEL_SELECTED && [[ -z "$MANUAL_SUBNET" ]]; then
   echo -e "  ${YELLOW}VPN tunnel selected — cannot auto-detect remote subnet.${RESET}"
   echo
   while true; do
