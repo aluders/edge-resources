@@ -11,6 +11,17 @@ TIMEOUT=5
 # ARGUMENT PARSING
 # ---------------------------------------------------
 MANUAL_DATE=""
+
+usage() {
+    echo "Usage: $(basename "$0") [--date YYYY-MMDD] [--help]"
+    echo ""
+    echo "Options:"
+    echo "  --date YYYY-MMDD   Download recordings from a specific date (e.g. 2025-0131)"
+    echo "  --help             Show this help message"
+    echo ""
+    echo "If no date is specified, the latest available date is used."
+}
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --date)
@@ -22,8 +33,14 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        --help)
+            usage
+            exit 0
+            ;;
         *)
-            shift
+            echo "❌ Unknown option: $1"
+            echo "   Run with --help for usage."
+            exit 1
             ;;
     esac
 done
