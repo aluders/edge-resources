@@ -31,6 +31,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
+      echo ""
       echo "Unknown flag: $1"
       echo ""
       echo "Usage: $0 [--email EMAIL] [--password PASSWORD] [--token TOKEN] [--domain DOMAIN]"
