@@ -3,37 +3,104 @@
 echo "=== deSEC Restricted Token Generator ==="
 
 ################################################################################
+# PARSE FLAGS
+################################################################################
+
+EMAIL=""
+PASSWORD=""
+AUTH_TOKEN=""
+FULLDOMAIN=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --email)    EMAIL="$2";      shift 2 ;;
+    --password) PASSWORD="$2";   shift 2 ;;
+    --token)    AUTH_TOKEN="$2"; shift 2 ;;
+    --domain)   FULLDOMAIN="$2"; shift 2 ;;
+    *)
+      echo "Unknown flag: $1"
+      echo "Usage: $0 [--email EMAIL] [--password PASSWORD] [--token TOKEN] [--domain DOMAIN]"
+      exit 1
+      ;;
+  esac
+done
+
+
+################################################################################
 # LOGIN
 ################################################################################
 
-read -p "Email: " EMAIL
-read -s -p "Password: " PASSWORD
-echo ""
+if [[ -n "$AUTH_TOKEN" ]]; then
+  echo "✔ Using provided API token."
 
-LOGIN_PAYLOAD=$(jq -c -n --arg email "$EMAIL" --arg password "$PASSWORD" '$ARGS.named')
+elif [[ -n "$EMAIL" && -n "$PASSWORD" ]]; then
+  echo "Logging into deSEC..."
 
-echo "Logging into deSEC..."
+  LOGIN_PAYLOAD=$(jq -c -n --arg email "$EMAIL" --arg password "$PASSWORD" '$ARGS.named')
 
-LOGIN_RESPONSE=$(curl -s -X POST https://desec.io/api/v1/auth/login/ \
-  -H "Content-Type: application/json" \
-  -d "$LOGIN_PAYLOAD")
+  LOGIN_RESPONSE=$(curl -s -X POST https://desec.io/api/v1/auth/login/ \
+    -H "Content-Type: application/json" \
+    -d "$LOGIN_PAYLOAD")
 
-AUTH_TOKEN=$(echo "$LOGIN_RESPONSE" | jq -r '.token')
+  AUTH_TOKEN=$(echo "$LOGIN_RESPONSE" | jq -r '.token')
 
-if [[ "$AUTH_TOKEN" == "null" || -z "$AUTH_TOKEN" ]]; then
-  echo "❌ Login failed:"
-  echo "$LOGIN_RESPONSE"
-  exit 1
+  if [[ "$AUTH_TOKEN" == "null" || -z "$AUTH_TOKEN" ]]; then
+    echo "❌ Login failed:"
+    echo "$LOGIN_RESPONSE"
+    exit 1
+  fi
+
+  echo "✔ Login successful."
+
+else
+  echo "Authentication method:"
+  echo "  1) Email + Password (no 2FA)"
+  echo "  2) API Token (recommended if 2FA is enabled)"
+  read -p "Choose [1/2]: " AUTH_METHOD
+  echo ""
+
+  if [[ "$AUTH_METHOD" == "2" ]]; then
+    read -s -p "API Token: " AUTH_TOKEN
+    echo ""
+    if [[ -z "$AUTH_TOKEN" ]]; then
+      echo "❌ No token provided."
+      exit 1
+    fi
+    echo "✔ Using provided API token."
+
+  else
+    read -p "Email: " EMAIL
+    read -s -p "Password: " PASSWORD
+    echo ""
+
+    LOGIN_PAYLOAD=$(jq -c -n --arg email "$EMAIL" --arg password "$PASSWORD" '$ARGS.named')
+
+    echo "Logging into deSEC..."
+
+    LOGIN_RESPONSE=$(curl -s -X POST https://desec.io/api/v1/auth/login/ \
+      -H "Content-Type: application/json" \
+      -d "$LOGIN_PAYLOAD")
+
+    AUTH_TOKEN=$(echo "$LOGIN_RESPONSE" | jq -r '.token')
+
+    if [[ "$AUTH_TOKEN" == "null" || -z "$AUTH_TOKEN" ]]; then
+      echo "❌ Login failed:"
+      echo "$LOGIN_RESPONSE"
+      exit 1
+    fi
+
+    echo "✔ Login successful."
+  fi
 fi
-
-echo "✔ Login successful."
 
 
 ################################################################################
 # SINGLE DOMAIN INPUT
 ################################################################################
 
-read -p "Full domain (example: test.example.com): " FULLDOMAIN
+if [[ -z "$FULLDOMAIN" ]]; then
+  read -p "Full domain (example: test.example.com): " FULLDOMAIN
+fi
 
 SUBNAME="${FULLDOMAIN%%.*}"
 DOMAIN="${FULLDOMAIN#*.}"
@@ -58,7 +125,6 @@ echo "Checking if domain '$DOMAIN' exists..."
 DOMAIN_LIST=$(curl -s -X GET https://desec.io/api/v1/domains/ \
   -H "Authorization: Token $AUTH_TOKEN")
 
-# deSEC returns objects: { "name": "edgedyn.com", ... }
 DOMAIN_EXISTS=$(echo "$DOMAIN_LIST" | jq -r --arg d "$DOMAIN" '.[] | select(.name == $d)')
 
 if [[ -z "$DOMAIN_EXISTS" ]]; then
@@ -80,7 +146,6 @@ echo "Checking existing RRsets for '$DOMAIN'..."
 RRSETS=$(curl -s -X GET https://desec.io/api/v1/domains/"$DOMAIN"/rrsets/ \
   -H "Authorization: Token $AUTH_TOKEN")
 
-# Does an A record for this subname already exist?
 A_RRSET_EXISTS=$(echo "$RRSETS" | jq -r --arg s "$SUBNAME" '.[] | select(.subname == $s and .type == "A")')
 
 if [[ -z "$A_RRSET_EXISTS" ]]; then
