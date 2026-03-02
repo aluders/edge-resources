@@ -17,9 +17,24 @@ while [[ $# -gt 0 ]]; do
     --password) PASSWORD="$2";   shift 2 ;;
     --token)    AUTH_TOKEN="$2"; shift 2 ;;
     --domain)   FULLDOMAIN="$2"; shift 2 ;;
+    --help)
+      echo ""
+      echo "Usage: $0 [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --email EMAIL       deSEC account email (use with --password)"
+      echo "  --password PASSWORD deSEC account password (use with --email)"
+      echo "  --token TOKEN       deSEC API token (use instead of email/password, recommended with 2FA)"
+      echo "  --domain DOMAIN     Full domain to create DDNS entry for (e.g. test.example.com)"
+      echo "  --help              Show this help message"
+      echo ""
+      exit 0
+      ;;
     *)
       echo "Unknown flag: $1"
+      echo ""
       echo "Usage: $0 [--email EMAIL] [--password PASSWORD] [--token TOKEN] [--domain DOMAIN]"
+      echo "Run '$0 --help' for more information."
       exit 1
       ;;
   esac
