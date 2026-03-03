@@ -1,0 +1,3 @@
+# update uisp from ssh...
+
+curl -fsSL https://uisp.ui.com/v1/install > /tmp/uisp_inst.sh && sudo bash /tmp/uisp_inst.sh --update
