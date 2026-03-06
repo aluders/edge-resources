@@ -19,7 +19,6 @@ VERBOSE=false
 MANUAL_SUBNET=""
 USE_NMAP=false
 BUILD_CACHE=false
-BUILD_FORCE=false
 
 SCAN_PORTS=(21 22 80 443 8080 8443)
 
@@ -34,8 +33,7 @@ usage() {
   echo -e "  ${PURPLE}-t, --timeout SEC${RESET}       Ping timeout in seconds ${DIM}(default: 1)${RESET}"
   echo -e "  ${DIM}    --nmap${RESET}              Use nmap for scanning ${DIM}(better for VPN/tunnels)${RESET}"
   echo -e "  ${DIM}-v, --verbose${RESET}           Show discovery methods used"
-  echo -e "  ${DIM}    --build${RESET}             Cache all vendor OUIs from ARP table ${DIM}(run once to seed cache)${RESET}"
-  echo -e "  ${DIM}    --build-force${RESET}       Re-query all empty/failed cache entries ${DIM}(fixes rate-limited misses)${RESET}"
+  echo -e "  ${DIM}    --build${RESET}             Look up vendors via API for all uncached or previously failed OUIs${RESET}"
   echo -e "  ${DIM}-h, --help${RESET}              Show this help message"
   echo -e "${CYAN}${DIVIDER}${RESET}"
   echo
@@ -54,7 +52,6 @@ while [[ $# -gt 0 ]]; do
     -v|--verbose)       VERBOSE=true ;;
     --nmap)             USE_NMAP=true ;;
     --build)            BUILD_CACHE=true ;;
-    --build-force)      BUILD_CACHE=true; BUILD_FORCE=true ;;
     -i|--interface)     [[ -z "$2" ]] && { echo -e "  ${RED}Error:${RESET} $1 requires an argument." >&2; exit 1; }
                         INTERFACE="$2"; shift ;;
     -i=*|--interface=*) INTERFACE="${1#*=}" ;;
@@ -106,8 +103,8 @@ if $BUILD_CACHE; then
     CACHE_FILE="${CACHE_DIR}/oui_${OUI}"
     if [[ -f "$CACHE_FILE" ]]; then
       CACHED_VAL=$(cat "$CACHE_FILE")
-      # --build-force: re-query entries that are empty (rate-limited misses)
-      if $BUILD_FORCE && [[ -z "$CACHED_VAL" ]]; then
+      # Re-query entries that previously failed or were rate-limited
+      if [[ -z "$CACHED_VAL" ]]; then
         echo -e  "  ${DIM}[${IDX}/${TOTAL_OUIS}]${RESET} ${CYAN}${OUI}${RESET}  ${YELLOW}re-querying…${RESET}"
       else
         (( SKIPPED++ ))
