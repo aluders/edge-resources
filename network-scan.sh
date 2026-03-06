@@ -77,10 +77,23 @@ if $BUILD_CACHE; then
   echo
   echo -e "  ${BOLD}${CYAN}VENDOR CACHE BUILDER${RESET}"
   echo -e "${CYAN}${DIVIDER}${RESET}"
-  echo -e "  Reading ARP table and looking up uncached OUIs…"
   echo -e "  ${DIM}Rate: 1 request per 1.5s to stay within API limits${RESET}"
   echo -e "${CYAN}${DIVIDER}${RESET}"
   echo
+
+  # Ping sweep to populate ARP table before reading it
+  BUILD_IFACE=$(route get default 2>/dev/null | awk '/interface:/ {print $2}' | head -1)
+  BUILD_IP=$(ifconfig "$BUILD_IFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1)
+  if [[ -n "$BUILD_IP" ]]; then
+    BUILD_SUBNET=$(echo "$BUILD_IP" | cut -d. -f1-3)
+    echo -e "  ${DIM}Pinging ${BUILD_SUBNET}.0/24 to populate ARP table…${RESET}"
+    for i in $(seq 1 254); do
+      ping -c1 -W1 -t1 "${BUILD_SUBNET}.${i}" &>/dev/null &
+    done
+    wait
+    echo -e "  ${DIM}Ping sweep done. Reading ARP table…${RESET}"
+    echo
+  fi
 
   OUIS=()
   while IFS= read -r LINE; do
