@@ -393,6 +393,7 @@ def fetch_upnp(ip, url):
             label = re.sub(r'\s+(Access\s+Point|SagemcomFast\S*)', '', label, flags=re.I).strip()
             label = re.sub(r'_[A-Z0-9]{6,}$', '', label).strip()
             label = re.sub(r'_Frontier\s*$', '', label, flags=re.I).strip()
+
             path = os.path.join('${OUTDIR}', 'ssdp_' + ip)
             open(path, 'w').write(label[:50])
     except: pass
@@ -770,13 +771,21 @@ except: sys.exit(1)" 2>/dev/null || true)
     elif [[ -f "${TMPDIR_SCAN}/httptitle_${IP}" ]]; then
       WINNER=$(cat "${TMPDIR_SCAN}/httptitle_${IP}")
     fi
-    # If we found something this scan, update the persistent cache
+    # Compare with cached value — only overwrite if new result is longer/better
+    CACHED_DEVICE=""
+    [[ -f "${DEVICE_CACHE_DIR}/device_${IP}" ]] && CACHED_DEVICE=$(cat "${DEVICE_CACHE_DIR}/device_${IP}")
     if [[ -n "$WINNER" ]]; then
-      echo "$WINNER" > "${DEVICE_CACHE_DIR}/device_${IP}"
-      echo "$WINNER" > "${TMPDIR_SCAN}/device_${IP}"
-    elif [[ -f "${DEVICE_CACHE_DIR}/device_${IP}" ]]; then
-      # Fall back to last known identity if this scan didn't find one
-      cp "${DEVICE_CACHE_DIR}/device_${IP}" "${TMPDIR_SCAN}/device_${IP}"
+      # Keep whichever is more informative (longer string wins)
+      if [[ ${#WINNER} -ge ${#CACHED_DEVICE} ]]; then
+        echo "$WINNER" > "${DEVICE_CACHE_DIR}/device_${IP}"
+        echo "$WINNER" > "${TMPDIR_SCAN}/device_${IP}"
+      else
+        # Cached value is better — use it but don't overwrite cache
+        echo "$CACHED_DEVICE" > "${TMPDIR_SCAN}/device_${IP}"
+      fi
+    elif [[ -n "$CACHED_DEVICE" ]]; then
+      # Nothing found this scan — fall back to last known identity
+      echo "$CACHED_DEVICE" > "${TMPDIR_SCAN}/device_${IP}"
     fi
   done
   DEVICE_COUNT=$(ls "${TMPDIR_SCAN}"/device_* 2>/dev/null | wc -l | tr -d ' ')
