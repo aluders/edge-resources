@@ -756,14 +756,27 @@ except: sys.exit(1)" 2>/dev/null || true)
   echo -e "  ${DIM}Phase 6/7 — HTTP titles:${RESET}   done ✓  (${HTTP_COUNT} title(s) found)              "
 
   # Phase 7: Merge device identity — priority: mDNS > SSDP > HTTP title
+  # Results are persisted to ~/.cache/netscan/device_IP so flaky sources
+  # (SSDP, mDNS) don't cause devices to disappear between scans.
+  DEVICE_CACHE_DIR="$HOME/.cache/netscan/devices"
+  mkdir -p "$DEVICE_CACHE_DIR"
   echo -ne "  ${DIM}Phase 7/7 — Device identity:${RESET}  merging…\r"
   for IP in "${ALIVE_IPS[@]}"; do
+    WINNER=""
     if [[ -f "${TMPDIR_SCAN}/mdns_${IP}" ]]; then
-      cp "${TMPDIR_SCAN}/mdns_${IP}" "${TMPDIR_SCAN}/device_${IP}"
+      WINNER=$(cat "${TMPDIR_SCAN}/mdns_${IP}")
     elif [[ -f "${TMPDIR_SCAN}/ssdp_${IP}" ]]; then
-      cp "${TMPDIR_SCAN}/ssdp_${IP}" "${TMPDIR_SCAN}/device_${IP}"
+      WINNER=$(cat "${TMPDIR_SCAN}/ssdp_${IP}")
     elif [[ -f "${TMPDIR_SCAN}/httptitle_${IP}" ]]; then
-      cp "${TMPDIR_SCAN}/httptitle_${IP}" "${TMPDIR_SCAN}/device_${IP}"
+      WINNER=$(cat "${TMPDIR_SCAN}/httptitle_${IP}")
+    fi
+    # If we found something this scan, update the persistent cache
+    if [[ -n "$WINNER" ]]; then
+      echo "$WINNER" > "${DEVICE_CACHE_DIR}/device_${IP}"
+      echo "$WINNER" > "${TMPDIR_SCAN}/device_${IP}"
+    elif [[ -f "${DEVICE_CACHE_DIR}/device_${IP}" ]]; then
+      # Fall back to last known identity if this scan didn't find one
+      cp "${DEVICE_CACHE_DIR}/device_${IP}" "${TMPDIR_SCAN}/device_${IP}"
     fi
   done
   DEVICE_COUNT=$(ls "${TMPDIR_SCAN}"/device_* 2>/dev/null | wc -l | tr -d ' ')
