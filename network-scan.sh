@@ -794,11 +794,11 @@ if [[ $TOTAL_FOUND -eq 0 ]]; then
 fi
 
 if ! $USE_NMAP; then
-  printf "${GREEN}  ${RESET}${BOLD}${BLUE}%-16s${RESET}  ${BOLD}${PURPLE}%-19s${RESET}  ${BOLD}${YELLOW}%-18s${RESET}  ${BOLD}%-20s${RESET}  ${BOLD}%-16s${RESET}  ${BOLD}%s${RESET}\n" \
+  printf "${GREEN}  ${RESET}${BOLD}${BLUE}%-16s${RESET}  ${BOLD}${PURPLE}%-19s${RESET}  ${BOLD}${YELLOW}%-18s${RESET}  ${BOLD}%-20s${RESET}  ${BOLD}%-22s${RESET}  ${BOLD}%s${RESET}\n" \
     "IP ADDRESS" "MAC ADDRESS" "VENDOR" "HOSTNAME" "OPEN PORTS" "DEVICE"
 else
-  printf "${GREEN}  ${RESET}${BOLD}${BLUE}%-16s${RESET}  ${BOLD}${PURPLE}%-19s${RESET}  ${BOLD}${YELLOW}%-18s${RESET}  ${BOLD}%-20s${RESET}  ${BOLD}%s${RESET}\n" \
-    "IP ADDRESS" "MAC ADDRESS" "VENDOR" "HOSTNAME" "OPEN PORTS"
+  printf "${GREEN}  ${RESET}${BOLD}${BLUE}%-16s${RESET}  ${BOLD}${PURPLE}%-19s${RESET}  ${BOLD}${YELLOW}%-18s${RESET}  ${BOLD}%-20s${RESET}  ${BOLD}%-22s${RESET}  ${BOLD}%s${RESET}\n" \
+    "IP ADDRESS" "MAC ADDRESS" "VENDOR" "HOSTNAME" "OPEN PORTS" "DEVICE"
 fi
 echo
 
@@ -836,11 +836,20 @@ for IP in "${ALIVE_IPS[@]}"; do
   [[ -n "$VENDOR"   ]] && C_VND="${YELLOW}${VND_PAD}${RESET}" || C_VND="${DIM}${VND_PAD}${RESET}"
   [[ -n "$HOSTNAME" ]] && C_HOST="${HOST_PAD}"                 || C_HOST="${DIM}${HOST_PAD}${RESET}"
 
+  # Build colored ports string with fixed-width padding for alignment
+  # Each port token is ~5 chars; pad the visible width to 18 chars
   PORTS_COLORED=""
-  for PORT_NUM in $PORTS; do PORTS_COLORED+="${GREEN}${PORT_NUM}${RESET} "; done
+  PORTS_VISIBLE_LEN=0
+  for PORT_NUM in $PORTS; do
+    PORTS_COLORED+="${GREEN}${PORT_NUM}${RESET} "
+    (( PORTS_VISIBLE_LEN += ${#PORT_NUM} + 1 ))
+  done
+  # Pad to fixed width (18) so DEVICE column stays aligned
+  PORTS_PAD_NEEDED=$(( 22 - PORTS_VISIBLE_LEN ))
+  [[ $PORTS_PAD_NEEDED -gt 0 ]] && PORTS_COLORED+=$(printf "%${PORTS_PAD_NEEDED}s" "")
 
   if ! $USE_NMAP; then
-    echo -e "${PREFIX}${C_IP}  ${C_MAC}  ${C_VND}  ${C_HOST}  ${PORT_PAD}  ${DIM}${DEVICE}${RESET}"
+    echo -e "${PREFIX}${C_IP}  ${C_MAC}  ${C_VND}  ${C_HOST}  ${PORTS_COLORED}  ${DIM}${DEVICE}${RESET}"
   else
     echo -e "${PREFIX}${C_IP}  ${C_MAC}  ${C_VND}  ${C_HOST}  ${PORTS_COLORED}"
   fi
