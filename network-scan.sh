@@ -73,70 +73,23 @@ fi
 
 # ── OUI vendor lookup ─────────────────────────────────────────────────────────
 oui_lookup() {
-  local MAC="$1" OUTFILE="$2" OUI VENDOR=""
+  local MAC="$1" OUTFILE="$2" OUI
   OUI=$(echo "$MAC" | tr '[:lower:]' '[:upper:]' | tr -d ':' | cut -c1-6)
-
-  # Check persistent cache first — API results are more specific than hardcoded table
   local CACHE_DIR="$HOME/.cache/netscan"
   local CACHE_FILE="${CACHE_DIR}/oui_${OUI}"
-  if [[ -f "$CACHE_FILE" ]]; then
-    local CACHED_VAL
-    CACHED_VAL=$(cat "$CACHE_FILE")
-    if [[ -n "$CACHED_VAL" ]]; then
-      echo "$CACHED_VAL" > "$OUTFILE"; return
-    fi
-    # Empty cache file means confirmed not found — skip API, use hardcoded if available
-  fi
-
-  case "$OUI" in
-    000393|000502|001124|001451|0016CB|0017F2|001B63|001CB3|001E52|001EC2) VENDOR="Apple" ;;
-    001F5B|002312|002332|002436|00264B|286AB8|3C0754|3C15C2|6C40B5|843835) VENDOR="Apple" ;;
-    842F57|A45E60|A8BE27|AC3C0B|B8FF61|D8BB2C|F0DCE2|F40F24|F82793)        VENDOR="Apple" ;;
-    000DB9|001247|0015B9|001632|0024E9|002566|A04299|9C5C8E|CC07AB)         VENDOR="Samsung" ;;
-    3C5AB4|54607E|A47733|1C1ADF|48D6D5)                                     VENDOR="Google" ;;
-    0C47C9|F0272D|747548|A002DC|B47C9C|F0F5BD|FCA667|8071CB)                VENDOR="Amazon" ;;
-    50F1E5|EC1728)                                                           VENDOR="Eero (Amazon)" ;;
-    B827EB|DCA632|E45F01)                                                   VENDOR="Raspberry Pi" ;;
-    525400)                                                                  VENDOR="QEMU/KVM VM" ;;
-    0418D6|044EC2|0CE496|18E829|24A43C|44D9E7|687249|78452E|80212A|802AA8) VENDOR="Ubiquiti" ;;
-    F09FC2|FCECE9|68D79A|D021F9|249F3E|784558|9C934E|E43883|CC7B5C|D8D5B9) VENDOR="Ubiquiti" ;;
-    D8BC38|245EBE|0417D6|ACBB00)                                            VENDOR="Ubiquiti" ;;
-    000AEB|001D0F|105BAD|1C3BF3|2027CB|50C7BF|6045CB|B008CF|C46E1F|E894F6) VENDOR="TP-Link" ;;
-    001B2F|001E2A|00223F|002275|20E52A|28C68E|4C60DE|6CB0CE|9C3DCF|A040A0|C03F0E) VENDOR="Netgear" ;;
-    000142|000164|0001C7|0001C9|000216|00023D|000268|0002B9|001A2F|001B0D)  VENDOR="Cisco" ;;
-    001C0E|001D45|0022BD|58AC78|6C9C8F|885A92)                              VENDOR="Cisco" ;;
-    000E58|48A6B8|5CAAB5|78282C|94105A|B8E937)                              VENDOR="Sonos" ;;
-    001788|ECB5FA)                                                           VENDOR="Signify/Hue" ;;
-    086686|205281|6C9EFD|AC3A7A|CC6EB0|D89695|DC3A5E)                       VENDOR="Roku" ;;
-    001517|001EE5|007048|00BE43|14859F|485D60|4C7999|60674B|A0C589|B0A4E7)  VENDOR="Intel" ;;
-    001372|0018B1|001C23|00216B|5CF9DD|BCEE7B|F8B156)                       VENDOR="Dell" ;;
-    001708|0017A4|001B78|0021F7|3CACA4|94571A|FCF152)                       VENDOR="HP" ;;
-    001E75|0021FB|34E6AD|A8B8B5|CC2D8C)                                     VENDOR="LG" ;;
-    00D9D1|30000E|54423A|9C5DF2|AC9B0A|F8A963)                              VENDOR="Sony" ;;
-    002709|00BF0B|34AF2C|40F407|8CCF88|E0E751|98B6E9)                       VENDOR="Nintendo" ;;
-    0050F2|001DD8|002248|28183D|48573B|7C1E52|C4173F)                       VENDOR="Microsoft" ;;
-    18FE34|240AC4|2CF432|3C71BF|4CEBD6|5CCF7F|84CCA8|A020A6|AC67B2|BCDDC2) VENDOR="Espressif (IoT)" ;;
-    485519|30AEA4|8CAAB5)                                                   VENDOR="Shelly" ;;
-    D07652|A8664C)                                                           VENDOR="Tuya" ;;
-    001195|00179A|001CF0|002191|00226B|1C7EE5|28107B|34363B|90F652|B8A386)  VENDOR="D-Link" ;;
-    001A92|001D60|002354|04D9F5|08606E|10BF48|107B44|14DDA9|2C56DC|2C4D54)  VENDOR="ASUS" ;;
-    001132)  VENDOR="Synology" ;;
-    0022B0)  VENDOR="Drobo" ;;
-    18B430)  VENDOR="Nest (Google)" ;;
-    0024E4)  VENDOR="Withings" ;;
-    001CDF|EC1A59|944452|B4750E) VENDOR="Belkin" ;;
-  esac
-  if [[ -n "$VENDOR" ]]; then echo "$VENDOR" > "$OUTFILE"; return; fi
-
-  # Persistent cache — write API result for future runs
   mkdir -p "$CACHE_DIR"
 
+  # Return cached value if present
+  if [[ -f "$CACHE_FILE" && -s "$CACHE_FILE" ]]; then
+    cat "$CACHE_FILE" > "$OUTFILE"; return
+  fi
+
+  # Hit the API — only cache on success, never cache misses
   local RESULT
   RESULT=$(curl -sf --max-time 4 "https://api.macvendors.com/${MAC}" 2>/dev/null || echo "")
   if [[ -n "$RESULT" && "$RESULT" != *"Not Found"* && "$RESULT" != *"Too Many"* && "$RESULT" != *"errors"* ]]; then
     printf "%.22s" "$RESULT" | tee "$CACHE_FILE" > "$OUTFILE"
   else
-    echo "" > "$CACHE_FILE"   # cache misses too, so we don't keep retrying
     echo "" > "$OUTFILE"
   fi
 }
@@ -606,8 +559,17 @@ except: sys.exit(1)" 2>/dev/null || true)
     printf '%s\n%s\n' "$OUI" "$MAC" > "${TMPDIR_SCAN}/mac_${IP}"
     DUPE=false
     for s in "${SEEN_OUIS[@]}"; do [[ "$s" == "$OUI" ]] && DUPE=true && break; done
-    $DUPE || { SEEN_OUIS+=("$OUI"); ( oui_lookup "$MAC" "${TMPDIR_SCAN}/oui_${OUI}"; sleep 0.25 ) & }
-  done; wait
+    if ! $DUPE; then
+      SEEN_OUIS+=("$OUI")
+      OUI_CACHE="${HOME}/.cache/netscan/oui_${OUI}"
+      if [[ -f "$OUI_CACHE" && -s "$OUI_CACHE" ]]; then
+        cp "$OUI_CACHE" "${TMPDIR_SCAN}/oui_${OUI}"
+      else
+        oui_lookup "$MAC" "${TMPDIR_SCAN}/oui_${OUI}"
+        sleep 1.5
+      fi
+    fi
+  done
 
 else
   # ── Default path: ping + ARP + /dev/tcp + HTTP title ─────────────────────
