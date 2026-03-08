@@ -84,7 +84,7 @@ function Get-Vendor ([string]$MAC) {
     # 2. macvendors.com API — sole source of truth.
     #    Only write to cache on a real result so transient failures get retried next run.
     try {
-        $r = Invoke-RestMethod -Uri "https://api.macvendors.com/$MAC" -TimeoutSec 5 -ErrorAction Stop
+        $r = Invoke-RestMethod -Uri "https://api.macvendors.com/$MAC" -TimeoutSec 5 -ErrorAction Stop -Verbose:$false 3>$null
         if ($r -and $r -notmatch "Not Found|errors|Too Many") {
             $v = $r.Substring(0,[Math]::Min(30,$r.Length)).Trim()
             Set-Content $cf $v -Encoding UTF8
@@ -374,25 +374,17 @@ function Get-MACFromARP ([string[]]$IPs) {
     return $found
 }
 
-# SendARP p/invoke — forces a real ARP packet on the wire
-$SendARPDef = @'
-[DllImport("iphlpapi.dll", ExactSpelling=true)]
-public static extern int SendARP(int destIP, int srcIP, byte[] macAddr, ref int macAddrLen);
-'@
-$SendARP = Add-Type -MemberDefinition $SendARPDef -Name 'SendARP' -Namespace 'Net' -PassThru
-
-function Get-MACViaSendARP ([string]$IP) {
-    try {
-        $destIP = [BitConverter]::ToInt32([System.Net.IPAddress]::Parse($IP).GetAddressBytes(), 0)
-        $mac    = New-Object byte[] 6
-        $len    = 6
-        $ret    = $SendARP::SendARP($destIP, 0, $mac, [ref]$len)
-        if ($ret -eq 0 -and ($mac | Measure-Object -Sum).Sum -gt 0) {
-            return ($mac | ForEach-Object { $_.ToString("X2") }) -join ':'
-        }
-    } catch {}
-    return $null
+# SendARP p/invoke — class name must differ from the method name it contains
+Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Net {
+    public class IpHlpApi {
+        [DllImport("iphlpapi.dll", ExactSpelling=true)]
+        public static extern int SendARP(int destIP, int srcIP, byte[] macAddr, ref int macAddrLen);
+    }
 }
+'@
 
 # Pass 1 — existing ARP cache
 $need = [System.Collections.Generic.List[string]]::new()
@@ -418,12 +410,24 @@ if ($need.Count -gt 0) {
     $ArpScript = {
         param([string]$ip)
         try {
-            $destIP = [BitConverter]::ToInt32([System.Net.IPAddress]::Parse($ip).GetAddressBytes(), 0)
+            Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace Net {
+    public class IpHlpApi {
+        [DllImport("iphlpapi.dll", ExactSpelling=true)]
+        public static extern int SendARP(int destIP, int srcIP, byte[] macAddr, ref int macAddrLen);
+    }
+}
+'@
+        } catch {}
+        try {
+            $bytes  = [System.Net.IPAddress]::Parse($ip).GetAddressBytes()
+            $destIP = [BitConverter]::ToInt32($bytes, 0)
             $mac    = New-Object byte[] 6
             $len    = 6
-            Add-Type -MemberDefinition '[DllImport("iphlpapi.dll", ExactSpelling=true)] public static extern int SendARP(int d, int s, byte[] m, ref int l);' -Name 'SARP' -Namespace 'N' -ErrorAction SilentlyContinue
-            $ret = [N.SARP]::SendARP($destIP, 0, $mac, [ref]$len)
-            if ($ret -eq 0 -and ($mac | Measure-Object -Sum).Sum -gt 0) {
+            if ([Net.IpHlpApi]::SendARP($destIP, 0, $mac, [ref]$len) -eq 0 -and
+                ($mac | Measure-Object -Sum).Sum -gt 0) {
                 return ($mac | ForEach-Object { $_.ToString("X2") }) -join ':'
             }
         } catch {}
