@@ -1,3 +1,6 @@
+# elevated powershell
+# irm netscan.vcc.net | iex
+
 # netscan.ps1 — Network device discovery for Windows
 # Usage:  .\netscan.ps1 [-Interface NIC] [-Network CIDR] [-Timeout MS] [-Verbose] [-Help]
 
