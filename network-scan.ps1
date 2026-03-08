@@ -246,7 +246,8 @@ if ($Network -ne "") {
 } else {
     $nics = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
         Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' } |
-        Where-Object { if ($Interface) { $_.InterfaceAlias -eq $Interface } else { $true } }
+        Where-Object { if ($Interface) { $_.InterfaceAlias -eq $Interface } else { $true } } |
+        Where-Object { $_.InterfaceAlias -notmatch '(?i)(vEthernet|Loopback|isatap|Teredo|6to4)' }
     $best = $nics | Select-Object -First 1
     if (-not $best) { wh "  Error: " Red -n; Write-Host "No active network interface found."; exit 1 }
     $LocalIP=$best.IPAddress; $LocalIface=$best.InterfaceAlias
@@ -480,7 +481,8 @@ $Pool4=[RunspaceFactory]::CreateRunspacePool(1,[Math]::Min($TotalFound,32)); $Po
 $HttpH=[System.Collections.Generic.List[hashtable]]::new()
 foreach ($ip in $AliveIPs) {
     $ps=[PowerShell]::Create(); $ps.RunspacePool=$Pool4
-    $ps.AddScript($HttpScript).AddArgument($ip).AddArgument((if ($portMap.ContainsKey($ip)) { $portMap[$ip] } else { "" })) | Out-Null
+    $ipPorts = if ($portMap.ContainsKey($ip)) { $portMap[$ip] } else { "" }
+    $ps.AddScript($HttpScript).AddArgument($ip).AddArgument($ipPorts) | Out-Null
     $HttpH.Add(@{PS=$ps;AR=$ps.BeginInvoke();IP=$ip})
 }
 $titleMap=@{}
@@ -542,7 +544,7 @@ foreach ($ip in $AliveIPs) {
     $mac    = if ($macMap.ContainsKey($ip))    { $macMap[$ip] }    else { [string][char]0x2014 }
     $oui    = if ($mac -ne [char]0x2014) { ($mac -replace ':','').Substring(0,6) } else { "" }
     $vendor = if ($oui -and $vendorMap.ContainsKey($oui)) { $vendorMap[$oui] } else { "" }
-    $host   = if ($hostMap.ContainsKey($ip))   { $hostMap[$ip] }   else { "" }
+    $hn     = if ($hostMap.ContainsKey($ip))   { $hostMap[$ip] }   else { "" }
     $ports  = if ($portMap.ContainsKey($ip))   { $portMap[$ip] }   else { "" }
     $device = if ($deviceMap.ContainsKey($ip)) { $deviceMap[$ip] } else { "" }
 
@@ -563,8 +565,8 @@ foreach ($ip in $AliveIPs) {
     Write-Host -NoNewline "  "
 
     # Hostname — white or dim
-    $hs = if ($host) { $host.Substring(0,[Math]::Min(20,$host.Length)) } else { "" }
-    Write-Host -NoNewline ("{0,-20}" -f $hs) -ForegroundColor $(if ($host) { "White" } else { "DarkGray" })
+    $hs = if ($hn) { $hn.Substring(0,[Math]::Min(20,$hn.Length)) } else { "" }
+    Write-Host -NoNewline ("{0,-20}" -f $hs) -ForegroundColor $(if ($hn) { "White" } else { "DarkGray" })
     Write-Host -NoNewline "  "
 
     # Open ports — green numbers with manual padding to keep DEVICE column aligned
