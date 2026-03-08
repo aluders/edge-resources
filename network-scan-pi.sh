@@ -17,7 +17,6 @@ INTERFACE=""
 TIMEOUT=1
 VERBOSE=false
 MANUAL_SUBNET=""
-USE_NMAP=false
 
 SCAN_PORTS=(21 22 80 443 8080 8443)
 
@@ -25,12 +24,11 @@ usage() {
   echo
   echo -e "  ${BOLD}${CYAN}NETWORK SCANNER${RESET}"
   echo -e "${CYAN}${DIVIDER}${RESET}"
-  echo -e "  ${BOLD}Usage:${RESET}  netscan ${CYAN}[-i|--interface IFACE]${RESET} ${YELLOW}[-n|--network CIDR]${RESET} ${PURPLE}[-t|--timeout SEC]${RESET} ${DIM}[--nmap] [-v] [-h]${RESET}"
+  echo -e "  ${BOLD}Usage:${RESET}  netscan ${CYAN}[-i|--interface IFACE]${RESET} ${YELLOW}[-n|--network CIDR]${RESET} ${PURPLE}[-t|--timeout SEC]${RESET} ${DIM}[-v] [-h]${RESET}"
   echo
   echo -e "  ${CYAN}-i, --interface IFACE${RESET}   Network interface ${DIM}(default: auto-detect)${RESET}"
   echo -e "  ${YELLOW}-n, --network CIDR${RESET}      Subnet to scan ${DIM}(e.g. 10.1.0.0/24)${RESET}"
   echo -e "  ${PURPLE}-t, --timeout SEC${RESET}       Ping timeout in seconds ${DIM}(default: 1)${RESET}"
-  echo -e "  ${DIM}    --nmap${RESET}              Use nmap for scanning ${DIM}(better for VPN/tunnels)${RESET}"
   echo -e "  ${DIM}-v, --verbose${RESET}           Show verbose vendor lookup progress${RESET}"
   echo -e "  ${DIM}-h, --help${RESET}              Show this help message"
   echo -e "${CYAN}${DIVIDER}${RESET}"
@@ -48,7 +46,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)          usage ;;
     -v|--verbose)       VERBOSE=true ;;
-    --nmap)             USE_NMAP=true ;;
     -i|--interface)     [[ -z "$2" ]] && { echo -e "  ${RED}Error:${RESET} $1 requires an argument." >&2; exit 1; }
                         INTERFACE="$2"; shift ;;
     -i=*|--interface=*) INTERFACE="${1#*=}" ;;
@@ -104,11 +101,6 @@ if ! command -v avahi-browse &>/dev/null; then
   echo -e "  ${DIM}avahi-utils not found — attempting install for mDNS support…${RESET}"
   apt_install avahi-utils "mDNS device identification" \
     || echo -e "  ${DIM}mDNS discovery will be skipped.${RESET}"
-fi
-
-# nmap — only required when --nmap flag is used
-if $USE_NMAP && ! command -v nmap &>/dev/null; then
-  apt_install nmap "--nmap flag requested" || exit 1
 fi
 
 # ── OUI vendor lookup ─────────────────────────────────────────────────────────
@@ -468,14 +460,13 @@ for (( host=NET_INT+1; host<BCAST_INT; host++ )); do ALL_IPS+=("$(int_to_ip $hos
 TOTAL=${#ALL_IPS[@]}
 
 GW=$(ip route show default 2>/dev/null | awk '/default/ {for(i=1;i<NF;i++) if($i=="via") {print $(i+1); exit}}')
-ENGINE=$( $USE_NMAP && echo "${GREEN}nmap${RESET}" || echo "${CYAN}ping + ARP + /dev/tcp${RESET}" )
 
 echo -e "  ${BOLD}Interface:${RESET}  ${CYAN}${INTERFACE}${RESET}"
 echo -e "  ${BOLD}Local IP:${RESET}   ${CYAN}${LOCAL_IP}${RESET}"
 echo -e "  ${BOLD}Gateway:${RESET}    ${CYAN}${GW:-unknown}${RESET}"
 echo -e "  ${BOLD}Scanning:${RESET}   ${CYAN}${SUBNET}${RESET}"
 echo -e "  ${BOLD}Ports:${RESET}      ${CYAN}${SCAN_PORTS[*]}${RESET}"
-echo -e "  ${BOLD}Engine:${RESET}     ${ENGINE}"
+echo -e "  ${BOLD}Engine:${RESET}     ${CYAN}ping + ARP + /dev/tcp${RESET}"
 echo -e "  ${BOLD}Timeout:${RESET}    ${TIMEOUT}s per host"
 echo -e "${CYAN}${DIVIDER}${RESET}"
 
@@ -491,97 +482,7 @@ fi
 ALIVE_IPS=()
 TOTAL_FOUND=0
 
-if $USE_NMAP; then
-  # ── nmap path ────────────────────────────────────────────────────────────
-  PORT_LIST=$(IFS=,; echo "${SCAN_PORTS[*]}")
-
-  echo -ne "  ${DIM}Phase 1/3 — Host discovery:${RESET}  scanning…\r"
-  nmap -sn -T4 --host-timeout 5s \
-    -PE -PS21,22,80,443,8080,8443 -PA80,443 \
-    -oX /tmp/netscan_hosts.xml "$SUBNET" &>/dev/null
-
-  while IFS= read -r IP; do [[ -n "$IP" ]] && ALIVE_IPS+=("$IP"); done < <(python3 -c "
-import sys, xml.etree.ElementTree as ET
-try: tree = ET.parse('/tmp/netscan_hosts.xml')
-except: sys.exit(0)
-for host in tree.findall('host'):
-    st = host.find('status')
-    if st is None or st.get('state') != 'up': continue
-    a = host.find(\"address[@addrtype='ipv4']\")
-    if a is not None: print(a.get('addr'))
-" 2>/dev/null)
-
-  ARP_IPS=$(ip neigh show 2>/dev/null | awk '$NF !~ /FAILED|INCOMPLETE/ {print $1}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
-  for IP in $ARP_IPS; do
-    [[ "${IP##*.}" == "255" ]] && continue
-    IP_INT=$(ip_to_int "$IP" 2>/dev/null) || continue
-    (( (IP_INT & MASK_INT) != NET_INT )) && continue
-    (( IP_INT <= NET_INT || IP_INT >= BCAST_INT )) && continue
-    [[ ! " ${ALIVE_IPS[*]} " =~ " ${IP} " ]] && ALIVE_IPS+=("$IP")
-  done
-
-  IFS=$'\n' ALIVE_IPS=($(printf '%s\n' "${ALIVE_IPS[@]}" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)); unset IFS
-  TOTAL_FOUND=${#ALIVE_IPS[@]}
-  echo -e "  ${DIM}Phase 1/3 — Host discovery:${RESET}  ${GREEN}${TOTAL_FOUND}${RESET} host(s) found ✓              "
-
-  if [[ $TOTAL_FOUND -gt 0 ]]; then
-    echo -ne "  ${DIM}Phase 2/3 — Port scan:${RESET}       scanning ${TOTAL_FOUND} host(s)…\r"
-    SCAN_METHOD="-sT"; [[ $EUID -eq 0 ]] && SCAN_METHOD="-sS"
-    printf '%s\n' "${ALIVE_IPS[@]}" > "${TMPDIR_SCAN}/hosts.txt"
-    nmap $SCAN_METHOD -p "$PORT_LIST" -T4 -iL "${TMPDIR_SCAN}/hosts.txt" -oX /tmp/netscan_ports.xml >/dev/null 2>&1
-    echo -e "  ${DIM}Phase 2/3 — Port scan:${RESET}       done ✓                    "
-    python3 -c "
-import xml.etree.ElementTree as ET, sys
-try: tree = ET.parse('/tmp/netscan_ports.xml')
-except: sys.exit(0)
-for host in tree.findall('host'):
-    a = host.find(\"address[@addrtype='ipv4']\")
-    if a is None: continue
-    ip = a.get('addr'); ports = []
-    pe = host.find('ports')
-    if pe is not None:
-        for p in pe.findall('port'):
-            st = p.find('state')
-            if st is not None and st.get('state') == 'open': ports.append(p.get('portid'))
-    if ports: open('${TMPDIR_SCAN}/ports_' + ip, 'w').write(' '.join(ports))
-" 2>/dev/null
-  fi
-
-  echo -ne "  ${DIM}Phase 3/3 — Hostnames:${RESET}       resolving ${TOTAL_FOUND} host(s)…\r"
-  for IP in "${ALIVE_IPS[@]}"; do
-    ( NAME=$(getent hosts "$IP" 2>/dev/null | awk '{print $2}' | head -1)
-      [[ -z "$NAME" ]] && NAME=$(python3 -c "
-import socket,sys
-try: socket.setdefaulttimeout(2); print(socket.gethostbyaddr('$IP')[0])
-except: sys.exit(1)" 2>/dev/null || true)
-      echo "${NAME}" > "${TMPDIR_SCAN}/host_${IP}" ) &
-  done; wait
-  echo -e "  ${DIM}Phase 3/3 — Hostnames:${RESET}       done ✓                              "
-
-  SEEN_OUIS=()
-  for IP in "${ALIVE_IPS[@]}"; do
-    RAW_MAC=$(ip neigh show "$IP" 2>/dev/null | awk '{print $5}' | grep -E '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$' | head -1)
-    [[ -z "$RAW_MAC" ]] && RAW_MAC=$(arp -n "$IP" 2>/dev/null | awk 'NR>1 {print $3}' | grep -E '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$' | head -1)
-    [[ -z "$RAW_MAC" ]] && continue
-    MAC=$(echo "$RAW_MAC" | awk -F: '{for(i=1;i<=NF;i++) printf "%s%02s",(i>1?":":""),$i; print ""}')
-    OUI=$(echo "$MAC" | tr '[:lower:]' '[:upper:]' | tr -d ':' | cut -c1-6)
-    printf '%s\n%s\n' "$OUI" "$MAC" > "${TMPDIR_SCAN}/mac_${IP}"
-    DUPE=false
-    for s in "${SEEN_OUIS[@]}"; do [[ "$s" == "$OUI" ]] && DUPE=true && break; done
-    if ! $DUPE; then
-      SEEN_OUIS+=("$OUI")
-      OUI_CACHE="${HOME}/.cache/netscan/oui_${OUI}"
-      if [[ -f "$OUI_CACHE" && -s "$OUI_CACHE" ]]; then
-        cp "$OUI_CACHE" "${TMPDIR_SCAN}/oui_${OUI}"
-      else
-        oui_lookup "$MAC" "${TMPDIR_SCAN}/oui_${OUI}"
-        sleep 1.5
-      fi
-    fi
-  done
-
-else
-  # ── Default path: ping + ARP + /dev/tcp + HTTP title ─────────────────────
+# ── Default path: ping + ARP + /dev/tcp + HTTP title ───────────────────────
 
   echo -ne "  ${DIM}Phase 1/7 — Ping sweep:${RESET}   ${CYAN}0${RESET}/${TOTAL} probed  ${GREEN}0${RESET} alive\r"
   IDX=0
@@ -729,8 +630,6 @@ except: sys.exit(1)" 2>/dev/null || true)
   DEVICE_COUNT=$(ls "${TMPDIR_SCAN}"/device_* 2>/dev/null | wc -l | tr -d ' ')
   echo -e "  ${DIM}Phase 7/7 — Device identity:${RESET}  done ✓  (${DEVICE_COUNT} device(s) identified)        "
 
-fi
-
 # ── Results table ─────────────────────────────────────────────────────────────
 echo
 echo -e "${CYAN}${DIVIDER}${RESET}"
@@ -740,13 +639,8 @@ if [[ $TOTAL_FOUND -eq 0 ]]; then
   echo -e "${CYAN}${DIVIDER}${RESET}"; echo; rm -rf "$TMPDIR_SCAN"; exit 0
 fi
 
-if ! $USE_NMAP; then
-  printf "${GREEN}  ${RESET}${BOLD}${BLUE}%-16s${RESET}  ${BOLD}${PURPLE}%-19s${RESET}  ${BOLD}${YELLOW}%-18s${RESET}  ${BOLD}%-20s${RESET}  ${BOLD}%-22s${RESET}  ${BOLD}%s${RESET}\n" \
+printf "${GREEN}  ${RESET}${BOLD}${BLUE}%-16s${RESET}  ${BOLD}${PURPLE}%-19s${RESET}  ${BOLD}${YELLOW}%-18s${RESET}  ${BOLD}%-20s${RESET}  ${BOLD}%-22s${RESET}  ${BOLD}%s${RESET}\n" \
     "IP ADDRESS" "MAC ADDRESS" "VENDOR" "HOSTNAME" "OPEN PORTS" "DEVICE"
-else
-  printf "${GREEN}  ${RESET}${BOLD}${BLUE}%-16s${RESET}  ${BOLD}${PURPLE}%-19s${RESET}  ${BOLD}${YELLOW}%-18s${RESET}  ${BOLD}%-20s${RESET}  ${BOLD}%-22s${RESET}  ${BOLD}%s${RESET}\n" \
-    "IP ADDRESS" "MAC ADDRESS" "VENDOR" "HOSTNAME" "OPEN PORTS" "DEVICE"
-fi
 echo
 
 for IP in "${ALIVE_IPS[@]}"; do
@@ -795,11 +689,7 @@ for IP in "${ALIVE_IPS[@]}"; do
   PORTS_PAD_NEEDED=$(( 22 - PORTS_VISIBLE_LEN ))
   [[ $PORTS_PAD_NEEDED -gt 0 ]] && PORTS_COLORED+=$(printf "%${PORTS_PAD_NEEDED}s" "")
 
-  if ! $USE_NMAP; then
-    echo -e "${PREFIX}${C_IP}  ${C_MAC}  ${C_VND}  ${C_HOST}  ${PORTS_COLORED}  ${DIM}${DEVICE}${RESET}"
-  else
-    echo -e "${PREFIX}${C_IP}  ${C_MAC}  ${C_VND}  ${C_HOST}  ${PORTS_COLORED}"
-  fi
+  echo -e "${PREFIX}${C_IP}  ${C_MAC}  ${C_VND}  ${C_HOST}  ${PORTS_COLORED}  ${DIM}${DEVICE}${RESET}"
 done
 
 echo
@@ -808,11 +698,7 @@ echo -e "  ${GREEN}✓ Scan complete — ${BOLD}${TOTAL_FOUND}${RESET}${GREEN} d
 
 if $VERBOSE; then
   echo
-  if $USE_NMAP; then
-    echo -e "  ${DIM}Methods: nmap host discovery · ARP cache · reverse DNS · OUI table · nmap port scan${RESET}"
-  else
-    echo -e "  ${DIM}Methods: ICMP ping sweep · ARP/neighbour cache · reverse DNS · OUI table + macvendors.com · /dev/tcp · HTTP title scrape${RESET}"
-  fi
+  echo -e "  ${DIM}Methods: ICMP ping sweep · ARP/neighbour cache · reverse DNS · OUI table + macvendors.com · /dev/tcp · HTTP title scrape${RESET}"
   echo -e "  ${DIM}Ports scanned: ${SCAN_PORTS[*]}${RESET}"
 fi
 
