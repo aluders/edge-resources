@@ -68,9 +68,9 @@ function Get-Vendor ([string]$MAC) {
     $oui = ($MAC.ToUpper() -replace '[:\-]','').Substring(0,6)
 
     # Locally administered (randomized) MAC — bit 1 of first octet is set.
-    # These are privacy MACs assigned by the OS, not by IEEE — no vendor exists.
+    # No vendor lookup possible for privacy MACs — leave blank.
     $firstByte = [Convert]::ToInt32($oui.Substring(0,2), 16)
-    if ($firstByte -band 0x02) { return "(randomized)" }
+    if ($firstByte -band 0x02) { return "" }
 
     $cf = Join-Path $CacheDir "oui_$oui"
 
@@ -84,7 +84,7 @@ function Get-Vendor ([string]$MAC) {
     # 2. macvendors.com API — sole source of truth.
     #    Only write to cache on a real result so transient failures get retried next run.
     try {
-        $r = Invoke-RestMethod -Uri "https://api.macvendors.com/$MAC" -TimeoutSec 5 -ErrorAction Stop -Verbose:$false 3>$null
+        $r = Invoke-RestMethod -Uri "https://api.macvendors.com/$MAC" -TimeoutSec 5 -ErrorAction Stop -Verbose:$false -InformationAction Ignore 4>$null 6>$null
         if ($r -and $r -notmatch "Not Found|errors|Too Many") {
             $v = $r.Substring(0,[Math]::Min(30,$r.Length)).Trim()
             Set-Content $cf $v -Encoding UTF8
@@ -360,21 +360,26 @@ if ($localAdapter -and $LocalIP -ne "unknown") {
 #          a direct ARP request that bypasses the OS cache entirely and forces
 #          a fresh ARP exchange on the wire. Most robust for stubborn devices.
 
-function Get-MACFromARP ([string[]]$IPs) {
+# Build a MAC lookup from all available sources into a single hashtable
+function Get-NeighborMACs {
     $found = @{}
-    $lines = arp -a 2>$null
-    foreach ($ip in $IPs) {
-        foreach ($line in $lines) {
-            if ($line -match "^\s+$([regex]::Escape($ip))\s+([0-9a-f]{2}(-[0-9a-f]{2}){5})") {
-                $found[$ip] = $Matches[1].ToUpper() -replace '-',':'
-                break
-            }
+    # Source 1: Get-NetNeighbor — native PS cmdlet, queries the Windows neighbor cache directly
+    try {
+        Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.State -ne 'Unreachable' -and $_.State -ne 'Incomplete' -and $_.LinkLayerAddress -match '^[0-9A-F]{2}(-[0-9A-F]{2}){5}$' } |
+            ForEach-Object { $found[$_.IPAddress] = $_.LinkLayerAddress.ToUpper() -replace '-',':' }
+    } catch {}
+    # Source 2: arp -a — covers any entries not in the PS neighbor cache
+    foreach ($line in (arp -a 2>$null)) {
+        if ($line -match '^\s+(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{2}(-[0-9a-f]{2}){5})') {
+            $ip = $Matches[1]
+            if (-not $found.ContainsKey($ip)) { $found[$ip] = $Matches[2].ToUpper() -replace '-',':' }
         }
     }
     return $found
 }
 
-# SendARP p/invoke — class name must differ from the method name it contains
+# SendARP p/invoke — direct wire-level ARP, bypasses cache entirely
 Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -386,31 +391,33 @@ namespace Net {
 }
 '@
 
-# Pass 1 — existing ARP cache
+function Invoke-SendARP ([string]$IP) {
+    try {
+        $bytes  = [System.Net.IPAddress]::Parse($IP).GetAddressBytes()
+        $destIP = [BitConverter]::ToInt32($bytes, 0)
+        $mac    = New-Object byte[] 6
+        $len    = 6
+        if ([Net.IpHlpApi]::SendARP($destIP, 0, $mac, [ref]$len) -eq 0 -and
+            ($mac | Measure-Object -Sum).Sum -gt 0) {
+            return ($mac | ForEach-Object { $_.ToString('X2') }) -join ':'
+        }
+    } catch {}
+    return $null
+}
+
+# Pass 1 — neighbor cache + arp -a (catches ~95% instantly)
+$neighbors = Get-NeighborMACs
 $need = [System.Collections.Generic.List[string]]::new()
 foreach ($ip in $AliveIPs) {
     if ($ip -eq $LocalIP) { continue }
-    $r = Get-MACFromARP @($ip)
-    if ($r.ContainsKey($ip)) { $macMap[$ip] = $r[$ip] } else { $need.Add($ip) }
+    if ($neighbors.ContainsKey($ip)) { $macMap[$ip] = $neighbors[$ip] } else { $need.Add($ip) }
 }
 
-# Pass 2 — directed ping + re-read for any still missing
+# Pass 2 — SendARP directly on anything still missing (parallel, no cache involved)
 if ($need.Count -gt 0) {
-    foreach ($ip in $need) { ping $ip -n 1 -w 200 2>$null | Out-Null }
-    $still = [System.Collections.Generic.List[string]]::new()
-    $r2 = Get-MACFromARP ($need.ToArray())
-    foreach ($ip in $need) {
-        if ($r2.ContainsKey($ip)) { $macMap[$ip] = $r2[$ip] } else { $still.Add($ip) }
-    }
-    $need = $still
-}
-
-# Pass 3 — SendARP for anything still missing (direct wire-level ARP request)
-if ($need.Count -gt 0) {
-    $ArpScript = {
+    $SendARPScript = {
         param([string]$ip)
-        try {
-            Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
+        Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 namespace Net {
@@ -420,15 +427,13 @@ namespace Net {
     }
 }
 '@
-        } catch {}
         try {
             $bytes  = [System.Net.IPAddress]::Parse($ip).GetAddressBytes()
             $destIP = [BitConverter]::ToInt32($bytes, 0)
-            $mac    = New-Object byte[] 6
-            $len    = 6
+            $mac    = New-Object byte[] 6; $len = 6
             if ([Net.IpHlpApi]::SendARP($destIP, 0, $mac, [ref]$len) -eq 0 -and
                 ($mac | Measure-Object -Sum).Sum -gt 0) {
-                return ($mac | ForEach-Object { $_.ToString("X2") }) -join ':'
+                return ($mac | ForEach-Object { $_.ToString('X2') }) -join ':'
             }
         } catch {}
         return $null
@@ -437,7 +442,7 @@ namespace Net {
     $ArpH  = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($ip in $need) {
         $ps = [PowerShell]::Create(); $ps.RunspacePool = $Pool0
-        $ps.AddScript($ArpScript).AddArgument($ip) | Out-Null
+        $ps.AddScript($SendARPScript).AddArgument($ip) | Out-Null
         $ArpH.Add(@{PS=$ps; AR=$ps.BeginInvoke(); IP=$ip})
     }
     foreach ($h in $ArpH) {
@@ -446,6 +451,17 @@ namespace Net {
         $h.PS.Dispose()
     }
     $Pool0.Close(); $Pool0.Dispose()
+
+    # Pass 3 — ping any that SendARP still missed, then re-read neighbor cache
+    $still = [System.Collections.Generic.List[string]]::new()
+    foreach ($ip in $need) { if (-not $macMap.ContainsKey($ip)) { $still.Add($ip) } }
+    if ($still.Count -gt 0) {
+        foreach ($ip in $still) { ping $ip -n 2 -w 300 2>$null | Out-Null }
+        $neighbors2 = Get-NeighborMACs
+        foreach ($ip in $still) {
+            if ($neighbors2.ContainsKey($ip)) { $macMap[$ip] = $neighbors2[$ip] }
+        }
+    }
 }
 
 # Build seenOUIs from everything we found
@@ -624,8 +640,7 @@ foreach ($ip in $AliveIPs) {
 
     # Vendor — yellow or dim
     $vs = if ($vendor) { $vendor.Substring(0,[Math]::Min(18,$vendor.Length)) } else { "" }
-    $vendColor = if ($vendor -eq "(randomized)") { "DarkGray" } elseif ($vendor) { "Yellow" } else { "DarkGray" }
-    Write-Host -NoNewline ("{0,-18}" -f $vs) -ForegroundColor $vendColor
+    Write-Host -NoNewline ("{0,-18}" -f $vs) -ForegroundColor $(if ($vendor) { "Yellow" } else { "DarkGray" })
     Write-Host -NoNewline "  "
 
     # Hostname — white or dim
