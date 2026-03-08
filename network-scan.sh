@@ -18,7 +18,6 @@ TIMEOUT=1
 VERBOSE=false
 MANUAL_SUBNET=""
 USE_NMAP=false
-BUILD_CACHE=false
 
 SCAN_PORTS=(21 22 80 443 8080 8443)
 
@@ -32,8 +31,7 @@ usage() {
   echo -e "  ${YELLOW}-n, --network CIDR${RESET}      Subnet to scan ${DIM}(e.g. 10.1.0.0/24)${RESET}"
   echo -e "  ${PURPLE}-t, --timeout SEC${RESET}       Ping timeout in seconds ${DIM}(default: 1)${RESET}"
   echo -e "  ${DIM}    --nmap${RESET}              Use nmap for scanning ${DIM}(better for VPN/tunnels)${RESET}"
-  echo -e "  ${DIM}-v, --verbose${RESET}           Show discovery methods used"
-  echo -e "  ${DIM}    --build${RESET}             Look up vendors via API for all uncached or previously failed OUIs${RESET}"
+  echo -e "  ${DIM}-v, --verbose${RESET}           Show verbose vendor lookup progress${RESET}"
   echo -e "  ${DIM}-h, --help${RESET}              Show this help message"
   echo -e "${CYAN}${DIVIDER}${RESET}"
   echo
@@ -51,7 +49,6 @@ while [[ $# -gt 0 ]]; do
     -h|--help)          usage ;;
     -v|--verbose)       VERBOSE=true ;;
     --nmap)             USE_NMAP=true ;;
-    --build)            BUILD_CACHE=true ;;
     -i|--interface)     [[ -z "$2" ]] && { echo -e "  ${RED}Error:${RESET} $1 requires an argument." >&2; exit 1; }
                         INTERFACE="$2"; shift ;;
     -i=*|--interface=*) INTERFACE="${1#*=}" ;;
@@ -68,85 +65,6 @@ done
 
 if ! [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   echo -e "  ${RED}Error:${RESET} Timeout must be a positive integer." >&2; exit 1
-fi
-
-# ── --build mode: cache all OUIs from current ARP table ──────────────────────
-if $BUILD_CACHE; then
-  CACHE_DIR="$HOME/.cache/netscan"
-  mkdir -p "$CACHE_DIR"
-  echo
-  echo -e "  ${BOLD}${CYAN}VENDOR CACHE BUILDER${RESET}"
-  echo -e "${CYAN}${DIVIDER}${RESET}"
-  echo -e "  ${DIM}Rate: 1 request per 1.5s to stay within API limits${RESET}"
-  echo -e "${CYAN}${DIVIDER}${RESET}"
-  echo
-
-  # Ping sweep to populate ARP table before reading it
-  BUILD_IFACE=$(route get default 2>/dev/null | awk '/interface:/ {print $2}' | head -1)
-  BUILD_IP=$(ifconfig "$BUILD_IFACE" 2>/dev/null | awk '/inet / {print $2}' | head -1)
-  if [[ -n "$BUILD_IP" ]]; then
-    BUILD_SUBNET=$(echo "$BUILD_IP" | cut -d. -f1-3)
-    echo -e "  ${DIM}Pinging ${BUILD_SUBNET}.0/24 to populate ARP table…${RESET}"
-    for i in $(seq 1 254); do
-      ping -c1 -W1 -t1 "${BUILD_SUBNET}.${i}" &>/dev/null &
-    done
-    wait
-    echo -e "  ${DIM}Ping sweep done. Reading ARP table…${RESET}"
-    echo
-  fi
-
-  OUIS=()
-  while IFS= read -r LINE; do
-    # Skip incomplete entries
-    echo "$LINE" | grep -q 'incomplete' && continue
-    MAC=$(echo "$LINE" | awk '{print $4}' | head -1)
-    [[ -z "$MAC" || "$MAC" == "incomplete" ]] && continue
-    # Validate MAC format
-    [[ ! "$MAC" =~ ^[0-9a-fA-F]{1,2}(:[0-9a-fA-F]{1,2}){5}$ ]] && continue
-    OUI=$(echo "$MAC" | tr '[:lower:]' '[:upper:]' | tr -d ':' | cut -c1-6)
-    [[ -z "$OUI" || ${#OUI} -ne 6 ]] && continue
-    [[ ! " ${OUIS[*]} " =~ " ${OUI} " ]] && OUIS+=("$OUI:$MAC")
-  done < <(arp -an 2>/dev/null)
-
-  TOTAL_OUIS=${#OUIS[@]}
-  CACHED=0; FOUND=0; SKIPPED=0; IDX=0
-  for ENTRY in "${OUIS[@]}"; do
-    OUI="${ENTRY%%:*}"; MAC="${ENTRY#*:}"
-    (( IDX++ ))
-    CACHE_FILE="${CACHE_DIR}/oui_${OUI}"
-    if [[ -f "$CACHE_FILE" ]]; then
-      CACHED_VAL=$(cat "$CACHE_FILE")
-      # Re-query entries that previously failed or were rate-limited
-      if [[ -z "$CACHED_VAL" ]]; then
-        echo -e  "  ${DIM}[${IDX}/${TOTAL_OUIS}]${RESET} ${CYAN}${OUI}${RESET}  ${YELLOW}re-querying…${RESET}"
-      else
-        (( SKIPPED++ ))
-        echo -e "  ${DIM}[${IDX}/${TOTAL_OUIS}] ${OUI}  already cached${RESET}${CACHED_VAL:+: ${YELLOW}${CACHED_VAL}${RESET}}"
-        continue
-      fi
-    fi
-    echo -ne "  ${DIM}[${IDX}/${TOTAL_OUIS}]${RESET} ${CYAN}${OUI}${RESET}  looking up…
-"
-    RESULT=$(curl -sf --max-time 5 "https://api.macvendors.com/${MAC}" 2>/dev/null || echo "")
-    if [[ -n "$RESULT" && "$RESULT" != *"Not Found"* && "$RESULT" != *"Too Many"* && "$RESULT" != *"errors"* ]]; then
-      VENDOR=$(printf "%.22s" "$RESULT")
-      echo "$VENDOR" > "$CACHE_FILE"
-      echo -e "  ${DIM}[${IDX}/${TOTAL_OUIS}]${RESET} ${CYAN}${OUI}${RESET}  ${GREEN}${VENDOR}${RESET}                    "
-      (( FOUND++ ))
-    else
-      echo "" > "$CACHE_FILE"
-      echo -e "  ${DIM}[${IDX}/${TOTAL_OUIS}]${RESET} ${CYAN}${OUI}${RESET}  ${DIM}not found${RESET}                    "
-    fi
-    (( CACHED++ ))
-    sleep 1.5
-  done
-
-  echo
-  echo -e "${CYAN}${DIVIDER}${RESET}"
-  echo -e "  ${GREEN}✓ Done — ${FOUND} vendor(s) found · ${SKIPPED} already cached · ${CACHE_DIR}${RESET}"
-  echo -e "${CYAN}${DIVIDER}${RESET}"
-  echo
-  exit 0
 fi
 
 if $USE_NMAP && ! command -v nmap &>/dev/null; then
@@ -387,15 +305,33 @@ def fetch_upnp(ip, url):
                 if mnum_val.lower() not in label.lower():
                     label += ' ' + mnum_val
         if label:
-            # Clean up: strip serial-like suffixes and UPnP noise words
+            # Strip embedded IPs like "192.168.4.50" anywhere in label
+            label = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', '', label).strip()
+            # Strip RINCON device IDs (Sonos internal IDs)
+            label = re.sub(r'\s*-\s*RINCON[A-F0-9]+', '', label, flags=re.I).strip()
+            # Strip trailing " - RINCON..." or " RINCON..."
+            label = re.sub(r'\s*RINCON\S*', '', label, flags=re.I).strip()
+            # Strip WPS noise
             label = re.sub(r'^WPS\s+', '', label, flags=re.I).strip()
             label = re.sub(r'\s+WPS\s*$', '', label, flags=re.I).strip()
             label = re.sub(r'\s+(Access\s+Point|SagemcomFast\S*)', '', label, flags=re.I).strip()
+            # Strip serial-like suffixes _XXXXXX
             label = re.sub(r'_[A-Z0-9]{6,}$', '', label).strip()
             label = re.sub(r'_Frontier\s*$', '', label, flags=re.I).strip()
+            # Deduplicate repeated words/phrases (e.g. "Philips hue Philips hue bridge")
+            # Remove duplicate consecutive segments
+            parts = label.split()
+            seen = []; deduped = []
+            for p in parts:
+                if p.lower() not in seen:
+                    deduped.append(p); seen.append(p.lower())
+            label = ' '.join(deduped).strip()
+            # Clean up stray leading/trailing punctuation and whitespace
+            label = re.sub(r'^[\s\-–—()]+|[\s\-–—()]+$', '', label).strip()
 
-            path = os.path.join('${OUTDIR}', 'ssdp_' + ip)
-            open(path, 'w').write(label[:50])
+            if label:
+                path = os.path.join('${OUTDIR}', 'ssdp_' + ip)
+                open(path, 'w').write(label[:50])
     except: pass
 
 threads = [threading.Thread(target=fetch_upnp, args=(ip, url)) for ip, url in loc_map.items()]
@@ -730,8 +666,33 @@ except: sys.exit(1)" 2>/dev/null || true)
     printf '%s\n%s\n' "$OUI" "$MAC" > "${TMPDIR_SCAN}/mac_${IP}"
     DUPE=false
     for s in "${SEEN_OUIS[@]}"; do [[ "$s" == "$OUI" ]] && DUPE=true && break; done
-    $DUPE || { SEEN_OUIS+=("$OUI"); ( oui_lookup "$MAC" "${TMPDIR_SCAN}/oui_${OUI}"; sleep 0.25 ) & }
-  done; wait
+    $DUPE || SEEN_OUIS+=("$OUI:$MAC")
+  done
+
+  FORCE_TOTAL=${#SEEN_OUIS[@]}; FORCE_IDX=0
+  for ENTRY in "${SEEN_OUIS[@]}"; do
+    FOUI="${ENTRY%%:*}"; FMAC="${ENTRY#*:}"
+    (( FORCE_IDX++ ))
+    OUI_CACHE="${HOME}/.cache/netscan/oui_${FOUI}"
+    if [[ -f "$OUI_CACHE" && -s "$OUI_CACHE" ]]; then
+      # Already cached — copy to scan dir, no API call
+      if $VERBOSE; then
+        echo -e "  ${DIM}Phase 4/7 — Vendors:${RESET}      ${CYAN}${FORCE_IDX}${RESET}/${FORCE_TOTAL} ${DIM}${FOUI} cached${RESET}          "
+      else
+        echo -ne "  ${DIM}Phase 4/7 — Vendors:${RESET}      ${CYAN}${FORCE_IDX}${RESET}/${FORCE_TOTAL} vendors…               \r"
+      fi
+      cp "$OUI_CACHE" "${TMPDIR_SCAN}/oui_${FOUI}"
+    else
+      # Uncached or empty — hit the API
+      if $VERBOSE; then
+        echo -e "  ${DIM}Phase 4/7 — Vendors:${RESET}      ${CYAN}${FORCE_IDX}${RESET}/${FORCE_TOTAL} ${YELLOW}${FOUI} looking up…${RESET}     "
+      else
+        echo -ne "  ${DIM}Phase 4/7 — Vendors:${RESET}      ${CYAN}${FORCE_IDX}${RESET}/${FORCE_TOTAL} looking up…            \r"
+      fi
+      oui_lookup "$FMAC" "${TMPDIR_SCAN}/oui_${FOUI}"
+      sleep 1.5
+    fi
+  done
   echo -e "  ${DIM}Phase 4/7 — Vendors:${RESET}      ${#SEEN_OUIS[@]} unique OUI(s) resolved ✓        "
 
   # Phase 5: port scan + mDNS + SSDP all in parallel (all are time-bounded)
@@ -757,8 +718,8 @@ except: sys.exit(1)" 2>/dev/null || true)
   echo -e "  ${DIM}Phase 6/7 — HTTP titles:${RESET}   done ✓  (${HTTP_COUNT} title(s) found)              "
 
   # Phase 7: Merge device identity — priority: mDNS > SSDP > HTTP title
-  # Results are persisted to ~/.cache/netscan/device_IP so flaky sources
-  # (SSDP, mDNS) don't cause devices to disappear between scans.
+  # Results are persisted to ~/.cache/netscan/devices/ keyed by MAC address
+  # (not IP) so cache is valid across different networks using the same subnet.
   DEVICE_CACHE_DIR="$HOME/.cache/netscan/devices"
   mkdir -p "$DEVICE_CACHE_DIR"
   echo -ne "  ${DIM}Phase 7/7 — Device identity:${RESET}  merging…\r"
@@ -771,13 +732,18 @@ except: sys.exit(1)" 2>/dev/null || true)
     elif [[ -f "${TMPDIR_SCAN}/httptitle_${IP}" ]]; then
       WINNER=$(cat "${TMPDIR_SCAN}/httptitle_${IP}")
     fi
+    # Key cache by MAC, not IP — IPs change between networks
+    DEV_MAC=""
+    [[ -f "${TMPDIR_SCAN}/mac_${IP}" ]] && DEV_MAC=$(sed -n '2p' "${TMPDIR_SCAN}/mac_${IP}" | tr ':' '-')
+    [[ -z "$DEV_MAC" || "$DEV_MAC" == "-" ]] && continue  # no MAC = tunnel/remote host, skip cache
+    CACHE_FILE="${DEVICE_CACHE_DIR}/device_${DEV_MAC}"
     # Compare with cached value — only overwrite if new result is longer/better
     CACHED_DEVICE=""
-    [[ -f "${DEVICE_CACHE_DIR}/device_${IP}" ]] && CACHED_DEVICE=$(cat "${DEVICE_CACHE_DIR}/device_${IP}")
+    [[ -f "$CACHE_FILE" ]] && CACHED_DEVICE=$(cat "$CACHE_FILE")
     if [[ -n "$WINNER" ]]; then
       # Keep whichever is more informative (longer string wins)
       if [[ ${#WINNER} -ge ${#CACHED_DEVICE} ]]; then
-        echo "$WINNER" > "${DEVICE_CACHE_DIR}/device_${IP}"
+        echo "$WINNER" > "$CACHE_FILE"
         echo "$WINNER" > "${TMPDIR_SCAN}/device_${IP}"
       else
         # Cached value is better — use it but don't overwrite cache
