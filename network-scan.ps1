@@ -60,101 +60,33 @@ function prefix2mask ([int]$p) {
     $m = [long]0; for ($b=0;$b -lt $p;$b++) { $m = ($m -shr 1) -bor [long]0x80000000 }; $m
 }
 
-# ── OUI vendor table ───────────────────────────────────────────────────────────
-$OuiTable = @{
-    "000393"="Apple";"000502"="Apple";"001124"="Apple";"001451"="Apple";"0016CB"="Apple"
-    "0017F2"="Apple";"001B63"="Apple";"001CB3"="Apple";"001E52"="Apple";"001EC2"="Apple"
-    "001F5B"="Apple";"002312"="Apple";"002332"="Apple";"002436"="Apple";"00264B"="Apple"
-    "286AB8"="Apple";"3C0754"="Apple";"3C15C2"="Apple";"6C40B5"="Apple";"843835"="Apple"
-    "842F57"="Apple";"A45E60"="Apple";"A8BE27"="Apple";"AC3C0B"="Apple";"B8FF61"="Apple"
-    "D8BB2C"="Apple";"F0DCE2"="Apple";"F40F24"="Apple";"F82793"="Apple"
-    "000DB9"="Samsung";"001247"="Samsung";"0015B9"="Samsung";"001632"="Samsung"
-    "0024E9"="Samsung";"002566"="Samsung";"A04299"="Samsung";"9C5C8E"="Samsung";"CC07AB"="Samsung"
-    "3C5AB4"="Google";"54607E"="Google";"A47733"="Google";"1C1ADF"="Google";"48D6D5"="Google"
-    "0C47C9"="Amazon";"F0272D"="Amazon";"747548"="Amazon";"A002DC"="Amazon"
-    "B47C9C"="Amazon";"F0F5BD"="Amazon";"FCA667"="Amazon";"8071CB"="Amazon"
-    "50F1E5"="Eero (Amazon)";"EC1728"="Eero (Amazon)"
-    "B827EB"="Raspberry Pi";"DCA632"="Raspberry Pi";"E45F01"="Raspberry Pi"
-    "525400"="QEMU/KVM VM"
-    "0418D6"="Ubiquiti";"044EC2"="Ubiquiti";"0CE496"="Ubiquiti";"18E829"="Ubiquiti"
-    "24A43C"="Ubiquiti";"44D9E7"="Ubiquiti";"687249"="Ubiquiti";"78452E"="Ubiquiti"
-    "80212A"="Ubiquiti";"802AA8"="Ubiquiti";"F09FC2"="Ubiquiti";"FCECE9"="Ubiquiti"
-    "68D79A"="Ubiquiti";"D021F9"="Ubiquiti";"249F3E"="Ubiquiti";"784558"="Ubiquiti"
-    "9C934E"="Ubiquiti";"E43883"="Ubiquiti";"CC7B5C"="Ubiquiti";"D8D5B9"="Ubiquiti"
-    "D8BC38"="Ubiquiti";"245EBE"="Ubiquiti";"0417D6"="Ubiquiti";"ACBB00"="Ubiquiti"
-    "000AEB"="TP-Link";"001D0F"="TP-Link";"105BAD"="TP-Link";"1C3BF3"="TP-Link"
-    "2027CB"="TP-Link";"50C7BF"="TP-Link";"6045CB"="TP-Link";"B008CF"="TP-Link"
-    "C46E1F"="TP-Link";"E894F6"="TP-Link"
-    "001B2F"="Netgear";"001E2A"="Netgear";"00223F"="Netgear";"002275"="Netgear"
-    "20E52A"="Netgear";"28C68E"="Netgear";"4C60DE"="Netgear";"6CB0CE"="Netgear"
-    "9C3DCF"="Netgear";"A040A0"="Netgear";"C03F0E"="Netgear"
-    "000142"="Cisco";"000164"="Cisco";"0001C7"="Cisco";"0001C9"="Cisco";"000216"="Cisco"
-    "00023D"="Cisco";"000268"="Cisco";"0002B9"="Cisco";"001A2F"="Cisco";"001B0D"="Cisco"
-    "001C0E"="Cisco";"001D45"="Cisco";"0022BD"="Cisco";"58AC78"="Cisco"
-    "6C9C8F"="Cisco";"885A92"="Cisco"
-    "000E58"="Sonos";"48A6B8"="Sonos";"5CAAB5"="Sonos";"78282C"="Sonos"
-    "94105A"="Sonos";"B8E937"="Sonos"
-    "001788"="Signify/Hue";"ECB5FA"="Signify/Hue"
-    "086686"="Roku";"205281"="Roku";"6C9EFD"="Roku";"AC3A7A"="Roku"
-    "CC6EB0"="Roku";"D89695"="Roku";"DC3A5E"="Roku"
-    "001517"="Intel";"001EE5"="Intel";"007048"="Intel";"00BE43"="Intel";"14859F"="Intel"
-    "485D60"="Intel";"4C7999"="Intel";"60674B"="Intel";"A0C589"="Intel";"B0A4E7"="Intel"
-    "001372"="Dell";"0018B1"="Dell";"001C23"="Dell";"00216B"="Dell"
-    "5CF9DD"="Dell";"BCEE7B"="Dell";"F8B156"="Dell"
-    "001708"="HP";"0017A4"="HP";"001B78"="HP";"0021F7"="HP"
-    "3CACA4"="HP";"94571A"="HP";"FCF152"="HP"
-    "001E75"="LG";"0021FB"="LG";"34E6AD"="LG";"A8B8B5"="LG";"CC2D8C"="LG"
-    "00D9D1"="Sony";"30000E"="Sony";"54423A"="Sony";"9C5DF2"="Sony"
-    "AC9B0A"="Sony";"F8A963"="Sony"
-    "002709"="Nintendo";"00BF0B"="Nintendo";"34AF2C"="Nintendo";"40F407"="Nintendo"
-    "8CCF88"="Nintendo";"E0E751"="Nintendo";"98B6E9"="Nintendo"
-    "0050F2"="Microsoft";"001DD8"="Microsoft";"002248"="Microsoft";"28183D"="Microsoft"
-    "48573B"="Microsoft";"7C1E52"="Microsoft";"C4173F"="Microsoft"
-    "18FE34"="Espressif (IoT)";"240AC4"="Espressif (IoT)";"2CF432"="Espressif (IoT)"
-    "3C71BF"="Espressif (IoT)";"4CEBD6"="Espressif (IoT)";"5CCF7F"="Espressif (IoT)"
-    "84CCA8"="Espressif (IoT)";"A020A6"="Espressif (IoT)";"AC67B2"="Espressif (IoT)"
-    "BCDDC2"="Espressif (IoT)"
-    "485519"="Shelly";"30AEA4"="Shelly";"8CAAB5"="Shelly"
-    "D07652"="Tuya";"A8664C"="Tuya"
-    "001195"="D-Link";"00179A"="D-Link";"001CF0"="D-Link";"002191"="D-Link"
-    "00226B"="D-Link";"1C7EE5"="D-Link";"28107B"="D-Link";"34363B"="D-Link"
-    "90F652"="D-Link";"B8A386"="D-Link"
-    "001A92"="ASUS";"001D60"="ASUS";"002354"="ASUS";"04D9F5"="ASUS";"08606E"="ASUS"
-    "10BF48"="ASUS";"107B44"="ASUS";"14DDA9"="ASUS";"2C56DC"="ASUS";"2C4D54"="ASUS"
-    "001132"="Synology";"0022B0"="Drobo";"18B430"="Nest (Google)";"0024E4"="Withings"
-    "001CDF"="Belkin";"EC1A59"="Belkin";"944452"="Belkin";"B4750E"="Belkin"
-}
-
 # ── OUI cache + vendor lookup ──────────────────────────────────────────────────
 $CacheDir = "$env:LOCALAPPDATA\netscan\oui"
 if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null }
 
 function Get-Vendor ([string]$MAC) {
     $oui = ($MAC.ToUpper() -replace '[:\-]','').Substring(0,6)
+    $cf  = Join-Path $CacheDir "oui_$oui"
 
-    # 1. Persistent cache FIRST — API results are more accurate than hardcoded table.
-    #    Matches bash behaviour: cache wins even over wrong hardcoded entries.
-    $cf = Join-Path $CacheDir "oui_$oui"
+    # 1. Persistent disk cache — only trust non-empty results.
+    #    Empty or missing = try the API again. No point keeping failures forever.
     if (Test-Path $cf) {
         $cached = (Get-Content $cf -Raw).Trim()
         if ($cached -ne "") { return $cached }
-        # Empty cache file = confirmed API miss — fall through to hardcoded table only
-        if ($OuiTable.ContainsKey($oui)) { return $OuiTable[$oui] }
-        return ""
     }
 
-    # 2. Hardcoded table (fast path for first run before cache exists)
-    if ($OuiTable.ContainsKey($oui)) { return $OuiTable[$oui] }
-
-    # 3. macvendors.com API — result is cached for future runs
+    # 2. macvendors.com API — sole source of truth.
+    #    Only write to cache on a real result so transient failures get retried next run.
     try {
-        $r = Invoke-RestMethod -Uri "https://api.macvendors.com/$MAC" -TimeoutSec 4 -ErrorAction Stop
-        if ($r -and $r -notmatch "Not Found|errors") {
-            $v = $r.Substring(0,[Math]::Min(22,$r.Length)).Trim()
-            Set-Content $cf $v -Encoding UTF8; return $v
+        $r = Invoke-RestMethod -Uri "https://api.macvendors.com/$MAC" -TimeoutSec 5 -ErrorAction Stop
+        if ($r -and $r -notmatch "Not Found|errors|Too Many") {
+            $v = $r.Substring(0,[Math]::Min(30,$r.Length)).Trim()
+            Set-Content $cf $v -Encoding UTF8
+            return $v
         }
     } catch {}
-    Set-Content $cf "" -Encoding UTF8; return ""
+
+    return ""
 }
 
 # ── SSDP ──────────────────────────────────────────────────────────────────────
@@ -433,7 +365,7 @@ $ouiIdx=0; $ouiTotal=$seenOUIs.Count
 foreach ($kv in $seenOUIs.GetEnumerator()) {
     $ouiIdx++
     $cacheFile = Join-Path $CacheDir "oui_$($kv.Key)"
-    $isCached  = (Test-Path $cacheFile) -or $OuiTable.ContainsKey($kv.Key)
+    $isCached  = Test-Path $cacheFile
     if ($Verbose) {
         $tag = if ($isCached) { "${DIM}$($kv.Key) cached${RST}" }
                else           { [char]0x1b+"[33m$($kv.Key) looking up…"+[char]0x1b+"[0m" }
@@ -442,7 +374,7 @@ foreach ($kv in $seenOUIs.GetEnumerator()) {
         phase "Phase 4/7 — Vendors:" ("      " + [char]0x1b+"[36m${ouiIdx}"+[char]0x1b+"[0m/${ouiTotal} vendors…                 `r")
     }
     $v = Get-Vendor $kv.Value; $vendorMap[$kv.Key]=$v
-    if (-not $isCached) { Start-Sleep -Milliseconds 1200 }
+    if (-not $isCached) { Start-Sleep -Milliseconds 1500 }   # 1.5s — safe rate limit margin
 }
 phaseln "Phase 4/7 — Vendors:" "      ${ouiTotal} unique OUI(s) resolved ✓              "
 
@@ -629,7 +561,7 @@ Write-Host " device(s) on $Subnet" -ForegroundColor Green
 
 if ($Verbose) {
     Write-Host ""
-    wh "  Methods: ICMP ping sweep · ARP cache · reverse DNS · OUI table + macvendors.com · TCP connect · HTTP title · mDNS · SSDP" DarkGray
+    wh "  Methods: ICMP ping sweep · ARP cache · reverse DNS · macvendors.com API (cached) · TCP connect · HTTP title · mDNS · SSDP" DarkGray
     wh "  Ports scanned: $($ScanPorts -join ', ')" DarkGray
 }
 
