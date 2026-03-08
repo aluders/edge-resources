@@ -480,7 +480,7 @@ $Pool4=[RunspaceFactory]::CreateRunspacePool(1,[Math]::Min($TotalFound,32)); $Po
 $HttpH=[System.Collections.Generic.List[hashtable]]::new()
 foreach ($ip in $AliveIPs) {
     $ps=[PowerShell]::Create(); $ps.RunspacePool=$Pool4
-    $ps.AddScript($HttpScript).AddArgument($ip).AddArgument(($portMap[$ip] ?? "")) | Out-Null
+    $ps.AddScript($HttpScript).AddArgument($ip).AddArgument((if ($portMap.ContainsKey($ip)) { $portMap[$ip] } else { "" })) | Out-Null
     $HttpH.Add(@{PS=$ps;AR=$ps.BeginInvoke();IP=$ip})
 }
 $titleMap=@{}
