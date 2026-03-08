@@ -131,9 +131,22 @@ if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Path $CacheDir -
 
 function Get-Vendor ([string]$MAC) {
     $oui = ($MAC.ToUpper() -replace '[:\-]','').Substring(0,6)
-    if ($OuiTable.ContainsKey($oui)) { return $OuiTable[$oui] }
+
+    # 1. Persistent cache FIRST — API results are more accurate than hardcoded table.
+    #    Matches bash behaviour: cache wins even over wrong hardcoded entries.
     $cf = Join-Path $CacheDir "oui_$oui"
-    if (Test-Path $cf) { return (Get-Content $cf -Raw).Trim() }
+    if (Test-Path $cf) {
+        $cached = (Get-Content $cf -Raw).Trim()
+        if ($cached -ne "") { return $cached }
+        # Empty cache file = confirmed API miss — fall through to hardcoded table only
+        if ($OuiTable.ContainsKey($oui)) { return $OuiTable[$oui] }
+        return ""
+    }
+
+    # 2. Hardcoded table (fast path for first run before cache exists)
+    if ($OuiTable.ContainsKey($oui)) { return $OuiTable[$oui] }
+
+    # 3. macvendors.com API — result is cached for future runs
     try {
         $r = Invoke-RestMethod -Uri "https://api.macvendors.com/$MAC" -TimeoutSec 4 -ErrorAction Stop
         if ($r -and $r -notmatch "Not Found|errors") {
@@ -370,6 +383,8 @@ foreach ($ip in $AliveIPs) {
     $DnsH.Add(@{PS=$ps;AR=$ps.BeginInvoke();IP=$ip})
 }
 $hostMap = @{}
+# Seed local machine hostname directly — DNS lookup of own IP can fail or return FQDN noise
+if ($LocalIP -ne "unknown") { $hostMap[$LocalIP] = $env:COMPUTERNAME }
 foreach ($h in $DnsH) { $r=$h.PS.EndInvoke($h.AR); if ($r) { $hostMap[$h.IP]=[string]$r }; $h.PS.Dispose() }
 $Pool2.Close(); $Pool2.Dispose()
 phaseln "Phase 3/7 — Hostnames:" "    done ✓                                    "
@@ -384,6 +399,24 @@ foreach ($ip in $AliveIPs) { ping $ip -n 1 -w 50 2>$null | Out-Null }
 $arpLines = arp -a 2>$null
 
 $macMap = @{}; $vendorMap = @{}; $seenOUIs = @{}
+
+# Inject local machine's own MAC directly from the adapter.
+# The local IP never appears in the ARP table (ARP only resolves other machines).
+$localAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+    Where-Object { $_.Status -eq 'Up' -and $_.InterfaceAlias -eq $LocalIface } |
+    Select-Object -First 1
+if (-not $localAdapter) {
+    $localAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Status -eq 'Up' -and $_.InterfaceAlias -notmatch '(?i)(vEthernet|Loopback|isatap|Teredo|6to4)' } |
+        Select-Object -First 1
+}
+if ($localAdapter -and $LocalIP -ne "unknown") {
+    $localMac = $localAdapter.MacAddress.ToUpper() -replace '-',':'
+    $macMap[$LocalIP] = $localMac
+    $localOui = ($localMac -replace ':','').Substring(0,6)
+    if (-not $seenOUIs.ContainsKey($localOui)) { $seenOUIs[$localOui] = $localMac }
+}
+
 foreach ($ip in $AliveIPs) {
     foreach ($line in $arpLines) {
         if ($line -match "^\s+$([regex]::Escape($ip))\s+([0-9a-f]{2}(-[0-9a-f]{2}){5})") {
@@ -399,7 +432,8 @@ foreach ($ip in $AliveIPs) {
 $ouiIdx=0; $ouiTotal=$seenOUIs.Count
 foreach ($kv in $seenOUIs.GetEnumerator()) {
     $ouiIdx++
-    $isCached = $OuiTable.ContainsKey($kv.Key) -or (Test-Path (Join-Path $CacheDir "oui_$($kv.Key)"))
+    $cacheFile = Join-Path $CacheDir "oui_$($kv.Key)"
+    $isCached  = (Test-Path $cacheFile) -or $OuiTable.ContainsKey($kv.Key)
     if ($Verbose) {
         $tag = if ($isCached) { "${DIM}$($kv.Key) cached${RST}" }
                else           { [char]0x1b+"[33m$($kv.Key) looking up…"+[char]0x1b+"[0m" }
