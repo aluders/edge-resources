@@ -66,7 +66,13 @@ if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Path $CacheDir -
 
 function Get-Vendor ([string]$MAC) {
     $oui = ($MAC.ToUpper() -replace '[:\-]','').Substring(0,6)
-    $cf  = Join-Path $CacheDir "oui_$oui"
+
+    # Locally administered (randomized) MAC — bit 1 of first octet is set.
+    # These are privacy MACs assigned by the OS, not by IEEE — no vendor exists.
+    $firstByte = [Convert]::ToInt32($oui.Substring(0,2), 16)
+    if ($firstByte -band 0x02) { return "(randomized)" }
+
+    $cf = Join-Path $CacheDir "oui_$oui"
 
     # 1. Persistent disk cache — only trust non-empty results.
     #    Empty or missing = try the API again. No point keeping failures forever.
@@ -324,11 +330,7 @@ phaseln "Phase 3/7 — Hostnames:" "    done ✓                                
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 — MAC addresses + OUI vendor lookup
 # ══════════════════════════════════════════════════════════════════════════════
-phase "Phase 4/7 — Vendors:" "      looking up OUI prefixes…`r"
-
-# Quick ping to refresh ARP table for any IPs we only found via ping
-foreach ($ip in $AliveIPs) { ping $ip -n 1 -w 50 2>$null | Out-Null }
-$arpLines = arp -a 2>$null
+phase "Phase 4/7 — Vendors:" "      resolving MACs…`r"
 
 $macMap = @{}; $vendorMap = @{}; $seenOUIs = @{}
 
@@ -349,16 +351,105 @@ if ($localAdapter -and $LocalIP -ne "unknown") {
     if (-not $seenOUIs.ContainsKey($localOui)) { $seenOUIs[$localOui] = $localMac }
 }
 
-foreach ($ip in $AliveIPs) {
-    foreach ($line in $arpLines) {
-        if ($line -match "^\s+$([regex]::Escape($ip))\s+([0-9a-f]{2}(-[0-9a-f]{2}){5})") {
-            $raw = $Matches[1].ToUpper() -replace '-',':'
-            $macMap[$ip] = $raw
-            $oui = ($raw -replace ':','').Substring(0,6)
-            if (-not $seenOUIs.ContainsKey($oui)) { $seenOUIs[$oui]=$raw }
-            break
+# ── ARP resolution — three passes for maximum coverage ────────────────────────
+#
+# Pass 1: Read the existing ARP cache (instant, catches most devices)
+# Pass 2: For any IP still missing a MAC, send a directed ping + re-read ARP
+#          (some entries age out between the ping sweep and now)
+# Pass 3: For any IP still missing, use SendARP() via iphlpapi.dll —
+#          a direct ARP request that bypasses the OS cache entirely and forces
+#          a fresh ARP exchange on the wire. Most robust for stubborn devices.
+
+function Get-MACFromARP ([string[]]$IPs) {
+    $found = @{}
+    $lines = arp -a 2>$null
+    foreach ($ip in $IPs) {
+        foreach ($line in $lines) {
+            if ($line -match "^\s+$([regex]::Escape($ip))\s+([0-9a-f]{2}(-[0-9a-f]{2}){5})") {
+                $found[$ip] = $Matches[1].ToUpper() -replace '-',':'
+                break
+            }
         }
     }
+    return $found
+}
+
+# SendARP p/invoke — forces a real ARP packet on the wire
+$SendARPDef = @'
+[DllImport("iphlpapi.dll", ExactSpelling=true)]
+public static extern int SendARP(int destIP, int srcIP, byte[] macAddr, ref int macAddrLen);
+'@
+$SendARP = Add-Type -MemberDefinition $SendARPDef -Name 'SendARP' -Namespace 'Net' -PassThru
+
+function Get-MACViaSendARP ([string]$IP) {
+    try {
+        $destIP = [BitConverter]::ToInt32([System.Net.IPAddress]::Parse($IP).GetAddressBytes(), 0)
+        $mac    = New-Object byte[] 6
+        $len    = 6
+        $ret    = $SendARP::SendARP($destIP, 0, $mac, [ref]$len)
+        if ($ret -eq 0 -and ($mac | Measure-Object -Sum).Sum -gt 0) {
+            return ($mac | ForEach-Object { $_.ToString("X2") }) -join ':'
+        }
+    } catch {}
+    return $null
+}
+
+# Pass 1 — existing ARP cache
+$need = [System.Collections.Generic.List[string]]::new()
+foreach ($ip in $AliveIPs) {
+    if ($ip -eq $LocalIP) { continue }
+    $r = Get-MACFromARP @($ip)
+    if ($r.ContainsKey($ip)) { $macMap[$ip] = $r[$ip] } else { $need.Add($ip) }
+}
+
+# Pass 2 — directed ping + re-read for any still missing
+if ($need.Count -gt 0) {
+    foreach ($ip in $need) { ping $ip -n 1 -w 200 2>$null | Out-Null }
+    $still = [System.Collections.Generic.List[string]]::new()
+    $r2 = Get-MACFromARP ($need.ToArray())
+    foreach ($ip in $need) {
+        if ($r2.ContainsKey($ip)) { $macMap[$ip] = $r2[$ip] } else { $still.Add($ip) }
+    }
+    $need = $still
+}
+
+# Pass 3 — SendARP for anything still missing (direct wire-level ARP request)
+if ($need.Count -gt 0) {
+    $ArpScript = {
+        param([string]$ip)
+        try {
+            $destIP = [BitConverter]::ToInt32([System.Net.IPAddress]::Parse($ip).GetAddressBytes(), 0)
+            $mac    = New-Object byte[] 6
+            $len    = 6
+            Add-Type -MemberDefinition '[DllImport("iphlpapi.dll", ExactSpelling=true)] public static extern int SendARP(int d, int s, byte[] m, ref int l);' -Name 'SARP' -Namespace 'N' -ErrorAction SilentlyContinue
+            $ret = [N.SARP]::SendARP($destIP, 0, $mac, [ref]$len)
+            if ($ret -eq 0 -and ($mac | Measure-Object -Sum).Sum -gt 0) {
+                return ($mac | ForEach-Object { $_.ToString("X2") }) -join ':'
+            }
+        } catch {}
+        return $null
+    }
+    $Pool0 = [RunspaceFactory]::CreateRunspacePool(1, [Math]::Min($need.Count, 32)); $Pool0.Open()
+    $ArpH  = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($ip in $need) {
+        $ps = [PowerShell]::Create(); $ps.RunspacePool = $Pool0
+        $ps.AddScript($ArpScript).AddArgument($ip) | Out-Null
+        $ArpH.Add(@{PS=$ps; AR=$ps.BeginInvoke(); IP=$ip})
+    }
+    foreach ($h in $ArpH) {
+        $r = $h.PS.EndInvoke($h.AR)
+        if ($r) { $macMap[$h.IP] = [string]$r }
+        $h.PS.Dispose()
+    }
+    $Pool0.Close(); $Pool0.Dispose()
+}
+
+# Build seenOUIs from everything we found
+foreach ($ip in $AliveIPs) {
+    if (-not $macMap.ContainsKey($ip)) { continue }
+    $raw = $macMap[$ip]
+    $oui = ($raw -replace ':','').Substring(0,6)
+    if (-not $seenOUIs.ContainsKey($oui)) { $seenOUIs[$oui] = $raw }
 }
 
 $ouiIdx=0; $ouiTotal=$seenOUIs.Count
@@ -374,7 +465,9 @@ foreach ($kv in $seenOUIs.GetEnumerator()) {
         phase "Phase 4/7 — Vendors:" ("      " + [char]0x1b+"[36m${ouiIdx}"+[char]0x1b+"[0m/${ouiTotal} vendors…                 `r")
     }
     $v = Get-Vendor $kv.Value; $vendorMap[$kv.Key]=$v
-    if (-not $isCached) { Start-Sleep -Milliseconds 1500 }   # 1.5s — safe rate limit margin
+    # No sleep for randomized MACs or cached results — only rate-limit real API calls
+    $isRandomized = ([Convert]::ToInt32($kv.Key.Substring(0,2), 16) -band 0x02) -ne 0
+    if (-not $isCached -and -not $isRandomized) { Start-Sleep -Milliseconds 1500 }
 }
 phaseln "Phase 4/7 — Vendors:" "      ${ouiTotal} unique OUI(s) resolved ✓              "
 
@@ -527,7 +620,8 @@ foreach ($ip in $AliveIPs) {
 
     # Vendor — yellow or dim
     $vs = if ($vendor) { $vendor.Substring(0,[Math]::Min(18,$vendor.Length)) } else { "" }
-    Write-Host -NoNewline ("{0,-18}" -f $vs) -ForegroundColor $(if ($vendor) { "Yellow" } else { "DarkGray" })
+    $vendColor = if ($vendor -eq "(randomized)") { "DarkGray" } elseif ($vendor) { "Yellow" } else { "DarkGray" }
+    Write-Host -NoNewline ("{0,-18}" -f $vs) -ForegroundColor $vendColor
     Write-Host -NoNewline "  "
 
     # Hostname — white or dim
