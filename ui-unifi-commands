@@ -1,6 +1,9 @@
 uap ssh reset...
 syswrapper.sh restore-default
 
+unvr ssh reset...
+ubnt-systool reset2defaults
+
 manual ssh cloudkey update...
 wget http://dl.ubnt.com/unifi/4.8.12/unifi_sysvinit_all.deb
 dpkg -i unifi_sysvinit_all.deb
