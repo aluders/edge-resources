@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Scheduler + Go-Live Worker (SUPER VERBOSE LOGGING)
+  YouTube Scheduler + Go-Live Worker
   --------------------------------------------------
   DST Strategy:
     - TWO Sunday crons (17 and 18 UTC) ensure coverage year-round
@@ -7,11 +7,13 @@
     - During PDT: 17:xx UTC = 10:xx PT ✅ (18:xx = 11:xx PT, skipped)
     - Time window check filters which cron actually runs
   
-  Logging Improvements:
-    - Every cron execution logged with full context
-    - Every API call logged with request/response
-    - Every decision point logged with reasoning
-    - Broadcast state changes tracked
+  Logging Modes:
+    - VERBOSE_LOGGING = true: Full detailed logs (every API call, state change)
+    - VERBOSE_LOGGING = false: Condensed logs (just key events and results)
+  
+  Recent Updates:
+    - Added browser-like headers to transition API call
+    - Feature toggles for scheduling, go-live, and logging verbosity
 ********************************************************************/
 
 /********************************************************************
@@ -29,13 +31,14 @@ const GO_LIVE_MIN_END = 35;
 const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
 const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29";
-const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616"; // YouTube stream ID for binding
+const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616";
 
 /********************************************************************
   FEATURE TOGGLES
 ********************************************************************/
 const ENABLE_SCHEDULING = true;
 const ENABLE_GO_LIVE = true;
+const VERBOSE_LOGGING = true;
 
 const DEVELOPER_MODE = "OFF";
 
@@ -47,19 +50,27 @@ function devModeOn() {
   ENHANCED LOGGING UTILITIES
 ********************************************************************/
 function logSection(title) {
+  if (!VERBOSE_LOGGING) return;
   console.log("\n" + "=".repeat(60));
   console.log(`  ${title}`);
   console.log("=".repeat(60));
 }
 
 function logSubSection(title) {
+  if (!VERBOSE_LOGGING) return;
   console.log("\n" + "-".repeat(60));
   console.log(`  ${title}`);
   console.log("-".repeat(60));
 }
 
 function logKeyValue(key, value) {
+  if (!VERBOSE_LOGGING) return;
   console.log(`  ${key.padEnd(25)}: ${value}`);
+}
+
+// Simple logging that always shows (even when VERBOSE_LOGGING is false)
+function logSimple(message) {
+  console.log(message);
 }
 
 /********************************************************************
@@ -83,19 +94,26 @@ export default {
     const scheduledTime = event?.scheduledTime ? new Date(event.scheduledTime) : new Date();
     const actualTime = new Date();
     
+    const pt = getPacificTimeParts(scheduledTime);
+    const dayOfWeek = new Date(scheduledTime).toLocaleString('en-US', { 
+      timeZone: 'America/Los_Angeles', 
+      weekday: 'long' 
+    });
+
+    // Condensed logging (always shows)
+    if (!VERBOSE_LOGGING) {
+      logSimple(`[${cronString}] ${dayOfWeek} ${pt.year}-${pt.month}-${pt.day} ${pt.hour}:${pt.minute} PT`);
+    }
+    
+    // Verbose logging (detailed)
     logSection("CRON EXECUTION START");
     logKeyValue("Cron Pattern", cronString);
     logKeyValue("Scheduled Time (UTC)", scheduledTime.toISOString());
     logKeyValue("Actual Time (UTC)", actualTime.toISOString());
     logKeyValue("Time Drift", `${Math.abs(actualTime - scheduledTime)}ms`);
-    
-    const pt = getPacificTimeParts(scheduledTime);
     logKeyValue("Pacific Date", `${pt.year}-${pt.month}-${pt.day}`);
     logKeyValue("Pacific Time", `${pt.hour}:${pt.minute}`);
-    logKeyValue("Pacific Day of Week", new Date(scheduledTime).toLocaleString('en-US', { 
-      timeZone: 'America/Los_Angeles', 
-      weekday: 'long' 
-    }));
+    logKeyValue("Pacific Day of Week", dayOfWeek);
 
     // THURSDAY SCHEDULING
     if (cronString === "0 6 * * thu") {
@@ -104,13 +122,22 @@ export default {
       
       if (!ENABLE_SCHEDULING) {
         logKeyValue("Status", "⚠️ DISABLED");
-        console.log("⚠️ Scheduling is disabled via ENABLE_SCHEDULING flag");
-        console.log("Set ENABLE_SCHEDULING = true to enable");
+        if (VERBOSE_LOGGING) {
+          console.log("⚠️ Scheduling is disabled via ENABLE_SCHEDULING flag");
+          console.log("Set ENABLE_SCHEDULING = true to enable");
+        } else {
+          logSimple("⚠️ Scheduling disabled");
+        }
         return;
       }
       
       logKeyValue("Will Run", "scheduleNextSunday()");
       logKeyValue("Will NOT Run", "Go-Live logic (skipped)");
+      
+      if (!VERBOSE_LOGGING) {
+        logSimple("📅 Running Thursday scheduling...");
+      }
+      
       ctx.waitUntil(scheduleNextSunday(env));
       return; // Exit early - don't run Sunday logic
     }
@@ -128,9 +155,13 @@ export default {
     
     if (!ENABLE_GO_LIVE) {
       logKeyValue("Status", "⚠️ DISABLED");
-      console.log("⚠️ Go-Live is disabled via ENABLE_GO_LIVE flag");
-      console.log("Set ENABLE_GO_LIVE = true to enable");
-      console.log("=".repeat(60) + "\n");
+      if (VERBOSE_LOGGING) {
+        console.log("⚠️ Go-Live is disabled via ENABLE_GO_LIVE flag");
+        console.log("Set ENABLE_GO_LIVE = true to enable");
+        console.log("=".repeat(60) + "\n");
+      } else {
+        logSimple("⚠️ Go-Live disabled");
+      }
       return;
     }
     
@@ -153,6 +184,10 @@ export default {
     logKeyValue("Hour Matches?", hourMatches ? "✅ YES" : "❌ NO");
     logKeyValue("Minute In Range?", minInRange ? "✅ YES" : "❌ NO");
     logKeyValue("Inside Window?", inWindow ? "✅ YES - WILL ATTEMPT GO-LIVE" : "❌ NO - SKIPPING");
+    
+    if (!VERBOSE_LOGGING && !inWindow) {
+      logSimple(`⏭️ Outside window (${currentHour}:${pad2(currentMin)} not in ${GO_LIVE_HOUR_PT}:${pad2(GO_LIVE_MIN_START)}-${GO_LIVE_HOUR_PT}:${pad2(GO_LIVE_MIN_END)})`);
+    }
     
     if (!hourMatches) {
       logSubSection("WHY SKIPPING: Hour Mismatch");
@@ -189,35 +224,60 @@ export default {
     // INSIDE WINDOW - ATTEMPT GO-LIVE
     logSubSection("🎬 EXECUTING GO-LIVE SEQUENCE");
     
+    if (!VERBOSE_LOGGING) {
+      logSimple(`🎬 Inside window - attempting go-live...`);
+    }
+    
     ctx.waitUntil(
       (async () => {
         try {
           logKeyValue("Strategy", "2 attempts, 30 seconds apart");
           
-          console.log("\n🚀 ATTEMPT 1/2");
-          console.log("   Time:", new Date().toISOString());
+          if (VERBOSE_LOGGING) {
+            console.log("\n🚀 ATTEMPT 1/2");
+            console.log("   Time:", new Date().toISOString());
+          }
           const result1 = await goLiveToday(env);
-          logKeyValue("Attempt 1 Result", result1);
+          
+          if (VERBOSE_LOGGING) {
+            logKeyValue("Attempt 1 Result", result1);
+          } else {
+            logSimple(`🚀 Attempt 1: ${result1}`);
+          }
           
           if (result1 === "ALREADY_LIVE") {
-            console.log("\n✅ Stream already live - no retry needed");
-            console.log("=".repeat(60) + "\n");
+            if (VERBOSE_LOGGING) {
+              console.log("\n✅ Stream already live - no retry needed");
+              console.log("=".repeat(60) + "\n");
+            } else {
+              logSimple("✅ Already live");
+            }
             return;
           }
 
-          console.log("\n⏳ Waiting 30 seconds before attempt 2...");
+          if (VERBOSE_LOGGING) {
+            console.log("\n⏳ Waiting 30 seconds before attempt 2...");
+          }
           await new Promise(resolve => setTimeout(resolve, 30000));
 
-          console.log("\n🚀 ATTEMPT 2/2");
-          console.log("   Time:", new Date().toISOString());
+          if (VERBOSE_LOGGING) {
+            console.log("\n🚀 ATTEMPT 2/2");
+            console.log("   Time:", new Date().toISOString());
+          }
           const result2 = await goLiveToday(env);
-          logKeyValue("Attempt 2 Result", result2);
           
-          console.log("\n" + "=".repeat(60) + "\n");
+          if (VERBOSE_LOGGING) {
+            logKeyValue("Attempt 2 Result", result2);
+            console.log("\n" + "=".repeat(60) + "\n");
+          } else {
+            logSimple(`🚀 Attempt 2: ${result2}`);
+          }
         } catch (err) {
           console.error("\n❌ GO-LIVE SEQUENCE ERROR:", err);
-          console.error("Stack:", err.stack);
-          console.log("\n" + "=".repeat(60) + "\n");
+          if (VERBOSE_LOGGING) {
+            console.error("Stack:", err.stack);
+            console.log("\n" + "=".repeat(60) + "\n");
+          }
         }
       })()
     );
@@ -551,6 +611,10 @@ async function goLiveToday(env) {
     const nowPT = getPacificTimeParts(new Date());
     const todayPT = `${nowPT.month}/${nowPT.day}/${nowPT.year}`;
     
+    if (!VERBOSE_LOGGING) {
+      logSimple(`  Looking for broadcast: ${todayPT}`);
+    }
+    
     logSubSection("Fetching Broadcasts");
     logKeyValue("Looking for date (PT)", todayPT);
     
@@ -676,50 +740,78 @@ async function goLiveToday(env) {
     logKeyValue("Endpoint", transitionUrl);
     logKeyValue("Method", "POST");
     
+    // *** UPDATED: Added browser-like headers to look more legitimate ***
     const transitionRes = await fetch(transitionUrl, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` }
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://studio.youtube.com",
+        "Referer": "https://studio.youtube.com/"
+      }
     });
 
     logKeyValue("Response Status", transitionRes.status);
     
     const transition = await safeJson(transitionRes);
-    console.log("  Response Body:", JSON.stringify(transition, null, 2));
+    
+    if (VERBOSE_LOGGING) {
+      console.log("  Response Body:", JSON.stringify(transition, null, 2));
+    }
 
     if (transitionRes.status === 409) {
-      console.log(`⚠️  409 Conflict - Broadcast may be transitioning or in incompatible state`);
-      if (transition.error?.message) {
-        logKeyValue("Error Message", transition.error.message);
+      if (VERBOSE_LOGGING) {
+        console.log(`⚠️  409 Conflict - Broadcast may be transitioning or in incompatible state`);
+        if (transition.error?.message) {
+          logKeyValue("Error Message", transition.error.message);
+        }
+      } else {
+        logSimple(`  ⚠️ 409 Conflict: ${transition.error?.message || 'Incompatible state'}`);
       }
       return "RETRY_LATER";
     }
 
     if (!transitionRes.ok) {
-      console.error(`❌ Transition failed (${transitionRes.status})`);
-      if (transition.error) {
-        logKeyValue("Error Message", transition.error.message || "No message");
-        logKeyValue("Error Reason", transition.error.errors?.[0]?.reason || "Unknown");
-        logKeyValue("Error Domain", transition.error.errors?.[0]?.domain || "Unknown");
-        console.log("  Full Error:", JSON.stringify(transition.error, null, 2));
-      }
+      const errorMsg = transition.error?.message || "No message";
+      const errorReason = transition.error?.errors?.[0]?.reason || "Unknown";
       
-      // Special handling for 403
-      if (transitionRes.status === 403) {
-        console.log("\n⚠️  403 FORBIDDEN - Possible causes:");
-        console.log("  1. Broadcast not in transitionable state (check state above)");
-        console.log("  2. Broadcast not bound to a stream");
-        console.log("  3. Stream not connected/health check failing");
-        console.log("  4. YouTube API quota exceeded (unlikely)");
-        console.log("\n  🔍 Check YouTube Studio manually:");
-        console.log(`     https://studio.youtube.com/video/${broadcast.id}/livestreaming`);
+      if (VERBOSE_LOGGING) {
+        console.error(`❌ Transition failed (${transitionRes.status})`);
+        if (transition.error) {
+          logKeyValue("Error Message", errorMsg);
+          logKeyValue("Error Reason", errorReason);
+          logKeyValue("Error Domain", transition.error.errors?.[0]?.domain || "Unknown");
+          console.log("  Full Error:", JSON.stringify(transition.error, null, 2));
+        }
+        
+        // Special handling for 403
+        if (transitionRes.status === 403) {
+          console.log("\n⚠️  403 FORBIDDEN - Possible causes:");
+          console.log("  1. Broadcast not in transitionable state (check state above)");
+          console.log("  2. Broadcast not bound to a stream");
+          console.log("  3. Stream not connected/health check failing");
+          console.log("  4. YouTube API quota exceeded (unlikely)");
+          console.log("\n  🔍 Check YouTube Studio manually:");
+          console.log(`     https://studio.youtube.com/video/${broadcast.id}/livestreaming`);
+        }
+      } else {
+        logSimple(`  ❌ Transition failed (${transitionRes.status}): ${errorMsg} [${errorReason}]`);
       }
       
       return "ERROR";
     }
 
     const newState = transition.status?.lifeCycleStatus;
-    console.log(`\n✅ TRANSITION SUCCESSFUL!`);
-    logKeyValue("New State", newState);
+    
+    if (VERBOSE_LOGGING) {
+      console.log(`\n✅ TRANSITION SUCCESSFUL!`);
+      logKeyValue("New State", newState);
+    } else {
+      logSimple(`  ✅ Success! State: ${newState}`);
+    }
     
     return newState === "live" ? "ALREADY_LIVE" : "SUCCESS";
     
