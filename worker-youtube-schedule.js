@@ -31,19 +31,19 @@ const GO_LIVE_MIN_END = 35;
 const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
 const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29";
-const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616";
+const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616"; // YouTube stream ID for binding
 
 /********************************************************************
   FEATURE TOGGLES
 ********************************************************************/
-const ENABLE_SCHEDULING = true;
-const ENABLE_GO_LIVE = true;
-const VERBOSE_LOGGING = true;
+const ENABLE_SCHEDULING = true;  // Set to false to disable Thursday scheduling
+const ENABLE_GO_LIVE = true;     // Set to false to disable Sunday go-live
+const VERBOSE_LOGGING = false;    // Set to false for condensed logging
 
-const DEVELOPER_MODE = "OFF";
+const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, etc.
 
 function devModeOn() {
-  return String(DEVELOPER_MODE).trim().toUpperCase() === "ON";
+  return DEVELOPER_MODE === true;
 }
 
 /********************************************************************
