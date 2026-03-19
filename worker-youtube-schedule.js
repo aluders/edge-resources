@@ -42,7 +42,7 @@ const VERBOSE_LOGGING = false;    // Set to false for condensed logging
 const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, ?schedule, ?golive.
 
 function devModeOn() {
-  return DEVELOPER_MODE === true;
+  return DEVELOPER_MODE === false;
 }
 
 /********************************************************************
