@@ -12,7 +12,10 @@
     - VERBOSE_LOGGING = false: Condensed logs (just key events and results)
   
   Recent Updates:
-    - Added browser-like headers to transition API call
+    - Two-step transition: testing → live (simulates YouTube Studio preview)
+    - Browser-like headers to transition API call
+    - 20-second retry delay (reduced from 30 to account for two-step)
+    - Window starts at 10:27 (earlier to avoid Sunday rush)
     - Feature toggles for scheduling, go-live, and logging verbosity
 ********************************************************************/
 
@@ -38,11 +41,11 @@ const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616"; // YouTube stream
 ********************************************************************/
 const ENABLE_SCHEDULING = true;  // Set to false to disable Thursday scheduling
 const ENABLE_GO_LIVE = true;     // Set to false to disable Sunday go-live
-const VERBOSE_LOGGING = false;    // Set to false for condensed logging
-const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, ?schedule, ?golive.
+const VERBOSE_LOGGING = true;    // Set to false for condensed logging
+const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, ?schedule, ?golive
 
 function devModeOn() {
-  return DEVELOPER_MODE === false;
+  return DEVELOPER_MODE === true;
 }
 
 /********************************************************************
@@ -230,7 +233,7 @@ export default {
     ctx.waitUntil(
       (async () => {
         try {
-          logKeyValue("Strategy", "2 attempts, 30 seconds apart");
+          logKeyValue("Strategy", "2 attempts, 20 seconds apart");
           
           if (VERBOSE_LOGGING) {
             console.log("\n🚀 ATTEMPT 1/2");
@@ -255,9 +258,9 @@ export default {
           }
 
           if (VERBOSE_LOGGING) {
-            console.log("\n⏳ Waiting 30 seconds before attempt 2...");
+            console.log("\n⏳ Waiting 20 seconds before attempt 2...");
           }
-          await new Promise(resolve => setTimeout(resolve, 30000));
+          await new Promise(resolve => setTimeout(resolve, 20000));
 
           if (VERBOSE_LOGGING) {
             console.log("\n🚀 ATTEMPT 2/2");
@@ -727,20 +730,92 @@ async function goLiveToday(env) {
     logKeyValue("Privacy", broadcast.status?.privacyStatus);
     logKeyValue("Selection Reason", selectedReason);
 
-    // Attempt transition
-    logSubSection("Transitioning to Live");
+    // Two-step transition: testing → live
+    // This simulates what YouTube Studio does when you preview the stream
+    logSubSection("Transitioning to Live (Two-Step Process)");
     
-    const transitionUrl = 
+    // STEP 1: Transition to testing
+    if (!VERBOSE_LOGGING) {
+      logSimple(`  Step 1: Transitioning to testing...`);
+    }
+    
+    logKeyValue("Step 1", "Transition to testing");
+    const testingUrl = 
+      "https://youtube.googleapis.com/youtube/v3/liveBroadcasts/transition" +
+      `?part=id,snippet,status` +
+      `&broadcastStatus=testing` +
+      `&id=${broadcast.id}`;
+    
+    logKeyValue("Endpoint", testingUrl);
+    
+    const testingRes = await fetch(testingUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://studio.youtube.com",
+        "Referer": "https://studio.youtube.com/"
+      }
+    });
+    
+    logKeyValue("Testing Response", testingRes.status);
+    
+    const testingData = await safeJson(testingRes);
+    
+    if (VERBOSE_LOGGING) {
+      console.log("  Response Body:", JSON.stringify(testingData, null, 2));
+    }
+    
+    if (!testingRes.ok) {
+      const errorMsg = testingData.error?.message || "No message";
+      const errorReason = testingData.error?.errors?.[0]?.reason || "Unknown";
+      
+      if (VERBOSE_LOGGING) {
+        console.error(`❌ Testing transition failed (${testingRes.status})`);
+        if (testingData.error) {
+          logKeyValue("Error Message", errorMsg);
+          logKeyValue("Error Reason", errorReason);
+          console.log("  Full Error:", JSON.stringify(testingData.error, null, 2));
+        }
+      } else {
+        logSimple(`  ❌ Testing failed (${testingRes.status}): ${errorMsg} [${errorReason}]`);
+      }
+      
+      return "ERROR";
+    }
+    
+    if (VERBOSE_LOGGING) {
+      logKeyValue("Testing State", testingData.status?.lifeCycleStatus);
+      console.log("  ✅ Successfully transitioned to testing");
+    } else {
+      logSimple(`  ✅ Testing transition successful`);
+    }
+    
+    // Wait for YouTube to stabilize
+    logKeyValue("Waiting", "10 seconds for YouTube to stabilize...");
+    if (!VERBOSE_LOGGING) {
+      logSimple(`  Waiting 10 seconds...`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    
+    // STEP 2: Transition to live
+    if (!VERBOSE_LOGGING) {
+      logSimple(`  Step 2: Transitioning to live...`);
+    }
+    
+    logKeyValue("Step 2", "Transition to live");
+    const liveUrl = 
       "https://youtube.googleapis.com/youtube/v3/liveBroadcasts/transition" +
       `?part=id,snippet,status` +
       `&broadcastStatus=live` +
       `&id=${broadcast.id}`;
     
-    logKeyValue("Endpoint", transitionUrl);
-    logKeyValue("Method", "POST");
+    logKeyValue("Endpoint", liveUrl);
     
-    // *** UPDATED: Added browser-like headers to look more legitimate ***
-    const transitionRes = await fetch(transitionUrl, {
+    const liveRes = await fetch(liveUrl, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${token}`,
@@ -753,61 +828,59 @@ async function goLiveToday(env) {
       }
     });
 
-    logKeyValue("Response Status", transitionRes.status);
+    logKeyValue("Live Response", liveRes.status);
     
-    const transition = await safeJson(transitionRes);
+    const liveData = await safeJson(liveRes);
     
     if (VERBOSE_LOGGING) {
-      console.log("  Response Body:", JSON.stringify(transition, null, 2));
+      console.log("  Response Body:", JSON.stringify(liveData, null, 2));
     }
 
-    if (transitionRes.status === 409) {
+    if (liveRes.status === 409) {
       if (VERBOSE_LOGGING) {
-        console.log(`⚠️  409 Conflict - Broadcast may be transitioning or in incompatible state`);
-        if (transition.error?.message) {
-          logKeyValue("Error Message", transition.error.message);
+        console.log(`⚠️  409 Conflict - Broadcast may be transitioning`);
+        if (liveData.error?.message) {
+          logKeyValue("Error Message", liveData.error.message);
         }
       } else {
-        logSimple(`  ⚠️ 409 Conflict: ${transition.error?.message || 'Incompatible state'}`);
+        logSimple(`  ⚠️ 409 Conflict: ${liveData.error?.message || 'Still transitioning'}`);
       }
       return "RETRY_LATER";
     }
 
-    if (!transitionRes.ok) {
-      const errorMsg = transition.error?.message || "No message";
-      const errorReason = transition.error?.errors?.[0]?.reason || "Unknown";
+    if (!liveRes.ok) {
+      const errorMsg = liveData.error?.message || "No message";
+      const errorReason = liveData.error?.errors?.[0]?.reason || "Unknown";
       
       if (VERBOSE_LOGGING) {
-        console.error(`❌ Transition failed (${transitionRes.status})`);
-        if (transition.error) {
+        console.error(`❌ Live transition failed (${liveRes.status})`);
+        if (liveData.error) {
           logKeyValue("Error Message", errorMsg);
           logKeyValue("Error Reason", errorReason);
-          logKeyValue("Error Domain", transition.error.errors?.[0]?.domain || "Unknown");
-          console.log("  Full Error:", JSON.stringify(transition.error, null, 2));
+          logKeyValue("Error Domain", liveData.error.errors?.[0]?.domain || "Unknown");
+          console.log("  Full Error:", JSON.stringify(liveData.error, null, 2));
         }
         
         // Special handling for 403
-        if (transitionRes.status === 403) {
+        if (liveRes.status === 403) {
           console.log("\n⚠️  403 FORBIDDEN - Possible causes:");
-          console.log("  1. Broadcast not in transitionable state (check state above)");
-          console.log("  2. Broadcast not bound to a stream");
-          console.log("  3. Stream not connected/health check failing");
-          console.log("  4. YouTube API quota exceeded (unlikely)");
+          console.log("  1. Broadcast not in transitionable state");
+          console.log("  2. Stream not connected/health check failing");
           console.log("\n  🔍 Check YouTube Studio manually:");
           console.log(`     https://studio.youtube.com/video/${broadcast.id}/livestreaming`);
         }
       } else {
-        logSimple(`  ❌ Transition failed (${transitionRes.status}): ${errorMsg} [${errorReason}]`);
+        logSimple(`  ❌ Live transition failed (${liveRes.status}): ${errorMsg} [${errorReason}]`);
       }
       
       return "ERROR";
     }
 
-    const newState = transition.status?.lifeCycleStatus;
+    const newState = liveData.status?.lifeCycleStatus;
     
     if (VERBOSE_LOGGING) {
-      console.log(`\n✅ TRANSITION SUCCESSFUL!`);
-      logKeyValue("New State", newState);
+      console.log(`\n✅ TWO-STEP TRANSITION SUCCESSFUL!`);
+      logKeyValue("Final State", newState);
     } else {
       logSimple(`  ✅ Success! State: ${newState}`);
     }
