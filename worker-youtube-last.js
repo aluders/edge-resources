@@ -3,10 +3,10 @@
   + Developer Mode gate for ?flags
   --------------------------------------------------
   Dev Mode behavior:
-    - DEVELOPER_MODE = "OFF": disables manual/cache-busting flags (?refresh)
-                              and diagnostic-style flags if you add any later.
-                              Normal operation (redirect) still works.
-    - DEVELOPER_MODE = "ON" : allows ?refresh (and any future ?flags).
+    - DEVELOPER_MODE = "OFF": ignores ?refresh (prevents cache-busting abuse)
+    - DEVELOPER_MODE = "ON" : allows ?refresh to bypass cache
+  Notes:
+    - ?embed remains available in both modes (not considered a dev flag)
 ********************************************************************/
 
 /********************************************************************
