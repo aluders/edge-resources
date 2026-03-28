@@ -15,7 +15,6 @@
     - Two-step transition: testing → live (simulates YouTube Studio preview)
     - Browser-like headers to transition API call
     - 20-second retry delay (reduced from 30 to account for two-step)
-    - Window starts at 10:27 (earlier to avoid Sunday rush)
     - Feature toggles for scheduling, go-live, and logging verbosity
 ********************************************************************/
 
