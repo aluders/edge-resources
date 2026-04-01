@@ -138,9 +138,9 @@ else:
           f"{CYAN}⇄ {direct_str} Direct Stream{END}  "
           f"{PURPLE}⚙ {transcode_cnt} Transcode{END})")
     if total_bw:
-        total_mbps = float(total_bw) / 1000
-        wan_mbps   = float(wan_bw)   / 1000
-        lan_mbps   = float(lan_bw)   / 1000
+        total_mbps = float(total_bw or 0) / 1000
+        wan_mbps   = float(wan_bw   or 0) / 1000
+        lan_mbps   = float(lan_bw   or 0) / 1000
         print(f"  Bandwidth:  {BOLD}{total_mbps:.1f} Mbps{END}  "
               f"{DIM}(WAN {wan_mbps:.1f} Mbps  /  LAN {lan_mbps:.1f} Mbps){END}")
     print(f"{YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{END}")
@@ -177,7 +177,7 @@ else:
 
         # ── Playback state & progress ────────────────────────────────────
         state        = s.get('state', 'unknown')
-        pct          = s.get('progress_percent', '0')
+        pct          = s.get('progress_percent', '0') or '0'
         view_offset  = s.get('view_offset', 0)
         duration     = s.get('duration', 0)
         elapsed      = format_duration(view_offset)
@@ -257,7 +257,7 @@ else:
         # ── Network ──────────────────────────────────────────────────────
         ip       = s.get('ip_address', '0.0.0.0')
         location = s.get('location', '')   # 'lan' or 'wan'
-        bw       = float(s.get('bandwidth', 0)) / 1000
+        bw       = float(s.get('bandwidth', 0) or 0) / 1000
         loc_tag  = f"{DIM}[{location.upper()}]{END}" if location else ""
 
         # ── Player ───────────────────────────────────────────────────────
