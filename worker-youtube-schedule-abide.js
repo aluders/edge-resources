@@ -45,7 +45,7 @@ const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616"; // YouTube stream
 const ENABLE_SCHEDULING = true;  // Set to false to disable Thursday scheduling
 const ENABLE_GO_LIVE = true;     // Set to false to disable Sunday go-live
 const VERBOSE_LOGGING = true;    // Set to false for condensed logging
-const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, etc.
+const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, ?schedule, ?golive
 
 function devModeOn() {
   return DEVELOPER_MODE === true;
