@@ -25,11 +25,15 @@
 const SCHEDULE_HOUR_PT = 10;
 const SCHEDULE_MINUTE_PT = 30;
 
-// GO LIVE TIMING
-const GO_LIVE_HOUR_PT = 10;
-const GO_LIVE_MIN_START = 27;
-const GO_LIVE_MIN_END = 35;
+// GO LIVE TIMING: When to start attempting to go live
+// For a 10:30 service, start at 10:27 and end at 10:35
+// For a 9:00 service, you might use 8:57 to 9:05
+const GO_LIVE_START_HOUR_PT = 10;   // Hour to start attempting (PT)
+const GO_LIVE_START_MIN_PT = 27;    // Minute to start attempting (PT)
+const GO_LIVE_END_HOUR_PT = 10;     // Hour to stop attempting (PT)
+const GO_LIVE_END_MIN_PT = 35;      // Minute to stop attempting (PT)
 
+const PRIVACY_STATUS = "public"; // PRIVACY: "public", "unlisted", or "private"
 const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
 const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29";
@@ -41,7 +45,7 @@ const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616"; // YouTube stream
 const ENABLE_SCHEDULING = true;  // Set to false to disable Thursday scheduling
 const ENABLE_GO_LIVE = true;     // Set to false to disable Sunday go-live
 const VERBOSE_LOGGING = true;    // Set to false for condensed logging
-const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, ?schedule, ?golive
+const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, etc.
 
 function devModeOn() {
   return DEVELOPER_MODE === true;
@@ -172,52 +176,45 @@ export default {
     const currentHour = parseInt(pt.hour, 10);
     const currentMin = parseInt(pt.minute, 10);
     
-    logKeyValue("Current Hour (PT)", currentHour);
-    logKeyValue("Current Minute (PT)", currentMin);
-    logKeyValue("Target Hour (PT)", GO_LIVE_HOUR_PT);
-    logKeyValue("Window Start", `${GO_LIVE_HOUR_PT}:${pad2(GO_LIVE_MIN_START)}`);
-    logKeyValue("Window End", `${GO_LIVE_HOUR_PT}:${pad2(GO_LIVE_MIN_END)}`);
+    // Convert times to minutes since midnight for easier comparison
+    const currentTimeMinutes = currentHour * 60 + currentMin;
+    const windowStartMinutes = GO_LIVE_START_HOUR_PT * 60 + GO_LIVE_START_MIN_PT;
+    const windowEndMinutes = GO_LIVE_END_HOUR_PT * 60 + GO_LIVE_END_MIN_PT;
     
-    const hourMatches = currentHour === GO_LIVE_HOUR_PT;
-    const minInRange = currentMin >= GO_LIVE_MIN_START && currentMin <= GO_LIVE_MIN_END;
-    const inWindow = hourMatches && minInRange;
+    logKeyValue("Current Time (PT)", `${currentHour}:${pad2(currentMin)}`);
+    logKeyValue("Window Start", `${GO_LIVE_START_HOUR_PT}:${pad2(GO_LIVE_START_MIN_PT)}`);
+    logKeyValue("Window End", `${GO_LIVE_END_HOUR_PT}:${pad2(GO_LIVE_END_MIN_PT)}`);
     
-    logKeyValue("Hour Matches?", hourMatches ? "✅ YES" : "❌ NO");
-    logKeyValue("Minute In Range?", minInRange ? "✅ YES" : "❌ NO");
+    const inWindow = currentTimeMinutes >= windowStartMinutes && currentTimeMinutes <= windowEndMinutes;
+    
     logKeyValue("Inside Window?", inWindow ? "✅ YES - WILL ATTEMPT GO-LIVE" : "❌ NO - SKIPPING");
     
     if (!VERBOSE_LOGGING && !inWindow) {
-      logSimple(`⏭️ Outside window (${currentHour}:${pad2(currentMin)} not in ${GO_LIVE_HOUR_PT}:${pad2(GO_LIVE_MIN_START)}-${GO_LIVE_HOUR_PT}:${pad2(GO_LIVE_MIN_END)})`);
+      logSimple(`⏭️ Outside window (${currentHour}:${pad2(currentMin)} not in ${GO_LIVE_START_HOUR_PT}:${pad2(GO_LIVE_START_MIN_PT)}-${GO_LIVE_END_HOUR_PT}:${pad2(GO_LIVE_END_MIN_PT)})`);
     }
     
-    if (!hourMatches) {
-      logSubSection("WHY SKIPPING: Hour Mismatch");
-      logKeyValue("Expected Hour", GO_LIVE_HOUR_PT);
-      logKeyValue("Actual Hour", currentHour);
-      logKeyValue("Explanation", currentHour < GO_LIVE_HOUR_PT ? "Too early" : "Too late");
+    if (!inWindow) {
+      logSubSection("WHY SKIPPING: Outside Time Window");
+      logKeyValue("Current Time", `${currentHour}:${pad2(currentMin)}`);
+      logKeyValue("Window", `${GO_LIVE_START_HOUR_PT}:${pad2(GO_LIVE_START_MIN_PT)} - ${GO_LIVE_END_HOUR_PT}:${pad2(GO_LIVE_END_MIN_PT)}`);
+      
+      if (currentTimeMinutes < windowStartMinutes) {
+        logKeyValue("Reason", "Too early");
+      } else {
+        logKeyValue("Reason", "Too late");
+      }
       
       // DST explanation
       if (cronString.includes("17")) {
         console.log("\n  ℹ️  This is the 17:xx UTC cron");
-        console.log("     During PST (winter): 17 UTC = 9 AM PT → Too early ⏭️");
-        console.log("     During PDT (summer): 17 UTC = 10 AM PT → Perfect ✅");
-        console.log("     Current season appears to be PST (winter)");
+        console.log("     During PST (winter): 17 UTC = 9 AM PT");
+        console.log("     During PDT (summer): 17 UTC = 10 AM PT");
       } else if (cronString.includes("18")) {
         console.log("\n  ℹ️  This is the 18:xx UTC cron");
-        console.log("     During PST (winter): 18 UTC = 10 AM PT → Perfect ✅");
-        console.log("     During PDT (summer): 18 UTC = 11 AM PT → Too late ⏭️");
-        console.log("     Current season appears to be PDT (summer)");
+        console.log("     During PST (winter): 18 UTC = 10 AM PT");
+        console.log("     During PDT (summer): 18 UTC = 11 AM PT");
       }
       
-      console.log("\n" + "=".repeat(60) + "\n");
-      return;
-    }
-    
-    if (!minInRange) {
-      logSubSection("WHY SKIPPING: Outside Minute Window");
-      logKeyValue("Current Minute", currentMin);
-      logKeyValue("Too Early?", currentMin < GO_LIVE_MIN_START ? "YES" : "NO");
-      logKeyValue("Too Late?", currentMin > GO_LIVE_MIN_END ? "YES" : "NO");
       console.log("\n" + "=".repeat(60) + "\n");
       return;
     }
@@ -326,10 +323,11 @@ export default {
       const currentHour = parseInt(pt.hour, 10);
       const currentMin = parseInt(pt.minute, 10);
       
-      const inWindow = 
-        currentHour === GO_LIVE_HOUR_PT &&
-        currentMin >= GO_LIVE_MIN_START &&
-        currentMin <= GO_LIVE_MIN_END;
+      // Convert times to minutes since midnight for easier comparison
+      const currentTimeMinutes = currentHour * 60 + currentMin;
+      const windowStartMinutes = GO_LIVE_START_HOUR_PT * 60 + GO_LIVE_START_MIN_PT;
+      const windowEndMinutes = GO_LIVE_END_HOUR_PT * 60 + GO_LIVE_END_MIN_PT;
+      const inWindow = currentTimeMinutes >= windowStartMinutes && currentTimeMinutes <= windowEndMinutes;
       
       let report = `OAUTH STATUS\n`;
       report += `  Token Retrieved: ${token ? "✅ Yes" : "❌ No"}\n`;
@@ -389,7 +387,7 @@ export default {
       report += `  Day: ${now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'long' })}\n`;
       
       report += `\nWINDOW CONFIGURATION\n`;
-      report += `  Target: ${GO_LIVE_HOUR_PT}:${pad2(GO_LIVE_MIN_START)} - ${GO_LIVE_HOUR_PT}:${pad2(GO_LIVE_MIN_END)} PT\n`;
+      report += `  Target: ${GO_LIVE_START_HOUR_PT}:${pad2(GO_LIVE_START_MIN_PT)} - ${GO_LIVE_END_HOUR_PT}:${pad2(GO_LIVE_END_MIN_PT)} PT\n`;
       report += `  In Window: ${inWindow ? "YES ✅" : "NO ⏭️"}\n`;
       
       report += `\nDST INFORMATION\n`;
@@ -516,7 +514,7 @@ async function scheduleNextSunday(env) {
         defaultAudioLanguage: "en"
       },
       status: {
-        privacyStatus: "public",
+        privacyStatus: PRIVACY_STATUS,
         selfDeclaredMadeForKids: false
       },
       contentDetails: {
