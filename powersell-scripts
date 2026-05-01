@@ -1,0 +1,11 @@
+
+Set-ExecutionPolicy RemoteSigned
+
+# Temporary (Current Session Only):
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
+# For Only Your User Account:
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+
+# Running a Single Script via CMD:
+powershell.exe -ExecutionPolicy Bypass -File "C:\Path\To\YourScript.ps1"
