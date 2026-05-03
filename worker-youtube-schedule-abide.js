@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Scheduler + Go-Live Worker
+  YouTube Scheduler + Go-Live + Auto-End Worker
   --------------------------------------------------
   DST Strategy:
     - TWO Sunday crons (17 and 18 UTC) ensure coverage year-round
@@ -12,10 +12,11 @@
     - VERBOSE_LOGGING = false: Condensed logs (just key events and results)
   
   Recent Updates:
+    - Auto-end stream feature with configurable time window
+    - Flexible go-live window (supports cross-hour boundaries for 9am services)
+    - Configurable privacy status (public/unlisted/private)
     - Two-step transition: testing → live (simulates YouTube Studio preview)
     - Browser-like headers to transition API call
-    - 20-second retry delay (reduced from 30 to account for two-step)
-    - Feature toggles for scheduling, go-live, and logging verbosity
 ********************************************************************/
 
 /********************************************************************
@@ -33,7 +34,16 @@ const GO_LIVE_START_MIN_PT = 27;    // Minute to start attempting (PT)
 const GO_LIVE_END_HOUR_PT = 10;     // Hour to stop attempting (PT)
 const GO_LIVE_END_MIN_PT = 35;      // Minute to stop attempting (PT)
 
-const PRIVACY_STATUS = "public"; // PRIVACY: "public", "unlisted", or "private"
+// END STREAM TIMING: When to automatically end the live stream
+// For a 10:30-12:00 service, you might use 12:00 to 12:03
+const END_STREAM_START_HOUR_PT = 13;  // Hour to start attempting to end (PT)
+const END_STREAM_START_MIN_PT = 0;    // Minute to start attempting to end (PT)
+const END_STREAM_END_HOUR_PT = 13;    // Hour to stop attempting to end (PT)
+const END_STREAM_END_MIN_PT = 5;      // Minute to stop attempting to end (PT)
+
+// PRIVACY: "public", "unlisted", or "private"
+const PRIVACY_STATUS = "public";
+
 const UPLOADS_PLAYLIST_ID = "UUxZ8LTstrCOotf74qO0dOFA";
 const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29";
@@ -44,7 +54,8 @@ const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616"; // YouTube stream
 ********************************************************************/
 const ENABLE_SCHEDULING = true;  // Set to false to disable Thursday scheduling
 const ENABLE_GO_LIVE = true;     // Set to false to disable Sunday go-live
-const VERBOSE_LOGGING = true;    // Set to false for condensed logging
+const ENABLE_AUTO_END = true;   // Set to true to automatically end stream at specified time
+const VERBOSE_LOGGING = false;    // Set to false for condensed logging
 const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, ?schedule, ?golive
 
 function devModeOn() {
@@ -279,6 +290,66 @@ export default {
         }
       })()
     );
+    
+    // CHECK FOR AUTO-END STREAM WINDOW
+    if (!ENABLE_AUTO_END) {
+      // Auto-end is disabled, skip this check
+      return;
+    }
+    
+    logSection("AUTO-END STREAM CHECK");
+    
+    // Check if we're in the end-stream window
+    const endWindowStartMinutes = END_STREAM_START_HOUR_PT * 60 + END_STREAM_START_MIN_PT;
+    const endWindowEndMinutes = END_STREAM_END_HOUR_PT * 60 + END_STREAM_END_MIN_PT;
+    const inEndWindow = currentTimeMinutes >= endWindowStartMinutes && currentTimeMinutes <= endWindowEndMinutes;
+    
+    logKeyValue("Current Time (PT)", `${currentHour}:${pad2(currentMin)}`);
+    logKeyValue("End Window Start", `${END_STREAM_START_HOUR_PT}:${pad2(END_STREAM_START_MIN_PT)}`);
+    logKeyValue("End Window End", `${END_STREAM_END_HOUR_PT}:${pad2(END_STREAM_END_MIN_PT)}`);
+    logKeyValue("Inside End Window?", inEndWindow ? "✅ YES - WILL ATTEMPT TO END" : "❌ NO - SKIPPING");
+    
+    if (!VERBOSE_LOGGING && !inEndWindow) {
+      logSimple(`⏭️ Outside end window (${currentHour}:${pad2(currentMin)} not in ${END_STREAM_START_HOUR_PT}:${pad2(END_STREAM_START_MIN_PT)}-${END_STREAM_END_HOUR_PT}:${pad2(END_STREAM_END_MIN_PT)})`);
+    }
+    
+    if (!inEndWindow) {
+      if (VERBOSE_LOGGING) {
+        logSubSection("WHY SKIPPING: Outside End Window");
+        logKeyValue("Current Time", `${currentHour}:${pad2(currentMin)}`);
+        logKeyValue("Window", `${END_STREAM_START_HOUR_PT}:${pad2(END_STREAM_START_MIN_PT)} - ${END_STREAM_END_HOUR_PT}:${pad2(END_STREAM_END_MIN_PT)}`);
+        console.log("\n" + "=".repeat(60) + "\n");
+      }
+      return;
+    }
+    
+    // INSIDE END WINDOW - ATTEMPT TO END STREAM
+    logSubSection("🛑 EXECUTING END-STREAM SEQUENCE");
+    
+    if (!VERBOSE_LOGGING) {
+      logSimple(`🛑 Inside end window - attempting to end stream...`);
+    }
+    
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const result = await endStreamToday(env);
+          
+          if (VERBOSE_LOGGING) {
+            logKeyValue("End Stream Result", result);
+            console.log("\n" + "=".repeat(60) + "\n");
+          } else {
+            logSimple(`🛑 End stream: ${result}`);
+          }
+        } catch (err) {
+          console.error("\n❌ END-STREAM SEQUENCE ERROR:", err);
+          if (VERBOSE_LOGGING) {
+            console.error("Stack:", err.stack);
+            console.log("\n" + "=".repeat(60) + "\n");
+          }
+        }
+      })()
+    );
   },
 
   async fetch(request, env) {
@@ -288,7 +359,8 @@ export default {
       url.searchParams.has("keys") ||
       url.searchParams.has("test") ||
       url.searchParams.has("schedule") ||
-      url.searchParams.has("golive");
+      url.searchParams.has("golive") ||
+      url.searchParams.has("endstream");
 
     if (hasAnyFlags && !devModeOn()) {
       return new Response("Not Found", { status: 404 });
@@ -419,6 +491,11 @@ export default {
     if (url.searchParams.has("golive")) {
       await goLiveToday(env);
       return new Response("GoLive attempted (check logs).", { status: 200 });
+    }
+    
+    if (url.searchParams.has("endstream")) {
+      await endStreamToday(env);
+      return new Response("EndStream attempted (check logs).", { status: 200 });
     }
 
     return new Response("OK", { status: 200 });
@@ -886,6 +963,171 @@ async function goLiveToday(env) {
     
   } catch (err) {
     console.error("❌ goLiveToday error:", err);
+    console.error("Stack:", err.stack);
+    return "ERROR";
+  }
+}
+
+/********************************************************************
+  END TODAY'S LIVE STREAM
+********************************************************************/
+async function endStreamToday(env) {
+  try {
+    logSubSection("OAuth Authentication");
+    
+    const token = await getAccessToken(env);
+    if (!token) {
+      console.error("❌ Failed to get OAuth token");
+      return "ERROR";
+    }
+    logKeyValue("OAuth Token", "✅ Obtained");
+
+    // Get today's date in PT
+    const nowPT = getPacificTimeParts(new Date());
+    const todayPT = `${nowPT.month}/${nowPT.day}/${nowPT.year}`;
+    
+    if (!VERBOSE_LOGGING) {
+      logSimple(`  Looking for live broadcast: ${todayPT}`);
+    }
+    
+    logSubSection("Fetching Live Broadcasts");
+    logKeyValue("Looking for date (PT)", todayPT);
+    
+    const apiUrl = 
+      "https://youtube.googleapis.com/youtube/v3/liveBroadcasts" +
+      "?part=id,snippet,status" +
+      "&mine=true" +
+      "&broadcastType=event" +
+      "&maxResults=25";
+    
+    logKeyValue("API Endpoint", apiUrl);
+    
+    const res = await fetch(apiUrl, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    logKeyValue("Response Status", res.status);
+    
+    const data = await safeJson(res);
+
+    if (data._parseError) {
+      console.error("❌ JSON parse error:", data.raw);
+      return "ERROR";
+    }
+    if (!res.ok) {
+      console.error(`❌ API error (${res.status}):`, JSON.stringify(data, null, 2));
+      return "ERROR";
+    }
+    if (!data.items || data.items.length === 0) {
+      console.log("ℹ️  No broadcasts found");
+      return "NOT_FOUND";
+    }
+
+    logKeyValue("Total Broadcasts Found", data.items.length);
+    
+    // Filter for today's broadcasts
+    const todaysBroadcasts = data.items.filter((item) => {
+      const scheduledStr = item.snippet?.scheduledStartTime;
+      if (!scheduledStr) return false;
+
+      const scheduledPT = getPacificTimeParts(new Date(scheduledStr));
+      const isToday = 
+        scheduledPT.day === nowPT.day &&
+        scheduledPT.month === nowPT.month &&
+        scheduledPT.year === nowPT.year;
+
+      return isToday;
+    });
+
+    logKeyValue("Today's Broadcasts", todaysBroadcasts.length);
+    
+    if (todaysBroadcasts.length === 0) {
+      console.log("❌ No broadcasts match today's date");
+      return "NOT_FOUND";
+    }
+
+    // Find broadcasts that are currently live
+    const liveBroadcasts = todaysBroadcasts.filter(b => 
+      b.status?.lifeCycleStatus === "live" || 
+      b.status?.lifeCycleStatus === "liveStarting"
+    );
+    
+    logKeyValue("Currently Live", liveBroadcasts.length);
+    
+    if (liveBroadcasts.length === 0) {
+      console.log("ℹ️  No live broadcasts found for today");
+      return "NOT_LIVE";
+    }
+
+    // End all live broadcasts (usually just one)
+    const broadcast = liveBroadcasts[0];
+    
+    logSubSection("Ending Live Broadcast");
+    logKeyValue("Title", broadcast.snippet?.title);
+    logKeyValue("ID", broadcast.id);
+    logKeyValue("Current State", broadcast.status?.lifeCycleStatus);
+    
+    // Transition to complete
+    const transitionUrl = 
+      "https://youtube.googleapis.com/youtube/v3/liveBroadcasts/transition" +
+      `?part=id,snippet,status` +
+      `&broadcastStatus=complete` +
+      `&id=${broadcast.id}`;
+    
+    logKeyValue("Endpoint", transitionUrl);
+    
+    const transitionRes = await fetch(transitionUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://studio.youtube.com",
+        "Referer": "https://studio.youtube.com/"
+      }
+    });
+
+    logKeyValue("Response Status", transitionRes.status);
+    
+    const transition = await safeJson(transitionRes);
+    
+    if (VERBOSE_LOGGING) {
+      console.log("  Response Body:", JSON.stringify(transition, null, 2));
+    }
+
+    if (!transitionRes.ok) {
+      const errorMsg = transition.error?.message || "No message";
+      const errorReason = transition.error?.errors?.[0]?.reason || "Unknown";
+      
+      if (VERBOSE_LOGGING) {
+        console.error(`❌ End stream failed (${transitionRes.status})`);
+        if (transition.error) {
+          logKeyValue("Error Message", errorMsg);
+          logKeyValue("Error Reason", errorReason);
+          console.log("  Full Error:", JSON.stringify(transition.error, null, 2));
+        }
+      } else {
+        logSimple(`  ❌ End failed (${transitionRes.status}): ${errorMsg} [${errorReason}]`);
+      }
+      
+      return "ERROR";
+    }
+
+    const newState = transition.status?.lifeCycleStatus;
+    
+    if (VERBOSE_LOGGING) {
+      console.log(`\n✅ STREAM ENDED SUCCESSFULLY!`);
+      logKeyValue("Final State", newState);
+    } else {
+      logSimple(`  ✅ Success! State: ${newState}`);
+    }
+    
+    return "SUCCESS";
+    
+  } catch (err) {
+    console.error("❌ endStreamToday error:", err);
     console.error("Stack:", err.stack);
     return "ERROR";
   }
