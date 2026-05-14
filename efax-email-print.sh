@@ -266,7 +266,7 @@ register_printer() {
                -m everywhere 2>/dev/null; then
         ok "Printer registered (IPP Everywhere — ghostscript will handle PDF conversion)"
     else
-        warn "IPP Everywhere failed — registering as raw queue"
+        info "IPP Everywhere failed — registering as raw queue"
         lpadmin -p "$PRINTER_NAME" -E \
                 -v "socket://${PRINTER_IP}:9100" 2>/dev/null || \
         warn "Could not register printer — add manually at http://localhost:631"
@@ -488,8 +488,8 @@ WantedBy=multi-user.target
 SVC
 
     systemctl daemon-reload
-    systemctl enable --now "$SERVICE_NAME" || die "Failed to enable/start service"
-    ok "Service '${SERVICE_NAME}' enabled and started"
+    systemctl enable "$SERVICE_NAME" || die "Failed to enable/start service"
+    ok "Service '${SERVICE_NAME}' enabled (not started — run: sudo $0 --start)"
 }
 
 # =============================================================================
@@ -506,10 +506,9 @@ cmd_install() {
     stop_service_if_running
     ensure_service_user
     check_dependencies
-    install_brother_driver
 
     if [[ -f "$CONFIG_FILE" ]]; then
-        warn "Config exists — skipping wizard.  Use  sudo $0 --config  to reconfigure."
+        info "Config exists — skipping wizard.  Use  sudo $0 --config  to reconfigure."
         source "$CONFIG_FILE" 2>/dev/null || true
     else
         prompt_config
@@ -522,6 +521,7 @@ cmd_install() {
     echo
     echo -e "${GREEN}${BOLD}Installation complete!${NC}"
     echo -e "  Config  : ${CYAN}${CONFIG_FILE}${NC}"
+    echo -e "  Start   : ${CYAN}sudo $0 --start${NC}"
     echo -e "  Status  : ${CYAN}sudo $0 --status${NC}"
     echo -e "  Logs    : ${CYAN}sudo $0 --logs${NC}"
     echo
