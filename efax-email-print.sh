@@ -24,7 +24,6 @@ PYTHON_SCRIPT="${INSTALL_DIR}/brother_email_print.py"
 SERVICE_NAME="brother-email-print"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SERVICE_USER="printuser"
-BROTHER_MODEL="mfcl8900cdw"
 
 PYTHON_B64="IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiIKYnJvdGhlcl9lbWFpbF9wcmludC5weQpNb25pdG9ycyBhbiBJTUFQIG1haWxib3ggZm9sZGVyIGZvciB1bnJlYWQgbWVzc2FnZXMgYW5kIHByaW50cwpQREYgYXR0YWNobWVudHMgdG8gdGhlIGNvbmZpZ3VyZWQgQ1VQUyBwcmludGVyLgpTdWNjZXNzZnVsbHkgcHJvY2Vzc2VkIGVtYWlscyBhcmUgbWFya2VkIGFzIHJlYWQuCgpFZGl0IC9ldGMvYnJvdGhlci1lbWFpbC1wcmludC9lbWFpbHByaW50LmNvbmYgdG8gY2hhbmdlIHNldHRpbmdzLCB0aGVuOgogIHN1ZG8gc3lzdGVtY3RsIHJlc3RhcnQgYnJvdGhlci1lbWFpbC1wcmludAoiIiIKCmltcG9ydCBpbWFwbGliCmltcG9ydCBlbWFpbAppbXBvcnQgb3MKaW1wb3J0IHN1YnByb2Nlc3MKaW1wb3J0IHRlbXBmaWxlCmltcG9ydCB0aW1lCmltcG9ydCBsb2dnaW5nCmZyb20gZW1haWwuaGVhZGVyIGltcG9ydCBkZWNvZGVfaGVhZGVyCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aApmcm9tIHR5cGluZyBpbXBvcnQgT3B0aW9uYWwKCkNPTkZJR19GSUxFID0gUGF0aCgiL2V0Yy9icm90aGVyLWVtYWlsLXByaW50L2VtYWlscHJpbnQuY29uZiIpCgpsb2dnaW5nLmJhc2ljQ29uZmlnKAogICAgbGV2ZWw9bG9nZ2luZy5JTkZPLAogICAgZm9ybWF0PSIlKGFzY3RpbWUpcyAgJShsZXZlbG5hbWUpLThzICUobWVzc2FnZSlzIiwKICAgIGRhdGVmbXQ9IiVZLSVtLSVkICVIOiVNOiVTIiwKKQpsb2cgPSBsb2dnaW5nLmdldExvZ2dlcihfX25hbWVfXykKCgpkZWYgbG9hZF9jb25maWcocGF0aDogUGF0aCkgLT4gZGljdDoKICAgIGNmZyA9IHt9CiAgICB3aXRoIHBhdGgub3BlbigpIGFzIGY6CiAgICAgICAgZm9yIGxpbmUgaW4gZjoKICAgICAgICAgICAgbGluZSA9IGxpbmUuc3RyaXAoKQogICAgICAgICAgICBpZiBub3QgbGluZSBvciBsaW5lLnN0YXJ0c3dpdGgoIiMiKToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIGlmICI9IiBub3QgaW4gbGluZToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIGtleSwgXywgdmFsID0gbGluZS5wYXJ0aXRpb24oIj0iKQogICAgICAgICAgICBjZmdba2V5LnN0cmlwKCldID0gdmFsLnN0cmlwKCkuc3RyaXAoJyInKS5zdHJpcCgiJyIpCiAgICByZXR1cm4gY2ZnCgoKZGVmIGJ1aWxkX3NldHRpbmdzKGNmZzogZGljdCkgLT4gZGljdDoKICAgIGFsbG93ZWRfc2VuZGVycyA9IHNldCgpCiAgICByYXcgPSBjZmcuZ2V0KCJBTExPV0VEX1NFTkRFUlMiLCAiIikuc3RyaXAoKQogICAgaWYgcmF3OgogICAgICAgIGFsbG93ZWRfc2VuZGVycyA9IHtzLnN0cmlwKCkgZm9yIHMgaW4gcmF3LnNwbGl0KCIsIikgaWYgcy5zdHJpcCgpfQoKICAgIGFsbG93ZWRfbWltZSA9IHNldChjZmcuZ2V0KCJBTExPV0VEX01JTUUiLCAiYXBwbGljYXRpb24vcGRmIikuc3BsaXQoKSkKCiAgICBscF9vcHRpb25zID0gWwogICAgICAgICItbyIsICJtZWRpYT17fSIuZm9ybWF0KGNmZy5nZXQoIkxQX01FRElBIiwgIkxldHRlciIpKSwKICAgICAgICAiLW8iLCAic2lkZXM9e30iLmZvcm1hdChjZmcuZ2V0KCJMUF9TSURFUyIsICJvbmUtc2lkZWQiKSksCiAgICAgICAgIi1vIiwgIkNvbG9yTW9kZWw9e30iLmZvcm1hdChjZmcuZ2V0KCJMUF9DT0xPUiIsICJjb2xvciIpKSwKICAgIF0KCiAgICByZXR1cm4gewogICAgICAgICJpbWFwX2hvc3QiOiAgICAgICBjZmdbIklNQVBfSE9TVCJdLAogICAgICAgICJpbWFwX3BvcnQiOiAgICAgICBpbnQoY2ZnLmdldCgiSU1BUF9QT1JUIiwgOTkzKSksCiAgICAgICAgImltYXBfdXNlciI6ICAgICAgIGNmZ1siSU1BUF9VU0VSIl0sCiAgICAgICAgImltYXBfcGFzcyI6ICAgICAgIGNmZ1siSU1BUF9QQVNTIl0sCiAgICAgICAgImltYXBfbWFpbGJveCI6ICAgIGNmZy5nZXQoIklNQVBfTUFJTEJPWCIsICJJTkJPWCIpLAogICAgICAgICJpbWFwX3NzbCI6ICAgICAgICBjZmcuZ2V0KCJJTUFQX1VTRV9TU0wiLCAidHJ1ZSIpLmxvd2VyKCkgPT0gInRydWUiLAogICAgICAgICJwcmludGVyIjogICAgICAgICBjZmdbIlBSSU5URVJfTkFNRSJdLAogICAgICAgICJwb2xsX2ludGVydmFsIjogICBpbnQoY2ZnLmdldCgiUE9MTF9JTlRFUlZBTCIsIDYwKSksCiAgICAgICAgImFsbG93ZWRfc2VuZGVycyI6IGFsbG93ZWRfc2VuZGVycywKICAgICAgICAiYWxsb3dlZF9taW1lIjogICAgYWxsb3dlZF9taW1lLAogICAgICAgICJhbGxvd2VkX2V4dCI6ICAgICB7Ii5wZGYifSwKICAgICAgICAibHBfb3B0aW9ucyI6ICAgICAgbHBfb3B0aW9ucywKICAgIH0KCgpkZWYgY29ubmVjdF9pbWFwKHM6IGRpY3QpOgogICAgY2xzID0gaW1hcGxpYi5JTUFQNF9TU0wgaWYgc1siaW1hcF9zc2wiXSBlbHNlIGltYXBsaWIuSU1BUDQKICAgIGNvbm4gPSBjbHMoc1siaW1hcF9ob3N0Il0sIHNbImltYXBfcG9ydCJdKQogICAgY29ubi5sb2dpbihzWyJpbWFwX3VzZXIiXSwgc1siaW1hcF9wYXNzIl0pCiAgICBsb2cuaW5mbygiQ29ubmVjdGVkIHRvICVzIGFzICVzIiwgc1siaW1hcF9ob3N0Il0sIHNbImltYXBfdXNlciJdKQogICAgcmV0dXJuIGNvbm4KCgpkZWYgZmV0Y2hfdW5zZWVuKGNvbm4sIG1haWxib3g6IHN0cikgLT4gbGlzdDoKICAgIGNvbm4uc2VsZWN0KCcie30iJy5mb3JtYXQobWFpbGJveCkpCiAgICBzdGF0dXMsIGRhdGEgPSBjb25uLnNlYXJjaChOb25lLCAiVU5TRUVOIikKICAgIGlmIHN0YXR1cyAhPSAiT0siIG9yIG5vdCBkYXRhWzBdOgogICAgICAgIHJldHVybiBbXQogICAgcmV0dXJuIGRhdGFbMF0uc3BsaXQoKQoKCmRlZiBkZWNvZGVfbmFtZShyYXcpIC0+IE9wdGlvbmFsW3N0cl06CiAgICBpZiByYXcgaXMgTm9uZToKICAgICAgICByZXR1cm4gTm9uZQogICAgcGFydHMgPSBkZWNvZGVfaGVhZGVyKHJhdykKICAgIG5hbWUgPSAiIgogICAgZm9yIHBhcnQsIGNoYXJzZXQgaW4gcGFydHM6CiAgICAgICAgaWYgaXNpbnN0YW5jZShwYXJ0LCBieXRlcyk6CiAgICAgICAgICAgIG5hbWUgKz0gcGFydC5kZWNvZGUoY2hhcnNldCBvciAidXRmLTgiLCBlcnJvcnM9InJlcGxhY2UiKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIG5hbWUgKz0gcGFydAogICAgcmV0dXJuIG5hbWUKCgpkZWYgc2VuZGVyX2FsbG93ZWQobXNnLCBhbGxvd2VkOiBzZXQpIC0+IGJvb2w6CiAgICBpZiBub3QgYWxsb3dlZDoKICAgICAgICByZXR1cm4gVHJ1ZQogICAgZnJvbV9oZHIgPSBtc2cuZ2V0KCJGcm9tIiwgIiIpCiAgICByZXR1cm4gYW55KGFkZHIgaW4gZnJvbV9oZHIgZm9yIGFkZHIgaW4gYWxsb3dlZCkKCgpkZWYgcHJpbnRfZmlsZShwYXRoOiBzdHIsIG5hbWU6IHN0ciwgczogZGljdCkgLT4gYm9vbDoKICAgICIiIlNlbmQgZmlsZSBkaXJlY3RseSB0byBwcmludGVyIHZpYSBDVVBTLiIiIgogICAgY21kID0gWyJscCIsICItZCIsIHNbInByaW50ZXIiXV0gKyBzWyJscF9vcHRpb25zIl0gKyBbcGF0aF0KICAgIGxvZy5pbmZvKCIgIFByaW50aW5nICUtNDBzIC0+ICVzIiwgbmFtZSwgc1sicHJpbnRlciJdKQogICAgcmVzdWx0ID0gc3VicHJvY2Vzcy5ydW4oY21kLCBjYXB0dXJlX291dHB1dD1UcnVlLCB0ZXh0PVRydWUpCiAgICBpZiByZXN1bHQucmV0dXJuY29kZSA9PSAwOgogICAgICAgIGxvZy5pbmZvKCIgIE9LICAlcyIsIHJlc3VsdC5zdGRvdXQuc3RyaXAoKSkKICAgICAgICByZXR1cm4gVHJ1ZQogICAgbG9nLmVycm9yKCIgIEZBSUwgICVzIiwgcmVzdWx0LnN0ZGVyci5zdHJpcCgpKQogICAgcmV0dXJuIEZhbHNlCgoKZGVmIHByb2Nlc3NfbWVzc2FnZShjb25uLCBtc2dfaWQ6IGJ5dGVzLCBzOiBkaWN0KToKICAgIHN0YXR1cywgZGF0YSA9IGNvbm4uZmV0Y2gobXNnX2lkLCAiKFJGQzgyMikiKQogICAgaWYgc3RhdHVzICE9ICJPSyI6CiAgICAgICAgbG9nLndhcm5pbmcoIkNvdWxkIG5vdCBmZXRjaCBtZXNzYWdlICVzIiwgbXNnX2lkKQogICAgICAgIHJldHVybgoKICAgIG1zZyA9IGVtYWlsLm1lc3NhZ2VfZnJvbV9ieXRlcyhkYXRhWzBdWzFdKQogICAgcmF3X3N1YmogPSBkZWNvZGVfaGVhZGVyKG1zZy5nZXQoIlN1YmplY3QiLCAiIikpWzBdWzBdCiAgICBzdWJqZWN0ID0gcmF3X3N1YmouZGVjb2RlKGVycm9ycz0icmVwbGFjZSIpIGlmIGlzaW5zdGFuY2UocmF3X3N1YmosIGJ5dGVzKSBlbHNlIHJhd19zdWJqCiAgICBsb2cuaW5mbygiTWVzc2FnZTogJXMgIChmcm9tOiAlcykiLCBzdWJqZWN0LCBtc2cuZ2V0KCJGcm9tIiwgInVua25vd24iKSkKCiAgICBpZiBub3Qgc2VuZGVyX2FsbG93ZWQobXNnLCBzWyJhbGxvd2VkX3NlbmRlcnMiXSk6CiAgICAgICAgbG9nLmluZm8oIiAgU2tpcHBpbmcg4oCUIHNlbmRlciBub3QgaW4gYWxsb3dlZCBsaXN0IikKICAgICAgICBjb25uLnN0b3JlKG1zZ19pZCwgIitGTEFHUyIsICJcXFNlZW4iKQogICAgICAgIHJldHVybgoKICAgIHByaW50ZWQgPSAwCiAgICBmYWlsZWQgID0gMAoKICAgIGZvciBwYXJ0IGluIG1zZy53YWxrKCk6CiAgICAgICAgY29udGVudF90eXBlID0gcGFydC5nZXRfY29udGVudF90eXBlKCkKICAgICAgICBmaWxlbmFtZSA9IGRlY29kZV9uYW1lKHBhcnQuZ2V0X2ZpbGVuYW1lKCkpCiAgICAgICAgZXh0ID0gb3MucGF0aC5zcGxpdGV4dChmaWxlbmFtZSBvciAiIilbMV0ubG93ZXIoKQoKICAgICAgICBpZiBjb250ZW50X3R5cGUgbm90IGluIHNbImFsbG93ZWRfbWltZSJdIGFuZCBleHQgbm90IGluIHNbImFsbG93ZWRfZXh0Il06CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgcGF5bG9hZCA9IHBhcnQuZ2V0X3BheWxvYWQoZGVjb2RlPVRydWUpCiAgICAgICAgaWYgbm90IHBheWxvYWQ6CiAgICAgICAgICAgIGNvbnRpbnVlCgogICAgICAgIHN1ZmZpeCA9IGV4dCBpZiBleHQgZWxzZSAiLnBkZiIKICAgICAgICB3aXRoIHRlbXBmaWxlLk5hbWVkVGVtcG9yYXJ5RmlsZShzdWZmaXg9c3VmZml4LCBkZWxldGU9RmFsc2UpIGFzIHRtcDoKICAgICAgICAgICAgdG1wLndyaXRlKHBheWxvYWQpCiAgICAgICAgICAgIHRtcF9wYXRoID0gdG1wLm5hbWUKICAgICAgICB0cnk6CiAgICAgICAgICAgIGlmIHByaW50X2ZpbGUodG1wX3BhdGgsIGZpbGVuYW1lIG9yICJhdHRhY2htZW50Iiwgcyk6CiAgICAgICAgICAgICAgICBwcmludGVkICs9IDEKICAgICAgICAgICAgZWxzZToKICAgICAgICAgICAgICAgIGZhaWxlZCArPSAxCiAgICAgICAgZmluYWxseToKICAgICAgICAgICAgb3MudW5saW5rKHRtcF9wYXRoKQoKICAgIGlmIGZhaWxlZCA+IDA6CiAgICAgICAgbG9nLndhcm5pbmcoIiAgJWQgYXR0YWNobWVudChzKSBmYWlsZWQg4oCUIGxlYXZpbmcgdW5yZWFkIGZvciByZXRyeSIsIGZhaWxlZCkKICAgIGVsc2U6CiAgICAgICAgaWYgcHJpbnRlZCA9PSAwOgogICAgICAgICAgICBsb2cuaW5mbygiICBObyBwcmludGFibGUgYXR0YWNobWVudHMgZm91bmQiKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIGxvZy5pbmZvKCIgICVkIGF0dGFjaG1lbnQocykgcHJpbnRlZCBzdWNjZXNzZnVsbHkiLCBwcmludGVkKQogICAgICAgIGNvbm4uc3RvcmUobXNnX2lkLCAiK0ZMQUdTIiwgIlxcU2VlbiIpCgoKZGVmIHBvbGxfb25jZShzOiBkaWN0KToKICAgIHRyeToKICAgICAgICBjb25uID0gY29ubmVjdF9pbWFwKHMpCiAgICAgICAgaWRzICA9IGZldGNoX3Vuc2Vlbihjb25uLCBzWyJpbWFwX21haWxib3giXSkKICAgICAgICBpZiBub3QgaWRzOgogICAgICAgICAgICBsb2cuZGVidWcoIk5vIHVucmVhZCBtZXNzYWdlcyBpbiAnJXMnIiwgc1siaW1hcF9tYWlsYm94Il0pCiAgICAgICAgZm9yIG1pZCBpbiBpZHM6CiAgICAgICAgICAgIHByb2Nlc3NfbWVzc2FnZShjb25uLCBtaWQsIHMpCiAgICAgICAgY29ubi5sb2dvdXQoKQogICAgZXhjZXB0IGltYXBsaWIuSU1BUDQuZXJyb3IgYXMgZXhjOgogICAgICAgIGxvZy5lcnJvcigiSU1BUCBlcnJvcjogJXMiLCBleGMpCiAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGV4YzoKICAgICAgICBsb2cuZXJyb3IoIlVuZXhwZWN0ZWQgZXJyb3I6ICVzIiwgZXhjLCBleGNfaW5mbz1UcnVlKQoKCmRlZiBtYWluKCk6CiAgICBpZiBub3QgQ09ORklHX0ZJTEUuZXhpc3RzKCk6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgKICAgICAgICAgICAgIkNvbmZpZyBmaWxlIG5vdCBmb3VuZDoge31cbiIKICAgICAgICAgICAgIlJ1biB0aGUgaW5zdGFsbGVyOiBzdWRvIGVtYWlscHJpbnQuc2ggLS1pbnN0YWxsIi5mb3JtYXQoQ09ORklHX0ZJTEUpCiAgICAgICAgKQogICAgY2ZnID0gbG9hZF9jb25maWcoQ09ORklHX0ZJTEUpCiAgICBzICAgPSBidWlsZF9zZXR0aW5ncyhjZmcpCiAgICBsb2cuaW5mbygiU3RhcnRlZCAgKHBvbGwgZXZlcnkgJWRzKSIsIHNbInBvbGxfaW50ZXJ2YWwiXSkKICAgIGxvZy5pbmZvKCJQcmludGVyICA6ICVzIiwgc1sicHJpbnRlciJdKQogICAgbG9nLmluZm8oIk1haWxib3ggIDogJXMgIEAgICVzIiwgc1siaW1hcF9tYWlsYm94Il0sIHNbImltYXBfaG9zdCJdKQoKICAgIHdoaWxlIFRydWU6CiAgICAgICAgY2ZnID0gbG9hZF9jb25maWcoQ09ORklHX0ZJTEUpCiAgICAgICAgcyAgID0gYnVpbGRfc2V0dGluZ3MoY2ZnKQogICAgICAgIHBvbGxfb25jZShzKQogICAgICAgIHRpbWUuc2xlZXAoc1sicG9sbF9pbnRlcnZhbCJdKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtYWluKCkK"
 
@@ -83,20 +82,6 @@ check_dependencies() {
         warn "lp missing — adding cups"; missing+=("cups")
     fi
 
-    # ghostscript — needed for PDF to PS conversion
-    if command -v gs &>/dev/null; then
-        ok "ghostscript  ($(gs --version 2>&1))"
-    else
-        warn "ghostscript missing — adding ghostscript"; missing+=("ghostscript")
-    fi
-
-    # cups-filters — needed for proper PDF printing pipeline
-    if dpkg -l cups-filters &>/dev/null 2>&1; then
-        ok "cups-filters found"
-    else
-        warn "cups-filters missing — adding"; missing+=("cups-filters")
-    fi
-
     if [[ ${#missing[@]} -gt 0 ]]; then
         info "Installing: ${missing[*]}"
         apt-get update -qq || warn "apt-get update failed — trying anyway"
@@ -116,63 +101,6 @@ check_dependencies() {
         warn "CUPS not running — starting it"
         systemctl enable --now cups 2>/dev/null || warn "Could not start CUPS — configure manually"
     fi
-}
-
-# =============================================================================
-#  BROTHER DRIVER INSTALL
-# =============================================================================
-install_brother_driver() {
-    header "Installing Brother printer driver"
-
-    # Check if Brother driver already installed
-    if lpinfo -m 2>/dev/null | grep -qi "brother.*${BROTHER_MODEL}"; then
-        ok "Brother ${BROTHER_MODEL} driver already installed"
-        return
-    fi
-
-    info "Downloading Brother driver installer..."
-
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-
-    # Brother's official Linux driver install tool
-    local installer_url="https://download.brother.com/welcome/dlf006893/linux-brprinter-installer-2.2.4-1.gz"
-    local installer_gz="${tmp_dir}/linux-brprinter-installer.gz"
-    local installer="${tmp_dir}/linux-brprinter-installer"
-
-    if ! command -v wget &>/dev/null && ! command -v curl &>/dev/null; then
-        apt-get install -y wget || warn "Could not install wget"
-    fi
-
-    local download_ok=false
-    if command -v wget &>/dev/null; then
-        wget -q "$installer_url" -O "$installer_gz" && download_ok=true
-    elif command -v curl &>/dev/null; then
-        curl -sL "$installer_url" -o "$installer_gz" && download_ok=true
-    fi
-
-    if [[ "$download_ok" == true ]] && [[ -f "$installer_gz" ]]; then
-        gunzip "$installer_gz" 2>/dev/null || true
-        if [[ -f "$installer" ]]; then
-            chmod +x "$installer"
-            info "Running Brother driver installer for ${BROTHER_MODEL}..."
-            # Run non-interactively: pass model and answer 'n' to extra questions
-            echo -e "${BROTHER_MODEL}\nn\nn" | bash "$installer" 2>/dev/null || true
-            if lpinfo -m 2>/dev/null | grep -qi "brother"; then
-                ok "Brother driver installed successfully"
-            else
-                warn "Brother installer ran but driver not confirmed — may need manual install"
-                warn "Visit: https://support.brother.com and download the Linux driver for MFC-L8900CDW"
-            fi
-        else
-            warn "Could not extract installer"
-        fi
-    else
-        warn "Could not download Brother driver installer"
-        warn "Ghostscript PDF-to-PS conversion will be used as a reliable fallback"
-    fi
-
-    rm -rf "$tmp_dir"
 }
 
 stop_service_if_running() {
@@ -247,24 +175,27 @@ register_printer() {
     lpadmin -x "$PRINTER_NAME" 2>/dev/null || true
     info "Adding ${PRINTER_NAME} at socket://${PRINTER_IP}:9100"
 
-    # Try with Brother driver first, fall back to IPP Everywhere, then raw
     local driver
     driver=$(lpinfo -m 2>/dev/null | grep -i "brother.*l8900\|brother.*8900" | head -1 | awk '{print $1}')
 
     if [[ -n "$driver" ]]; then
         info "Using Brother driver: ${driver}"
-        lpadmin -p "$PRINTER_NAME" -E \
+        if lpadmin -p "$PRINTER_NAME" -E \
                 -v "socket://${PRINTER_IP}:9100" \
-                -m "$driver" 2>/dev/null && ok "Printer registered with Brother driver" && \
-                cupsenable "$PRINTER_NAME" 2>/dev/null && cupsaccept "$PRINTER_NAME" 2>/dev/null && \
-                _test_printer_reachable && return
+                -m "$driver" 2>/dev/null; then
+            ok "Printer registered with Brother driver"
+            cupsenable "$PRINTER_NAME" 2>/dev/null || true
+            cupsaccept "$PRINTER_NAME" 2>/dev/null || true
+            _test_printer_reachable
+            return
+        fi
         warn "Brother driver registration failed — trying IPP Everywhere"
     fi
 
     if lpadmin -p "$PRINTER_NAME" -E \
                -v "socket://${PRINTER_IP}:9100" \
                -m everywhere 2>/dev/null; then
-        ok "Printer registered (IPP Everywhere — ghostscript will handle PDF conversion)"
+        ok "Printer registered (IPP Everywhere)"
     else
         info "IPP Everywhere failed — registering as raw queue"
         lpadmin -p "$PRINTER_NAME" -E \
@@ -488,7 +419,7 @@ WantedBy=multi-user.target
 SVC
 
     systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" || die "Failed to enable/start service"
+    systemctl enable "$SERVICE_NAME" || die "Failed to enable service"
     ok "Service '${SERVICE_NAME}' enabled (not started — run: sudo $0 --start)"
 }
 
@@ -563,18 +494,18 @@ cmd_status() {
     echo
 }
 
-cmd_test()        { test_email_login; }
-cmd_clear_logs()  {
+cmd_test()       { test_email_login; }
+cmd_clear_logs() {
     require_root
     header "Clearing logs"
     journalctl --rotate 2>/dev/null || true
     journalctl --vacuum-time=1s 2>/dev/null || true
     ok "Journal logs cleared"
 }
-cmd_logs()        { journalctl -u "$SERVICE_NAME" -f --no-pager; }
-cmd_start()       { require_root; systemctl start   "$SERVICE_NAME" && ok "Started."   || die "Failed."; }
-cmd_stop()        { require_root; systemctl stop    "$SERVICE_NAME" && ok "Stopped."   || warn "Was not running."; }
-cmd_restart()     { require_root; systemctl restart "$SERVICE_NAME" && ok "Restarted." || die "Failed."; }
+cmd_logs()       { journalctl -u "$SERVICE_NAME" -f --no-pager; }
+cmd_start()      { require_root; systemctl start   "$SERVICE_NAME" && ok "Started."   || die "Failed."; }
+cmd_stop()       { require_root; systemctl stop    "$SERVICE_NAME" && ok "Stopped."   || warn "Was not running."; }
+cmd_restart()    { require_root; systemctl restart "$SERVICE_NAME" && ok "Restarted." || die "Failed."; }
 
 cmd_uninstall() {
     require_root
