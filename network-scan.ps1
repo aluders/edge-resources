@@ -12,14 +12,28 @@ param(
     [switch]$Help
 )
 
+# ── Console encoding + symbol safety ─────────────────────────────────────────
+# Force UTF-8 output so Unicode symbols render correctly in modern terminals.
+# Old conhost.exe (classic PowerShell window) often can't render them even with
+# UTF-8 set, so we detect capability and fall back to ASCII-safe alternatives.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$cp = [Console]::OutputEncoding.CodePage
+# Unicode symbols work in Windows Terminal or VS Code; fall back to ASCII in classic conhost
+$canUnicode = [bool]($env:WT_SESSION -or $env:TERM_PROGRAM -or $env:ConEmuPID)
+
+$SYM_OK  = if ($canUnicode) { [char]0x2713 } else { "OK" }   # ✓
+$SYM_ARR = if ($canUnicode) { [char]0x25B6 } else { ">" }    # ▶
+$SYM_DIV = if ($canUnicode) { [char]0x2500 } else { "-" }    # ─
+$SYM_MID = if ($canUnicode) { " · " }        else { " | " }  # ·
+
 # ── Ports to scan ──────────────────────────────────────────────────────────────
 $ScanPorts = @(21, 22, 80, 443, 8080, 8443)
-$DIVIDER   = [string]([char]0x2501) * 67   # ━━━━━ (matches bash)
+$DIVIDER   = $SYM_DIV * 72
 
 # ── Tiny write helpers ─────────────────────────────────────────────────────────
 function wh { param([string]$t,[string]$c="White",[switch]$n)
     if ($n) { Write-Host $t -ForegroundColor $c -NoNewline } else { Write-Host $t -ForegroundColor $c } }
-function divider { Write-Host $DIVIDER -ForegroundColor Cyan }
+function divider { Write-Host $DIVIDER -ForegroundColor DarkCyan }
 
 # ANSI dim prefix/suffix (works in Windows Terminal & modern conhost)
 $DIM = [char]0x1b + "[2m"; $RST = [char]0x1b + "[0m"
@@ -285,7 +299,7 @@ $Pool.Close(); $Pool.Dispose()
 $pingAlive = $AliveIPs.Count
 phaseln "Phase 1/7 — Ping sweep:" ("   " +
     [char]0x1b+"[36m${Total}"+[char]0x1b+"[0m/$Total probed  " +
-    [char]0x1b+"[32m${pingAlive}"+[char]0x1b+"[0m alive ✓                    ")
+    [char]0x1b+"[32m${pingAlive}"+[char]0x1b+"[0m alive $SYM_OK                    ")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 2 — ARP cache (picks up devices that silently block ICMP)
@@ -303,7 +317,7 @@ foreach ($line in (arp -a 2>$null)) {
 }
 $AliveIPs = [System.Collections.Generic.List[string]]($AliveIPs | Sort-Object { [System.Version]$_ })
 $TotalFound = $AliveIPs.Count
-phaseln "Phase 2/7 — ARP cache:" ("    " + [char]0x1b+"[32m+${arpNew}"+[char]0x1b+"[0m additional device(s) found ✓          ")
+phaseln "Phase 2/7 — ARP cache:" ("    " + [char]0x1b+"[32m+${arpNew}"+[char]0x1b+"[0m additional device(s) found $SYM_OK          ")
 
 if ($TotalFound -eq 0) {
     Write-Host ""; wh "  No devices found on $Subnet." Yellow
@@ -328,7 +342,7 @@ $hostMap = @{}
 if ($LocalIP -ne "unknown") { $hostMap[$LocalIP] = $env:COMPUTERNAME }
 foreach ($h in $DnsH) { $r=$h.PS.EndInvoke($h.AR); if ($r) { $hostMap[$h.IP]=[string]$r }; $h.PS.Dispose() }
 $Pool2.Close(); $Pool2.Dispose()
-phaseln "Phase 3/7 — Hostnames:" "    done ✓                                    "
+phaseln "Phase 3/7 — Hostnames:" "    done $SYM_OK                                    "
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 — MAC addresses + OUI vendor lookup
@@ -492,7 +506,7 @@ foreach ($kv in $seenOUIs.GetEnumerator()) {
     $isRandomized = ([Convert]::ToInt32($kv.Key.Substring(0,2), 16) -band 0x02) -ne 0
     if (-not $isCached -and -not $isRandomized) { Start-Sleep -Milliseconds 1500 }
 }
-phaseln "Phase 4/7 — Vendors:" "      ${ouiTotal} unique OUI(s) resolved ✓              "
+phaseln "Phase 4/7 — Vendors:" "      ${ouiTotal} unique OUI(s) resolved $SYM_OK              "
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 5 — Port scan + mDNS + SSDP (all in parallel)
@@ -530,7 +544,7 @@ foreach ($h in $PortH) { $r=$h.PS.EndInvoke($h.AR); if ($r) { $portMap[$h.IP]=[s
 $Pool3.Close(); $Pool3.Dispose()
 
 $portsWithData=($portMap.Values | Where-Object { $_ -ne "" }).Count
-phaseln "Phase 5/7 — Port scan + mDNS + SSDP:" ("  done ✓  (${portsWithData} ports · $($mdnsMap.Count) mDNS · $($ssdpMap.Count) SSDP)   ")
+phaseln "Phase 5/7 — Port scan + mDNS + SSDP:" ("  done $SYM_OK  (${portsWithData} ports$SYM_MID $($mdnsMap.Count) mDNS$SYM_MID $($ssdpMap.Count) SSDP)   ")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 6 — HTTP title scrape (parallel)
@@ -572,7 +586,7 @@ foreach ($h in $HttpH) { $r=$h.PS.EndInvoke($h.AR); if ($r) { $titleMap[$h.IP]=[
 $Pool4.Close(); $Pool4.Dispose()
 
 $httpCount=($titleMap.Values | Where-Object { $_ -ne "" }).Count
-phaseln "Phase 6/7 — HTTP titles:" "   done ✓  (${httpCount} title(s) found)                    "
+phaseln "Phase 6/7 — HTTP titles:" "   done $SYM_OK  (${httpCount} title(s) found)                    "
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 7 — Device identity merge (mDNS > SSDP > HTTP title, cached by MAC)
@@ -598,7 +612,7 @@ foreach ($ip in $AliveIPs) {
     } elseif ($cached -ne "") { $deviceMap[$ip]=$cached }
 }
 $devCount=$deviceMap.Count
-phaseln "Phase 7/7 — Device identity:" "  done ✓  (${devCount} device(s) identified)               "
+phaseln "Phase 7/7 — Device identity:" "  done $SYM_OK  (${devCount} device(s) identified)               "
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RESULTS TABLE
@@ -608,15 +622,15 @@ Write-Host ""
 
 # Column headers — match bash layout
 Write-Host -NoNewline "  "
-Write-Host -NoNewline ("{0,-16}" -f "IP ADDRESS")  -ForegroundColor Blue
+Write-Host -NoNewline ("{0,-15}" -f "IP ADDRESS") -ForegroundColor Cyan
 Write-Host -NoNewline "  "
-Write-Host -NoNewline ("{0,-19}" -f "MAC ADDRESS") -ForegroundColor Magenta
+Write-Host -NoNewline ("{0,-17}" -f "MAC ADDRESS") -ForegroundColor Magenta
 Write-Host -NoNewline "  "
-Write-Host -NoNewline ("{0,-18}" -f "VENDOR")      -ForegroundColor Yellow
+Write-Host -NoNewline ("{0,-16}" -f "VENDOR")     -ForegroundColor Yellow
 Write-Host -NoNewline "  "
-Write-Host -NoNewline ("{0,-20}" -f "HOSTNAME")    -ForegroundColor White
+Write-Host -NoNewline ("{0,-18}" -f "HOSTNAME")   -ForegroundColor White
 Write-Host -NoNewline "  "
-Write-Host -NoNewline ("{0,-22}" -f "OPEN PORTS")  -ForegroundColor White
+Write-Host -NoNewline ("{0,-16}" -f "OPEN PORTS") -ForegroundColor White
 Write-Host            "DEVICE"                      -ForegroundColor White
 Write-Host ""
 
@@ -631,24 +645,24 @@ foreach ($ip in $AliveIPs) {
     $device = if ($deviceMap.ContainsKey($ip)) { $deviceMap[$ip] } else { "" }
 
     # ▶ for local machine (red), spaces otherwise
-    if ($ip -eq $LocalIP) { wh "▶ " Red -n } else { Write-Host -NoNewline "  " }
+    if ($ip -eq $LocalIP) { wh "$SYM_ARR " Red -n } else { Write-Host -NoNewline "  " }
 
     # IP — blue
-    Write-Host -NoNewline ("{0,-16}" -f $ip) -ForegroundColor Blue
+    Write-Host -NoNewline ("{0,-15}" -f $ip) -ForegroundColor Cyan
     Write-Host -NoNewline "  "
 
     # MAC — magenta/purple
-    Write-Host -NoNewline ("{0,-19}" -f $mac) -ForegroundColor Magenta
+    Write-Host -NoNewline ("{0,-17}" -f $mac) -ForegroundColor Magenta
     Write-Host -NoNewline "  "
 
     # Vendor — yellow or dim
-    $vs = if ($vendor) { $vendor.Substring(0,[Math]::Min(18,$vendor.Length)) } else { "" }
-    Write-Host -NoNewline ("{0,-18}" -f $vs) -ForegroundColor $(if ($vendor) { "Yellow" } else { "DarkGray" })
+    $vs = if ($vendor) { $vendor.Substring(0,[Math]::Min(16,$vendor.Length)) } else { "" }
+    Write-Host -NoNewline ("{0,-16}" -f $vs) -ForegroundColor $(if ($vendor) { "Yellow" } else { "DarkGray" })
     Write-Host -NoNewline "  "
 
     # Hostname — white or dim
-    $hs = if ($hn) { $hn.Substring(0,[Math]::Min(20,$hn.Length)) } else { "" }
-    Write-Host -NoNewline ("{0,-20}" -f $hs) -ForegroundColor $(if ($hn) { "White" } else { "DarkGray" })
+    $hs = if ($hn) { $hn.Substring(0,[Math]::Min(18,$hn.Length)) } else { "" }
+    Write-Host -NoNewline ("{0,-18}" -f $hs) -ForegroundColor $(if ($hn) { "White" } else { "DarkGray" })
     Write-Host -NoNewline "  "
 
     # Open ports — green numbers with manual padding to keep DEVICE column aligned
@@ -659,9 +673,9 @@ foreach ($ip in $AliveIPs) {
             Write-Host -NoNewline " "
             $visible += $pn.Length + 1
         }
-        $pad = 22 - $visible; if ($pad -gt 0) { Write-Host -NoNewline (" " * $pad) }
+        $pad = 16 - $visible; if ($pad -gt 0) { Write-Host -NoNewline (" " * $pad) }
     } else {
-        Write-Host -NoNewline ("{0,-22}" -f "")
+        Write-Host -NoNewline ("{0,-16}" -f "")
     }
     Write-Host -NoNewline "  "
 
@@ -671,13 +685,13 @@ foreach ($ip in $AliveIPs) {
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 Write-Host ""; Write-Host ""
-Write-Host -NoNewline "  ✓ Scan complete — " -ForegroundColor Green
+Write-Host -NoNewline "  $SYM_OK Scan complete — " -ForegroundColor Green
 Write-Host -NoNewline $TotalFound -ForegroundColor White
 Write-Host " device(s) on $Subnet" -ForegroundColor Green
 
 if ($Verbose) {
     Write-Host ""
-    wh "  Methods: ICMP ping sweep · ARP cache · reverse DNS · macvendors.com API (cached) · TCP connect · HTTP title · mDNS · SSDP" DarkGray
+    wh "  Methods: ICMP ping sweep$SYM_MID ARP cache$SYM_MID reverse DNS$SYM_MID macvendors.com API (cached)$SYM_MID TCP connect$SYM_MID HTTP title$SYM_MID mDNS$SYM_MID SSDP" DarkGray
     wh "  Ports scanned: $($ScanPorts -join ', ')" DarkGray
 }
 
