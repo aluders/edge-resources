@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # genpass — Password generator for macOS
-# Usage: genpass [-l LENGTH] [-s] [-h]
-#   -l LENGTH   Password length (default: 20)
-#   -s          Include symbols / special characters
-#   -h          Show this help message
+# Usage: genpass [-l|--length LENGTH] [-s|--symbols] [-h|--help]
+#   -l, --length LENGTH   Password length (default: 20)
+#   -s, --symbols         Include symbols / special characters
+#   -h, --help            Show this help message
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RESET='\033[0m'
@@ -14,7 +14,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 PURPLE='\033[0;35m'
 RED='\033[0;31m'
-
 DIVIDER="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 LENGTH=20
@@ -26,13 +25,24 @@ usage() {
   echo -e "${YELLOW}${DIVIDER}${RESET}"
   echo -e "  ${BOLD}Usage:${RESET}  genpass ${CYAN}[-l LENGTH]${RESET} ${PURPLE}[-s]${RESET} ${DIM}[-h]${RESET}"
   echo
-  echo -e "  ${CYAN}-l LENGTH${RESET}   Password length ${DIM}(default: 20)${RESET}"
-  echo -e "  ${PURPLE}-s${RESET}          Include symbols ${DIM}(!@#\$%^&* …)${RESET}"
-  echo -e "  ${DIM}-h${RESET}          Show this help message"
+  echo -e "  ${CYAN}-l, --length LENGTH${RESET}   Password length ${DIM}(default: 20)${RESET}"
+  echo -e "  ${PURPLE}-s, --symbols${RESET}         Include symbols ${DIM}(!@#\$%^&* …)${RESET}"
+  echo -e "  ${DIM}-h, --help${RESET}            Show this help message"
   echo -e "${YELLOW}${DIVIDER}${RESET}"
   echo
   exit 0
 }
+
+# Handle long options manually before getopts processes short ones
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help)     usage ;;
+    --symbols)  USE_SYMBOLS=true; shift ;;
+    --length)   LENGTH="$2"; shift 2 ;;
+    --length=*) LENGTH="${1#*=}"; shift ;;
+    *)          break ;;  # Hand off remaining args to getopts
+  esac
+done
 
 while getopts ":l:sh" opt; do
   case $opt in
