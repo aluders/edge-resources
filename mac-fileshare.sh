@@ -5,6 +5,51 @@ set -euo pipefail
 # Cloudflare + Python File Share
 # ================================
 
+# ================================
+# HELP
+# ================================
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Instantly share a local directory over the internet via a Cloudflare tunnel.
+Dotfiles are automatically hidden from the browser listing.
+
+OPTIONS:
+  -h, --help      Show this help message and exit
+
+PREREQUISITES:
+  brew install cloudflared python
+  cloudflared tunnel login     # one-time Cloudflare auth
+
+INTERACTIVE CONTROLS (while sharing):
+  q               Quit and stop sharing
+  Ctrl+C          Also quits and stops sharing
+
+NOTES:
+  - A public HTTPS URL is automatically copied to your clipboard.
+  - Only Cloudflare-compatible ports are used (no root required).
+  - Dotfiles and hidden directories are excluded from the listing.
+
+EXAMPLES:
+  $(basename "$0")                     # prompts for directory
+  $(basename "$0") --help
+EOF
+  exit 0
+}
+
+# Parse flags before doing anything else
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) usage ;;
+    *)
+      echo "❌ Unknown option: $arg"
+      echo "   Run '$(basename "$0") --help' for usage."
+      exit 1
+      ;;
+  esac
+done
+
 # Cloudflare allowed origin ports (non-privileged only)
 ALLOWED_PORTS=(
   8080
@@ -25,16 +70,26 @@ TMP_PY_LOG="/tmp/cfshare-python.log"
 
 PY_PID=""
 CF_PID=""
+_CLEANUP_DONE=0
 
 # ================================
-# CLEANUP (always runs)
+# CLEANUP (runs exactly once)
 # ================================
 cleanup() {
+  [[ $_CLEANUP_DONE -eq 1 ]] && return
+  _CLEANUP_DONE=1
+  echo  # move to a clean line (handles ^C mid-prompt)
   stty sane 2>/dev/null || true
+  echo "🛑 Stopping services..."
   [[ -n "$CF_PID" ]] && kill "$CF_PID" >/dev/null 2>&1 || true
   [[ -n "$PY_PID" ]] && kill "$PY_PID" >/dev/null 2>&1 || true
+  echo "✅ File sharing stopped."
 }
-trap cleanup EXIT INT TERM
+
+# INT/TERM: cleanup then exit explicitly so bash doesn't continue the script
+# EXIT: catches normal exits — the guard above prevents double-running
+trap 'cleanup; exit 130' INT TERM
+trap 'cleanup' EXIT
 
 echo
 echo "🌐 Cloudflare Quick File Share (macOS)"
@@ -143,7 +198,6 @@ class HiddenFileHandler(http.server.SimpleHTTPRequestHandler):
                 linkname = name + '/'
             if os.path.islink(fullname):
                 displayname = name + '@'
-                # Note: Default SimpleHTTPRequestHandler does not follow symlinks in the listing display logic usually
             
             r.append('<li><a href=\"%s\">%s</a></li>' % (urllib.parse.quote(linkname, errors='surrogatepass'), html.escape(displayname, quote=False)))
         
@@ -214,22 +268,27 @@ fi
 echo
 echo "📎 Local URL: http://localhost:$PORT"
 echo
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " Sharing live — press 'q' to quit "
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo " Sharing live — press 'q' or Ctrl+C to quit "
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo
 
 # ================================
 # SINGLE-KEY QUIT
 # ================================
 
-stty -icanon -echo
-while true; do
-  read -r -n 1 key
-  [[ "$key" == "q" ]] && break
-done
+# -icanon: raw (single-char) mode
+# -echo:   don't echo keypresses
+# isig:    KEEP signal processing so Ctrl+C still fires SIGINT
+stty -icanon -echo isig
 
-echo
-echo "🛑 Stopping services..."
-echo "✅ File sharing stopped."
-echo
+while true; do
+  # Read one character; if the read is interrupted (e.g. by a signal
+  # that the trap catches) the loop simply exits via the trap.
+  if read -r -n 1 key 2>/dev/null; then
+    # 'q' → quit gracefully
+    # $'\x03' → Ctrl+C byte (belt-and-suspenders; isig usually fires first)
+    [[ "$key" == "q" || "$key" == $'\x03' ]] && break
+  fi
+done
+# cleanup() runs automatically via the EXIT trap
