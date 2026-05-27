@@ -6,12 +6,34 @@
 # Usage:
 # tautulli.sh          # Current activity by default
 # tautulli.sh --users  # User list with the --users flag
+# tautulli.sh --help   # Show help message
 
 TAUTULLI_IP="192.168.1.XXX"
 TAUTULLI_PORT="8181"
 API_KEY="YOUR_API_KEY_HERE"
 
 VENV_DIR="$HOME/.plex_audit_venv"
+
+# --- Help ---
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    echo -e "
+\033[1;33mUsage:\033[0m
+  tautulli.sh            Show current Plex activity (default)
+  tautulli.sh --users    List all shared users with email and ID
+  tautulli.sh --help     Show this help message
+
+\033[1;33mConfiguration:\033[0m
+  Edit the top of this script to set:
+    TAUTULLI_IP    IP address of your Tautulli instance
+    TAUTULLI_PORT  Port (default: 8181)
+    API_KEY        Found in Tautulli → Settings → Web Interface → API
+
+\033[1;33mExamples:\033[0m
+  tautulli.sh
+  tautulli.sh --users
+"
+    exit 0
+fi
 
 # --- Network Check ---
 if ! ping -c 1 -t 1 "$TAUTULLI_IP" &> /dev/null; then
