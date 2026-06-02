@@ -16,7 +16,7 @@ alias cleardns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
 alias flushdns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
 alias ls="eza --icons=always"
 alias l="eza -lah --icons=always --group-directories-first"
-alias batcopy="tee >(pbcopy) | bat"
+alias batcopy='() { cat "$1" | pbcopy; bat "$1"; }'
 
 # ---- Functions ----
 curl() {
