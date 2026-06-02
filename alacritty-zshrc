@@ -9,13 +9,14 @@ fi
 # ---- Aliases ----
 alias glances='glances --disable-bg --disable-plugin cpu'
 alias speed='speedtest'
-alias netquality='networkquality'
 alias doggo='doggo --nameserver https://cloudflare-dns.com/dns-query'
 alias bat='bat --paging=never'
 alias ff='fastfetch'
 alias cleardns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
+alias flushdns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
 alias ls="eza --icons=always"
-alias l="eza -lah --header --icons=always --group-directories-first"
+alias l="eza -lah --icons=always --group-directories-first"
+alias batcopy="tee >(pbcopy) | bat"
 
 # ---- Functions ----
 curl() {
