@@ -1,0 +1,10 @@
+# 1. Create the drop-in config that overrides Raspberry Pi OS's volatile storage default
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo bash -c 'cat > /etc/systemd/journald.conf.d/50-persistent.conf << EOF
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+EOF'
+
+# 2. Reboot to apply
+sudo reboot
