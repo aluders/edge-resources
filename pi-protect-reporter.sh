@@ -116,6 +116,13 @@ EMAIL_FROM="your_email@gmail.com"
 EMAIL_FROM_NAME="Protect Reporter"
 EMAIL_TO="pastor@church.com, admin@church.com"
 EMAIL_SUBJECT_PREFIX="[Protect]"
+
+# --- PDF Appearance ---
+# Options: light | dark
+PDF_THEME="light"
+
+# Sort order for report rows: asc (oldest first) | desc (newest first)
+PDF_SORT="asc"
 CONF
         chown "$REAL_USER:$REAL_USER" "$CONFIG_FILE"
         chmod 600 "$CONFIG_FILE"
@@ -174,13 +181,62 @@ from reportlab.lib.pagesizes import landscape, letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
 
 if len(sys.argv) < 4:
-    print("Usage: generate_pdf.py <input.json> <output.pdf> <YYYY-MM>")
+    print("Usage: generate_pdf.py <input.json> <output.pdf> <YYYY-MM> [light|dark] [asc|desc]")
     sys.exit(1)
 
 json_file, pdf_file, month_label = sys.argv[1], sys.argv[2], sys.argv[3]
+DARK      = len(sys.argv) > 4 and sys.argv[4].strip().lower() == 'dark'
+SORT_DESC = len(sys.argv) > 5 and sys.argv[5].strip().lower() == 'desc'
 
+# ── Themes ────────────────────────────────────────────────────
+if DARK:
+    T = {
+        'page_bg':   colors.HexColor('#0d1117'),
+        'header_bg': colors.HexColor('#161b22'),
+        'header_fg': colors.HexColor('#e6edf3'),
+        'row_a':     colors.HexColor('#0d1117'),
+        'row_b':     colors.HexColor('#111720'),
+        'cell_fg':   colors.HexColor('#c9d1d9'),
+        'type_fg':   colors.HexColor('#58a6ff'),
+        'grid':      colors.HexColor('#21262d'),
+        'rule':      colors.HexColor('#58a6ff'),
+        'title_fg':  colors.HexColor('#e6edf3'),
+        'sub_fg':    colors.HexColor('#8b949e'),
+        'footer_fg': colors.HexColor('#484f58'),
+        'accent':    colors.HexColor('#58a6ff'),
+    }
+else:
+    T = {
+        'page_bg':   colors.white,
+        'header_bg': colors.HexColor('#1e293b'),
+        'header_fg': colors.white,
+        'row_a':     colors.HexColor('#f1f5f9'),
+        'row_b':     colors.white,
+        'cell_fg':   colors.HexColor('#0f172a'),
+        'type_fg':   colors.HexColor('#475569'),
+        'grid':      colors.HexColor('#94a3b8'),
+        'rule':      colors.HexColor('#334155'),
+        'title_fg':  colors.HexColor('#0f172a'),
+        'sub_fg':    colors.HexColor('#475569'),
+        'footer_fg': colors.HexColor('#94a3b8'),
+        'accent':    colors.HexColor('#1e293b'),
+    }
+
+# ── Page background callback (dark mode only) ─────────────────
+def make_page_bg(color):
+    def draw_bg(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(color)
+        canvas.rect(0, 0, canvas._pagesize[0], canvas._pagesize[1], fill=1, stroke=0)
+        canvas.restoreState()
+    return draw_bg
+
+page_bg = make_page_bg(T['page_bg']) if DARK else None
+
+# ── Load data ─────────────────────────────────────────────────
 try:
     with open(json_file) as f:
         data = json.load(f)
@@ -192,6 +248,7 @@ if isinstance(data, list):
 else:
     logs = next((data[k] for k in ('items','data','events','results') if k in data), [])
 
+# ── Event helpers ─────────────────────────────────────────────
 def get_ev_meta(item):
     desc = item.get('description') or {}
     return desc, (desc.get('eventMetadata', {}) if isinstance(desc, dict) else {})
@@ -200,7 +257,7 @@ def get_subcategory(item):
     _, ev = get_ev_meta(item)
     return (ev.get('subCategory') or '').lower()
 
-WANT = {'accessed', 'devicesettings', 'recordingclips'}
+WANT      = {'accessed', 'devicesettings', 'recordingclips'}
 SKIP_CAT  = {'detection', 'motion', 'smart', 'ring'}
 SKIP_TYPE = {'motion', 'smartdetect', 'smartdetectzone', 'ring', 'recording', 'loitering'}
 
@@ -214,8 +271,11 @@ def is_wanted(item):
         return False
     return True
 
+def get_ts(item):
+    return item.get('start', item.get('timestamp', item.get('time', 0))) or 0
+
 filtered = [item for item in logs if is_wanted(item)]
-skipped  = len(logs) - len(filtered)
+filtered.sort(key=get_ts, reverse=SORT_DESC)
 
 SUBCAT_LABEL = {
     'accessed':       'Accessed',
@@ -242,34 +302,35 @@ def render_description(item):
     raw = re.sub(r'\{[^}]+\}', '', raw).strip()
     return re.sub(r'  +', ' ', raw)
 
-# Landscape letter usable width = 792 - 72 margins = 720pt
-# Col widths: Type=85 Event=130 Description=390 Date=115 => 720pt total
+# ── Styles ────────────────────────────────────────────────────
+styles   = getSampleStyleSheet()
+cell     = ParagraphStyle('cell',  parent=styles['Normal'], fontSize=8,  leading=10,
+                           fontName='Helvetica', textColor=T['cell_fg'])
+hdr      = ParagraphStyle('hdr',   parent=styles['Normal'], fontSize=8,  leading=10,
+                           fontName='Helvetica-Bold', textColor=T['header_fg'])
+title_s  = ParagraphStyle('title', parent=styles['Normal'], fontSize=13,
+                           fontName='Helvetica-Bold', textColor=T['title_fg'], spaceAfter=2)
+sub_s    = ParagraphStyle('sub',   parent=styles['Normal'], fontSize=8,
+                           textColor=T['sub_fg'])
+footer_s = ParagraphStyle('foot',  parent=styles['Normal'], fontSize=6.5,
+                           textColor=T['footer_fg'])
+
+# ── Build document ────────────────────────────────────────────
 doc = SimpleDocTemplate(pdf_file, pagesize=landscape(letter),
                         leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=30)
-styles   = getSampleStyleSheet()
-cell     = ParagraphStyle('cell', parent=styles['Normal'], fontSize=8,  leading=10, fontName='Helvetica')
-hdr      = ParagraphStyle('hdr',  parent=styles['Normal'], fontSize=8,  leading=10,
-                           fontName='Helvetica-Bold', textColor=colors.white)
-footer_s = ParagraphStyle('foot', parent=styles['Normal'], fontSize=6.5,
-                           textColor=colors.HexColor('#94a3b8'))
 
 elements = []
-
-# Header block
-title_style = ParagraphStyle('title', parent=styles['Normal'], fontSize=13,
-                              fontName='Helvetica-Bold', spaceAfter=2)
-sub_style   = ParagraphStyle('sub',   parent=styles['Normal'], fontSize=8,
-                              textColor=colors.HexColor('#475569'))
-elements.append(Paragraph('UniFi Protect — System Access Report', title_style))
-elements.append(Paragraph(f'Period: {month_label}  |  {len(filtered)} event(s)', sub_style))
+elements.append(Paragraph('UniFi Protect — System Access Report', title_s))
+sort_label = 'newest first' if SORT_DESC else 'oldest first'
+elements.append(Paragraph(f'Period: {month_label}  |  {len(filtered)} event(s)  |  {sort_label}', sub_s))
 elements.append(Spacer(1, 5))
-elements.append(HRFlowable(width='100%', thickness=1, color=colors.HexColor('#334155')))
+elements.append(HRFlowable(width='100%', thickness=1, color=T['rule']))
 elements.append(Spacer(1, 6))
 
 rows = [[Paragraph(h, hdr) for h in ['Type', 'Event', 'Description', 'Date & Time']]]
 
 for item in filtered:
-    raw_ts = item.get('start', item.get('timestamp', item.get('time', 0)))
+    raw_ts = get_ts(item)
     ts = datetime.datetime.fromtimestamp(raw_ts / 1000.0).strftime('%Y-%m-%d %H:%M:%S') if raw_ts else 'Unknown'
     rows.append([
         Paragraph(type_label(item),         cell),
@@ -286,32 +347,32 @@ if len(rows) == 1:
 col_widths = [85, 130, 390, 115]
 t = Table(rows, colWidths=col_widths, repeatRows=1)
 t.setStyle(TableStyle([
-    # Header
-    ('BACKGROUND',    (0,0), (-1,0),  colors.HexColor('#1e293b')),
+    ('BACKGROUND',    (0,0), (-1,0),  T['header_bg']),
     ('TOPPADDING',    (0,0), (-1,0),  5),
     ('BOTTOMPADDING', (0,0), (-1,0),  5),
     ('LEFTPADDING',   (0,0), (-1,-1), 6),
     ('RIGHTPADDING',  (0,0), (-1,-1), 6),
-    # Body — tight rows, clear alternating contrast
-    ('ROWBACKGROUNDS',(0,1), (-1,-1), [colors.HexColor('#f1f5f9'), colors.white]),
+    ('ROWBACKGROUNDS',(0,1), (-1,-1), [T['row_a'], T['row_b']]),
     ('TOPPADDING',    (0,1), (-1,-1), 3),
     ('BOTTOMPADDING', (0,1), (-1,-1), 3),
-    # Grid
-    ('LINEBELOW',     (0,0), (-1,-1), 0.4, colors.HexColor('#94a3b8')),
-    ('LINEBEFORE',    (0,0), (0,-1),  0.4, colors.HexColor('#94a3b8')),
-    ('LINEAFTER',     (-1,0),(-1,-1), 0.4, colors.HexColor('#94a3b8')),
+    ('LINEBELOW',     (0,0), (-1,-1), 0.4, T['grid']),
+    ('LINEBEFORE',    (0,0), (0,-1),  0.4, T['grid']),
+    ('LINEAFTER',     (-1,0),(-1,-1), 0.4, T['grid']),
     ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
     ('ALIGN',         (0,0), (-1,-1), 'LEFT'),
-    # Slightly muted Type column
-    ('TEXTCOLOR',     (0,1), (0,-1),  colors.HexColor('#475569')),
+    ('TEXTCOLOR',     (0,1), (0,-1),  T['type_fg']),
 ]))
 elements.append(t)
 elements.append(Spacer(1, 6))
 elements.append(Paragraph(
     f'Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
     footer_s))
-doc.build(elements)
-print(f'PDF generated: {pdf_file}  ({len(filtered)} events, {skipped} excluded)')
+
+noop = lambda canvas, doc: None
+doc.build(elements,
+          onFirstPage=page_bg or noop,
+          onLaterPages=page_bg or noop)
+print(f'PDF generated: {pdf_file}  ({len(filtered)} events)')
 
 PYEOF
 chmod 755 "$PY_SCRIPT"
@@ -454,7 +515,7 @@ success "Fetched ${EVENT_COUNT} event(s) for ${TARGET_MONTH}."
 
 # ── PDF ───────────────────────────────────────────────────────
 info "Generating PDF report..."
-python3 "$PY_SCRIPT" "$REPORT_JSON" "$REPORT_PDF" "$TARGET_MONTH"
+python3 "$PY_SCRIPT" "$REPORT_JSON" "$REPORT_PDF" "$TARGET_MONTH" "${PDF_THEME:-light}" "${PDF_SORT:-asc}"
 rm -f "$REPORT_JSON"
 success "Report saved: $REPORT_PDF"
 
