@@ -8,3 +8,6 @@ EOF'
 
 # 2. Reboot to apply
 sudo reboot
+
+# 3. Check if logs exist in persistent storage...
+ls -la /var/log/journal/
