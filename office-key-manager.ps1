@@ -1,5 +1,10 @@
-# Set-OfficeProductKey.ps1
 # Usage: irm office.vcc.net | iex
+
+function Exit-WithPause($code = 0) {
+    Write-Host "------------------------------------" -ForegroundColor Gray
+    Read-Host " Press Enter to exit"
+    exit $code
+}
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host "     OFFICE PRODUCT KEY MANAGER     " -ForegroundColor Black -BackgroundColor Cyan
@@ -23,7 +28,7 @@ foreach ($path in $officePaths) {
 
 if (-not $officeDir) {
     Write-Host " [!] Could not find ospp.vbs. Is Office installed?" -ForegroundColor Red
-    exit 1
+    Exit-WithPause 1
 }
 
 Write-Host " [i] Found Office at: $officeDir" -ForegroundColor Gray
@@ -46,7 +51,6 @@ if ($remove -eq 'y') {
     $keyLines = $statusOutput | Select-String "Last 5"
     if ($keyLines) {
         foreach ($line in $keyLines) {
-            # Extract the last 5 chars of the key from lines like: Last 5 characters of installed product key: XXXXX
             if ($line -match ":\s*([A-Z0-9]{5})\s*$") {
                 $tail = $matches[1]
                 Write-Host " [-] Removing key ending in: $tail" -ForegroundColor Yellow
@@ -71,7 +75,7 @@ $newKey = $newKey.Trim()
 
 if ($newKey -notmatch "^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$") {
     Write-Host " [!] Key format invalid. Expected 25-character key with dashes." -ForegroundColor Red
-    exit 1
+    Exit-WithPause 1
 }
 
 # --- Install new key ---
@@ -82,7 +86,7 @@ if ($installResult -match "successful") {
 } else {
     Write-Host " [!] Key installation failed:" -ForegroundColor Red
     Write-Host "     $installResult" -ForegroundColor Gray
-    exit 1
+    Exit-WithPause 1
 }
 
 # --- Attempt online activation ---
@@ -101,3 +105,4 @@ if ($activate -eq 'y') {
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " Done!" -ForegroundColor Cyan
+Exit-WithPause
