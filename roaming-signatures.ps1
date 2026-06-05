@@ -1,4 +1,3 @@
-# Disable-OutlookRoamingSignatures.ps1
 # Usage: irm signatures.vcc.net | iex
 
 Write-Host "------------------------------------" -ForegroundColor Gray
