@@ -32,19 +32,32 @@ Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " Current License Status:" -ForegroundColor Yellow
 $statusOutput = cscript //nologo "$officeDir\ospp.vbs" /dstatus 2>&1
 $lastFive = $statusOutput | Select-String "Last 5"
+$licenseStatus = $statusOutput | Select-String "LICENSE STATUS"
+
 if ($lastFive) {
     $lastFive | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
 } else {
     Write-Host "  (No installed product keys found)" -ForegroundColor Gray
 }
 
-# --- Remove existing keys ---
+if ($licenseStatus) {
+    $licenseStatus | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+}
+
+# --- Ask whether to make any changes ---
 Write-Host "------------------------------------" -ForegroundColor Gray
-$remove = Read-Host " Remove existing product key(s) before installing? (y/n)"
+$change = Read-Host " Do you want to change the product key? (y/n)"
+if ($change -ne 'y') {
+    Write-Host " [i] No changes made." -ForegroundColor Cyan
+    Write-Host "------------------------------------" -ForegroundColor Gray
+    return
+}
+
+# --- Remove existing keys ---
+$remove = Read-Host " Remove existing product key(s) first? (y/n)"
 if ($remove -eq 'y') {
-    $keyLines = $statusOutput | Select-String "Last 5"
-    if ($keyLines) {
-        foreach ($line in $keyLines) {
+    if ($lastFive) {
+        foreach ($line in $lastFive) {
             if ($line -match ":\s*([A-Z0-9]{5})\s*$") {
                 $tail = $matches[1]
                 Write-Host " [-] Removing key ending in: $tail" -ForegroundColor Yellow
@@ -65,7 +78,7 @@ if ($remove -eq 'y') {
 # --- Prompt for new key ---
 Write-Host "------------------------------------" -ForegroundColor Gray
 $newKey = Read-Host " Enter new Office product key (XXXXX-XXXXX-XXXXX-XXXXX-XXXXX)"
-$newKey = $newKey.Trim()
+$newKey = $newKey.Trim().ToUpper()
 
 if ($newKey -notmatch "^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$") {
     Write-Host " [!] Key format invalid. Expected 25-character key with dashes." -ForegroundColor Red
