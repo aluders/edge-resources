@@ -1,11 +1,5 @@
 # Usage: irm office.vcc.net | iex
 
-function Exit-WithPause($code = 0) {
-    Write-Host "------------------------------------" -ForegroundColor Gray
-    Read-Host " Press Enter to exit"
-    exit $code
-}
-
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host "     OFFICE PRODUCT KEY MANAGER     " -ForegroundColor Black -BackgroundColor Cyan
 Write-Host "------------------------------------" -ForegroundColor Gray
@@ -28,7 +22,7 @@ foreach ($path in $officePaths) {
 
 if (-not $officeDir) {
     Write-Host " [!] Could not find ospp.vbs. Is Office installed?" -ForegroundColor Red
-    Exit-WithPause 1
+    return
 }
 
 Write-Host " [i] Found Office at: $officeDir" -ForegroundColor Gray
@@ -75,7 +69,7 @@ $newKey = $newKey.Trim()
 
 if ($newKey -notmatch "^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$") {
     Write-Host " [!] Key format invalid. Expected 25-character key with dashes." -ForegroundColor Red
-    Exit-WithPause 1
+    return
 }
 
 # --- Install new key ---
@@ -86,7 +80,7 @@ if ($installResult -match "successful") {
 } else {
     Write-Host " [!] Key installation failed:" -ForegroundColor Red
     Write-Host "     $installResult" -ForegroundColor Gray
-    Exit-WithPause 1
+    return
 }
 
 # --- Attempt online activation ---
@@ -105,4 +99,4 @@ if ($activate -eq 'y') {
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " Done!" -ForegroundColor Cyan
-Exit-WithPause
+Write-Host "------------------------------------" -ForegroundColor Gray
