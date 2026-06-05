@@ -1,12 +1,26 @@
 /********************************************************************
   YouTube Scheduler + Go-Live + Auto-End Worker
   --------------------------------------------------
+  Cron Schedule:
+    - 0 6 * * thu    Thursday: auto-schedule next Sunday's broadcast
+    - Sunday crons:  One or more UTC crons to cover your go-live window
+                     in both PDT (UTC-7) and PST (UTC-8). If your window
+                     crosses a UTC hour boundary you may need 3 crons.
+                     Example (9 AM service): * 15, * 16, * 17 * * sun
+                     Example (10:30 service): * 17, * 18 * * sun
+    - End stream:    Single cron at the UTC hour that falls within your
+                     end window in both seasons (window must be wide enough
+                     to contain both PT times).
+                     Example: 0 20 * * sun covers 1PM PDT / 12PM PST
+
   DST Strategy:
-    - TWO Sunday crons (17 and 18 UTC) ensure coverage year-round
-    - During PST: 18:xx UTC = 10:xx PT ✅ (17:xx = 9:xx PT, skipped)
-    - During PDT: 17:xx UTC = 10:xx PT ✅ (18:xx = 11:xx PT, skipped)
-    - Time window check filters which cron actually runs
-  
+    - Time window checks (in PT) filter which cron executions actually run
+    - Go-live window may need 2-3 Sunday crons if it crosses a UTC hour
+      boundary - the window check handles the rest automatically
+    - Scheduling uses SCHEDULE_HOUR_PT + 7 (PDT) as starting UTC, then
+      checks and adjusts +1 hour if PST is detected
+    - PDT (summer): UTC-7  |  PST (winter): UTC-8
+
   Logging Modes:
     - VERBOSE_LOGGING = true: Full detailed logs (every API call, state change)
     - VERBOSE_LOGGING = false: Condensed logs (just key events and results)
@@ -17,18 +31,18 @@
     - ?schedule   Manually trigger next Sunday's broadcast creation
     - ?golive     Manually trigger go-live (finds any upcoming broadcast)
     - ?endstream  Manually trigger end-stream (today's live broadcast only)
-  
+
   Recent Updates:
     - NO API KEY REQUIRED - Uses OAuth for all operations (works with unlisted videos)
     - Configurable broadcast title prefix (BROADCAST_TITLE_PREFIX)
     - Configurable broadcast description (BROADCAST_DESCRIPTION)
     - Auto-end stream feature with configurable time window
-    - Flexible go-live window (supports cross-hour boundaries for 9am services)
+    - Flexible go-live window (supports cross-hour boundaries e.g. 8:57-9:05)
     - Configurable privacy status (public/unlisted/private)
     - enableEmbed automatically disabled for unlisted/private broadcasts
     - Two-step transition: testing → live (simulates YouTube Studio preview)
     - Skips step 1 if broadcast already in testing state (avoids redundantTransition)
-    - Browser-like headers to transition API call
+    - Browser-like headers on transition API calls
     - ?golive dev endpoint finds any upcoming broadcast (not just today's)
     - DST scheduling derived from SCHEDULE_HOUR_PT (works for any service time)
     - Feature toggles for scheduling, go-live, auto-end, and logging verbosity
