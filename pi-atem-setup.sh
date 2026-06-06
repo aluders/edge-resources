@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v30 - Cloudflared Auto-Update)
+# ATEM MONITOR AUTO-INSTALLER (v31 - Force Download Headers)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -609,11 +609,54 @@ if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
         cloudflared tunnel --url "http://localhost:8080" --no-autoupdate > "$CF_LOG" 2>&1 &
         CF_TUNNEL_PID=$!
 
-        # Start Python HTTP server to serve the atem folder
-        # Kill any previous instance first
+        # Start Python HTTP server to serve the atem folder.
+        # Custom handler forces download (Content-Disposition: attachment)
+        # for .mp4 and .m4a files so they download rather than play in browser.
         pkill -f "python3 -m http.server 8080" 2>/dev/null || true
+        pkill -f "AtemFileHandler" 2>/dev/null || true
         sleep 1
-        python3 -m http.server 8080 --directory "$DEST_DIR" > /tmp/atem-httpd.log 2>&1 &
+        python3 - "$DEST_DIR" <<'PYEOF' > /tmp/atem-httpd.log 2>&1 &
+import http.server
+import socketserver
+import os
+import sys
+import urllib.parse
+
+DIRECTORY = sys.argv[1] if len(sys.argv) > 1 else '.'
+PORT = 8080
+DOWNLOAD_EXTENSIONS = {'.mp4', '.m4a'}
+
+class AtemFileHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=DIRECTORY, **kwargs)
+
+    def send_head(self):
+        path = self.translate_path(self.path)
+        _, ext = os.path.splitext(path)
+        if os.path.isfile(path) and ext.lower() in DOWNLOAD_EXTENSIONS:
+            # Force download instead of inline playback
+            try:
+                f = open(path, 'rb')
+            except OSError:
+                self.send_error(404, 'File not found')
+                return None
+            stat = os.fstat(f.fileno())
+            filename = os.path.basename(path)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+            self.send_header('Content-Length', str(stat.st_size))
+            self.send_header('Last-Modified', self.date_time_string(stat.st_mtime))
+            self.end_headers()
+            return f
+        return super().send_head()
+
+    def log_message(self, format, *args):
+        pass  # suppress per-request console noise
+
+with socketserver.TCPServer(('', PORT), AtemFileHandler) as httpd:
+    httpd.serve_forever()
+PYEOF
 
         # Wait for the trycloudflare.com URL to appear in the log (up to 30s)
         log "⏳ Waiting for tunnel URL..."
@@ -691,10 +734,10 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v30 (Cloudflared Auto-Update)"
-echo "   - Tunnel section checks GitHub for latest version"
-echo "   - Updates binary in-place if behind, then proceeds"
-echo "   - Gracefully skips update if GitHub unreachable"
+echo "✅ UPDATED TO v31 (Force Download Headers)"
+echo "   - .mp4 and .m4a links now download instead of"
+echo "     opening in the browser"
+echo "   - Directory listing still works normally"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
