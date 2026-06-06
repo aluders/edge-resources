@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v24 - M4A Audio + Persistent Journal)
+# ATEM MONITOR AUTO-INSTALLER (v30 - Cloudflared Auto-Update)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -36,7 +36,26 @@ echo ">>> Starting Installation for user: $CURRENT_USER"
 sudo apt update
 sudo apt install -y nodejs npm lftp swaks ffmpeg
 
-# 3. PERSISTENT JOURNAL SETUP
+# 3. INSTALL CLOUDFLARED (not in Pi OS repos — install binary from GitHub)
+if command -v cloudflared >/dev/null 2>&1; then
+    echo ">>> cloudflared already installed: $(cloudflared --version 2>&1 | head -1)"
+else
+    echo ">>> Installing cloudflared binary..."
+    ARCH=$(dpkg --print-architecture)
+    case "$ARCH" in
+        arm64)   CF_ARCH="arm64" ;;
+        armhf)   CF_ARCH="arm" ;;
+        amd64)   CF_ARCH="amd64" ;;
+        *)        echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
+    esac
+    CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
+    echo ">>> Downloading cloudflared for ${CF_ARCH}..."
+    sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared
+    sudo chmod +x /usr/local/bin/cloudflared
+    echo ">>> cloudflared installed: $(cloudflared --version 2>&1 | head -1)"
+fi
+
+# 4. PERSISTENT JOURNAL SETUP
 JOURNAL_CONF_DIR="/etc/systemd/journald.conf.d"
 JOURNAL_CONF_FILE="$JOURNAL_CONF_DIR/50-persistent.conf"
 JOURNAL_NEEDS_REBOOT=false
@@ -56,16 +75,16 @@ EOF
     JOURNAL_NEEDS_REBOOT=true
 fi
 
-# 4. SETUP DIRECTORIES
+# 5. SETUP DIRECTORIES
 mkdir -p "$PROJECT_DIR"
 mkdir -p "$LOCAL_DEST_DIR"
 
-# 5. SETUP NODE PROJECT
+# 6. SETUP NODE PROJECT
 cd "$PROJECT_DIR"
 if [ ! -f "package.json" ]; then npm init -y; fi
 npm install atem-connection dotenv
 
-# 6. CREATE CENTRAL CONFIG FILE (If not exists)
+# 7. CREATE CENTRAL CONFIG FILE (If not exists)
 if [ -f "$CONFIG_FILE" ]; then
     echo ">>> Config file exists. Preserving settings."
 else
@@ -89,12 +108,22 @@ STREAM_START_TIME="09:58"
 # --- DOWNLOAD & NOTIFICATION ---
 ENABLE_DOWNLOAD="true"
 ENABLE_EMAIL="true"
+# Day(s) of week on which downloads are allowed. 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat 7=Sun
+# Single day or comma-separated list (e.g. "3,7" for Wed and Sun)
+DOWNLOAD_DAY="7"
+# Only download if recording stops at or after this hour (24h, no leading zero).
+# There is no default — this must be set.
+DOWNLOAD_AFTER_HOUR="11"
 
 # --- AUDIO EXTRACTION ---
 # Extract AAC audio from downloaded MP4 files as M4A (stream copy, no re-encoding)
 ENABLE_AUDIO_EXTRACT="false"
-# Attach extracted audio file(s) to the success notification email
-AUDIO_EMAIL_ATTACH="false"
+
+# --- CLOUDFLARE TUNNEL ---
+# Start a Cloudflare tunnel after download/extraction and include links in the email.
+# The tunnel serves the entire atem folder (video + audio browseable).
+# Any previous tunnel is killed and replaced on each run.
+ENABLE_TUNNEL="false"
 
 # --- EMAIL SETTINGS ---
 SMTP_SERVER="smtp.gmail.com"
@@ -110,7 +139,7 @@ EOF
     chmod 600 "$CONFIG_FILE"
 fi
 
-# 7. CREATE TRIGGER.JS (The "Hitman" Script)
+# 8. CREATE TRIGGER.JS (The "Hitman" Script)
 cat > "$TRIGGER_SCRIPT" <<EOF
 const { Atem } = require('atem-connection');
 const fs = require('fs');
@@ -163,7 +192,7 @@ myAtem.on('error', (e) => {
 myAtem.connect(ATEM_IP);
 EOF
 
-# 8. CREATE MONITOR.JS (The Watchdog)
+# 9. CREATE MONITOR.JS (The Watchdog)
 cat > "$PROJECT_DIR/monitor.js" <<EOF
 const { Atem } = require('atem-connection');
 const { exec } = require('child_process');
@@ -226,7 +255,14 @@ setInterval(() => {
     const currentTime = \`\${String(now.getHours()).padStart(2, '0')}:\${String(now.getMinutes()).padStart(2, '0')}\`;
 
     if (currentTime === '00:00') { recordTriggered = false; streamTriggered = false; }
-    if (day !== 0) return;
+
+    // DOWNLOAD_DAY uses ISO weekday (1=Mon...7=Sun); JS getDay() uses 0=Sun...6=Sat
+    // Supports comma-separated list e.g. "3,7"
+    const configDays = (config.DOWNLOAD_DAY || '7').split(',').map(d => {
+        const n = parseInt(d.trim(), 10);
+        return n === 7 ? 0 : n;
+    });
+    if (!configDays.includes(day)) return;
 
     if (config.ENABLE_AUTO_RECORD === 'true' && currentTime === config.RECORD_START_TIME && !recordTriggered) {
         recordTriggered = true;
@@ -243,7 +279,7 @@ setInterval(() => {
 myAtem.connect(ATEM_IP);
 EOF
 
-# 9. CREATE CONTROL SCRIPT
+# 10. CREATE CONTROL SCRIPT
 echo ">>> Creating Control Script at $CONTROL_SCRIPT..."
 cat > "$CONTROL_SCRIPT" <<'CONTROL_EOF'
 #!/bin/bash
@@ -271,14 +307,15 @@ USAGE:
 
 FLAGS:
   (no flag)          Normal run: download latest MP4s from ATEM FTP,
-                     extract audio if enabled, send notification email.
+                     extract audio if enabled, start tunnel if enabled,
+                     and send notification email.
                      Day/time guards apply (Sunday only, after 11 AM).
 
-  --on-demand        Bypass Sunday/time checks. Download, extract, and
-                     notify immediately regardless of day or hour.
+  --on-demand        Bypass Sunday/time checks. Run the full pipeline
+                     immediately regardless of day or hour.
 
   --test-email       Send a test email using current SMTP settings.
-                     Does not download or extract anything.
+                     Does not download, extract, or start a tunnel.
 
   --test-record      Connect to ATEM and trigger START RECORDING.
 
@@ -290,15 +327,30 @@ CONFIG FILE:  ~/atem.config
   Key settings you can toggle:
 
   ENABLE_DOWNLOAD="true|false"     Download MP4s from ATEM FTP
+
+  DOWNLOAD_DAY="N"
+      Day(s) of week on which downloads are allowed.
+      1=Mon  2=Tue  3=Wed  4=Thu  5=Fri  6=Sat  7=Sun
+      Single value or comma-separated list: "7" or "3,7"
+      Must be set — no default.
+
+  DOWNLOAD_AFTER_HOUR="H"
+      Only proceed with download if the current hour is >= this value
+      (24h format, no leading zero required). Prevents accidental
+      downloads from early test recordings. Must be set — no default.
+
   ENABLE_EMAIL="true|false"        Send notification emails
 
   ENABLE_AUDIO_EXTRACT="true|false"
       Extract AAC audio from downloaded MP4s as M4A files (stream copy,
       no re-encoding — fast and lossless). Requires ffmpeg.
 
-  AUDIO_EMAIL_ATTACH="true|false"
-      Attach extracted M4A file(s) to the success email.
-      Only active when both ENABLE_AUDIO_EXTRACT and ENABLE_EMAIL are true.
+  ENABLE_TUNNEL="true|false"
+      Start a Cloudflare tunnel after processing and include download
+      links in the notification email. The tunnel serves the entire
+      atem folder (video + audio are both browseable). Any tunnel
+      from a previous run is killed and replaced automatically.
+      Requires cloudflared to be installed.
 
   ENABLE_AUTO_RECORD="true|false"  Auto-start recording on Sunday
   RECORD_START_TIME="HH:MM"        Time to start recording (24h)
@@ -332,24 +384,10 @@ fi
 LOG_BUFFER=""
 log() { echo "$1"; LOG_BUFFER+="${1}\n"; }
 
-# Build swaks attachment args from a list of files
-# Usage: build_attach_args file1 file2 ...
-build_attach_args() {
-    local args=""
-    for f in "$@"; do
-        if [ -f "$f" ]; then
-            args+="--attach-type audio/mp4 --attach @${f} "
-        fi
-    done
-    echo "$args"
-}
-
 send_notification() {
     if [ "$ENABLE_EMAIL" != "true" ]; then echo "📧 Email Disabled."; return; fi
     local STATUS="$1"
     local BODY="${2:-$LOG_BUFFER}"
-    shift 2 || true
-    local ATTACH_FILES=("$@")   # remaining args are files to attach
 
     if [[ "$SMTP_USER" == *"your_email"* ]]; then echo "⚠️ Email not configured."; return; fi
 
@@ -359,21 +397,14 @@ send_notification() {
         FROM_HEADER="From: $EMAIL_FROM"
     fi
 
-    # Build attachment flags
-    ATTACH_ARGS=""
-    if [ "${#ATTACH_FILES[@]}" -gt 0 ]; then
-        ATTACH_ARGS=$(build_attach_args "${ATTACH_FILES[@]}")
-    fi
-
     echo "📧 Sending Email ($STATUS)..."
-    eval swaks --to "\"$EMAIL_TO\"" \
-          --from "\"$EMAIL_FROM\"" \
-          --header "\"$FROM_HEADER\"" \
-          --server "\"$SMTP_SERVER\"" --port "\"$SMTP_PORT\"" \
-          --auth LOGIN --auth-user "\"$SMTP_USER\"" --auth-password "\"$SMTP_PASS\"" --tls \
-          --header "\"Subject: $EMAIL_SUBJECT_PREFIX $STATUS\"" \
-          --body "\"$BODY\"" \
-          $ATTACH_ARGS \
+    swaks --to "$EMAIL_TO" \
+          --from "$EMAIL_FROM" \
+          --header "$FROM_HEADER" \
+          --server "$SMTP_SERVER" --port "$SMTP_PORT" \
+          --auth LOGIN --auth-user "$SMTP_USER" --auth-password "$SMTP_PASS" --tls \
+          --header "Subject: $EMAIL_SUBJECT_PREFIX $STATUS" \
+          --body "$BODY" \
           --hide-all
 
     if [ $? -eq 0 ]; then echo "✅ Email Sent."; else echo "❌ Email Failed."; fi
@@ -420,8 +451,16 @@ fi
 CURRENT_DAY=$(date +%u)
 CURRENT_HOUR=$(date +%H)
 if [ "$ON_DEMAND_MODE" = false ]; then
-    if [ "$CURRENT_DAY" -ne 7 ]; then echo "⏳ Not Sunday. Skipping."; exit 0; fi
-    if [ "$CURRENT_HOUR" -lt 11 ]; then echo "⏳ Before 11AM. Skipping."; exit 0; fi
+    if [[ -z "${DOWNLOAD_DAY:-}" ]]; then die "DOWNLOAD_DAY is not set in config."; fi
+    if [[ -z "${DOWNLOAD_AFTER_HOUR:-}" ]]; then die "DOWNLOAD_AFTER_HOUR is not set in config."; fi
+    # Check current day against comma-separated list
+    DAY_MATCH=false
+    IFS=',' read -ra DOWNLOAD_DAYS <<< "$DOWNLOAD_DAY"
+    for D in "${DOWNLOAD_DAYS[@]}"; do
+        if [ "$CURRENT_DAY" -eq "${D// /}" ]; then DAY_MATCH=true; break; fi
+    done
+    if [ "$DAY_MATCH" = false ]; then echo "⏳ Not a configured download day (${DOWNLOAD_DAY}). Skipping."; exit 0; fi
+    if [ "$CURRENT_HOUR" -lt "$DOWNLOAD_AFTER_HOUR" ]; then echo "⏳ Before ${DOWNLOAD_AFTER_HOUR}:00. Skipping."; exit 0; fi
 fi
 
 log "⏳ Waiting 5 seconds..."
@@ -491,7 +530,7 @@ done <<< "$LATEST_MP4"
 # ===================================================
 # AUDIO EXTRACTION
 # ===================================================
-AUDIO_FILES=()   # extracted M4A paths (for email attachment)
+AUDIO_FILES=()   # extracted M4A paths
 
 if [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ]; then
     if ! command -v ffmpeg >/dev/null 2>&1; then
@@ -523,26 +562,115 @@ if [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ]; then
 fi
 
 # ===================================================
-# NOTIFICATION
+# CLOUDFLARE TUNNEL
+# ===================================================
+TUNNEL_URL=""
+CF_LOG="/tmp/atem-cloudflared.log"
+
+if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
+    if ! command -v cloudflared >/dev/null 2>&1; then
+        log "⚠️ cloudflared not found — skipping tunnel."
+    else
+        # --- AUTO-UPDATE CHECK ---
+        log "🔍 Checking cloudflared for updates..."
+        CF_INSTALLED=$(cloudflared --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+        CF_LATEST=$(curl -fsSL "https://api.github.com/repos/cloudflare/cloudflared/releases/latest" \
+                    | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+
+        if [[ -z "$CF_LATEST" ]]; then
+            log "⚠️ Could not fetch latest cloudflared version — skipping update check."
+        elif [[ "$CF_INSTALLED" == "$CF_LATEST" ]]; then
+            log "✅ cloudflared is up to date (v${CF_INSTALLED})."
+        else
+            log "⬆️  Updating cloudflared v${CF_INSTALLED} -> v${CF_LATEST}..."
+            CF_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "arm64")
+            case "$CF_ARCH" in
+                arm64) CF_BIN_ARCH="arm64" ;;
+                armhf) CF_BIN_ARCH="arm"   ;;
+                amd64) CF_BIN_ARCH="amd64" ;;
+                *)     CF_BIN_ARCH="arm64" ;;
+            esac
+            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_BIN_ARCH}"
+            if sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared; then
+                log "✅ cloudflared updated to v${CF_LATEST}."
+            else
+                log "⚠️ cloudflared update failed — continuing with existing version."
+            fi
+        fi
+
+        # Kill any existing tunnel from a previous run
+        if pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
+            log "🔄 Stopping previous cloudflared tunnel..."
+            pkill -f "cloudflared tunnel" || true
+            sleep 2
+        fi
+
+        log "🌐 Starting Cloudflare tunnel for: $DEST_DIR"
+        cloudflared tunnel --url "http://localhost:8080" --no-autoupdate > "$CF_LOG" 2>&1 &
+        CF_TUNNEL_PID=$!
+
+        # Start Python HTTP server to serve the atem folder
+        # Kill any previous instance first
+        pkill -f "python3 -m http.server 8080" 2>/dev/null || true
+        sleep 1
+        python3 -m http.server 8080 --directory "$DEST_DIR" > /tmp/atem-httpd.log 2>&1 &
+
+        # Wait for the trycloudflare.com URL to appear in the log (up to 30s)
+        log "⏳ Waiting for tunnel URL..."
+        for i in $(seq 1 30); do
+            TUNNEL_URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | tail -1 || true)
+            [[ -n "$TUNNEL_URL" ]] && break
+            sleep 1
+        done
+
+        if [[ -n "$TUNNEL_URL" ]]; then
+            log "✅ Tunnel active: $TUNNEL_URL"
+        else
+            log "⚠️ Tunnel started but URL not detected — check $CF_LOG"
+        fi
+    fi
+fi
+
+# ===================================================
+# BUILD EMAIL BODY & NOTIFY
 # ===================================================
 log "🎉 Complete."
 
-if [ "${AUDIO_EMAIL_ATTACH:-false}" = "true" ] && [ "${#AUDIO_FILES[@]}" -gt 0 ]; then
-    send_notification "SUCCESS" "$LOG_BUFFER" "${AUDIO_FILES[@]}"
-else
-    send_notification "SUCCESS" "$LOG_BUFFER"
+# Append tunnel links to email body if available
+EMAIL_BODY="$LOG_BUFFER"
+if [[ -n "$TUNNEL_URL" ]]; then
+    EMAIL_BODY+="
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📥 DOWNLOAD LINKS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"
+    # Direct link(s) for each audio file
+    if [ "${#AUDIO_FILES[@]}" -gt 0 ]; then
+        EMAIL_BODY+="🎵 Audio (M4A):\n"
+        for M4A_PATH in "${AUDIO_FILES[@]}"; do
+            FNAME=$(basename "$M4A_PATH")
+            EMAIL_BODY+="   ${TUNNEL_URL}/${FNAME}\n"
+        done
+        EMAIL_BODY+="\n"
+    fi
+    EMAIL_BODY+="📁 Full folder (video + audio):\n"
+    EMAIL_BODY+="   ${TUNNEL_URL}/\n"
+    EMAIL_BODY+="\n"
+    EMAIL_BODY+="⚠️  Links are active until the Pi reboots or next Sunday's run.\n"
 fi
+
+send_notification "SUCCESS" "$EMAIL_BODY"
 
 CONTROL_EOF
 
-# 10. FIX PERMISSIONS
+# 11. FIX PERMISSIONS
 chown -R "$CURRENT_USER:$CURRENT_USER" "$PROJECT_DIR"
 chown "$CURRENT_USER:$CURRENT_USER" "$CONTROL_SCRIPT"
 chown "$CURRENT_USER:$CURRENT_USER" "$TRIGGER_SCRIPT"
 chown "$CURRENT_USER:$CURRENT_USER" "$CONFIG_FILE"
 chmod 700 "$CONTROL_SCRIPT"
 
-# 11. RESTART SERVICE
+# 12. RESTART SERVICE
 sudo bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
 Description=ATEM Automation System
@@ -563,10 +691,10 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v24 (M4A Audio + Persistent Journal)"
-echo "   - Audio extraction now uses M4A stream copy"
-echo "   - Installer checks/configures persistent journald"
-echo "   - Added: ffmpeg to dependency install"
+echo "✅ UPDATED TO v30 (Cloudflared Auto-Update)"
+echo "   - Tunnel section checks GitHub for latest version"
+echo "   - Updates binary in-place if behind, then proceeds"
+echo "   - Gracefully skips update if GitHub unreachable"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
