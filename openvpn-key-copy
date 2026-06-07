@@ -1,14 +1,12 @@
+copy local key to clipboard...
+
 ssh ubnt@router-ip "sudo cat /config/auth/secret9" | pbcopy
 
-1. Initiate the Command with sudo
-Run this command and press Enter (it may ask for your password):
+from uisp remote router terminal...
 
 cat << 'EOF' | sudo tee /config/auth/secret9 > /dev/null
-
-2. Paste Your Key
-Paste your copied OpenVPN key into the terminal (including the # comments and the BEGIN/END lines).
-
-3. Close and Save
-Type EOF on a new, empty line and press Enter:
-
+(enter for new line)
+paste key
+(enter for new line)
 EOF
+(enter to save)
