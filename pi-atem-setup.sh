@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v32 - Configurable Email Links)
+# ATEM MONITOR AUTO-INSTALLER (v33 - Renotify Flag)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -320,6 +320,12 @@ FLAGS:
   --on-demand        Bypass Sunday/time checks. Run the full pipeline
                      immediately regardless of day or hour.
 
+  --renotify         Skip download and extraction entirely. Starts a
+                     fresh tunnel against files already in ~/atem and
+                     sends a new notification email. Use this if the
+                     tunnel died after files were already downloaded.
+                     Accepts an optional date filter: --renotify 2025-0601
+
   --test-email       Send a test email using current SMTP settings.
                      Does not download, extract, or start a tunnel.
 
@@ -454,9 +460,59 @@ if [[ "${1:-}" == "--on-demand" ]]; then
     echo "🛠️ ON-DEMAND MODE ACTIVE: Bypassing time checks."
 fi
 
+RENOTIFY_MODE=false
+RENOTIFY_DATE=""
+if [[ "${1:-}" == "--renotify" ]]; then
+    RENOTIFY_MODE=true
+    RENOTIFY_DATE="${2:-}"
+    echo "🔁 RENOTIFY MODE ACTIVE: Skipping download, using existing files."
+fi
+
+# ===================================================
+# RENOTIFY MODE — skip straight to tunnel + email
+# ===================================================
+if [ "$RENOTIFY_MODE" = true ]; then
+    set -u
+    DEST_DIR="$HOME/atem"
+    AUDIO_FILES=()
+    DOWNLOADED_FILES=()
+
+    # Find files — filter by date prefix if supplied, otherwise use today
+    if [[ -n "$RENOTIFY_DATE" ]]; then
+        MATCH_PREFIX="$RENOTIFY_DATE"
+    else
+        MATCH_PREFIX=$(date +"%Y-%m%d")
+    fi
+
+    log "🔁 Renotify: looking for files matching ${MATCH_PREFIX}* in $DEST_DIR"
+
+    while IFS= read -r f; do
+        case "$f" in
+            *.mp4) DOWNLOADED_FILES+=("$f") ;;
+            *.m4a) AUDIO_FILES+=("$f") ;;
+        esac
+    done < <(find "$DEST_DIR" -maxdepth 1 -name "${MATCH_PREFIX}*" \( -name "*.mp4" -o -name "*.m4a" \) | sort)
+
+    if [ "${#DOWNLOADED_FILES[@]}" -eq 0 ] && [ "${#AUDIO_FILES[@]}" -eq 0 ]; then
+        echo "❌ No files found matching ${MATCH_PREFIX}* in $DEST_DIR"
+        exit 1
+    fi
+
+    log "📋 Found ${#DOWNLOADED_FILES[@]} video file(s) and ${#AUDIO_FILES[@]} audio file(s)."
+
+    # Jump straight to tunnel + email (skip download/extraction)
+    # shellcheck disable=SC2034
+    TUNNEL_URL=""
+    CF_LOG="/tmp/atem-cloudflared.log"
+    # (tunnel block is duplicated inline below via a shared function approach —
+    #  instead we just fall through by setting a flag and breaking to the tunnel section)
+    __SKIP_TO_TUNNEL=true
+fi
+
 # ===================================================
 # MAIN DOWNLOAD LOGIC
 # ===================================================
+if [ "${__SKIP_TO_TUNNEL:-false}" != true ]; then
 if [ "$ENABLE_DOWNLOAD" != "true" ] && [ "$ON_DEMAND_MODE" = false ]; then
     echo "🚫 Downloads Disabled in Config. Exiting."
     exit 0
@@ -573,7 +629,9 @@ if [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ]; then
             fi
         done
     fi
-fi
+fi # end ENABLE_AUDIO_EXTRACT
+
+fi # end skip-to-tunnel guard
 
 # ===================================================
 # CLOUDFLARE TUNNEL
@@ -763,11 +821,10 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v32 (Configurable Email Links)"
-echo "   - Added: EMAIL_LINK_AUDIO config key"
-echo "   - Added: EMAIL_LINK_VIDEO config key"
-echo "   - Multiple recordings each get their own link"
-echo "   - Folder link always included when tunnel is active"
+echo "✅ UPDATED TO v33 (Renotify Flag)"
+echo "   - Added: --renotify flag"
+echo "   - Skips download/extraction, uses existing files"
+echo "   - Accepts optional date: --renotify 2025-0601"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
