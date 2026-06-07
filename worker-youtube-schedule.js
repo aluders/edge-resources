@@ -251,8 +251,8 @@ export default {
       }
       
       console.log("\n" + "=".repeat(60) + "\n");
-      return;
-    }
+      // No return here - fall through to end-stream check
+    } else {
 
     // INSIDE WINDOW - ATTEMPT GO-LIVE
     logSubSection("🎬 EXECUTING GO-LIVE SEQUENCE");
@@ -314,6 +314,7 @@ export default {
         }
       })()
     );
+    } // end of else (inWindow go-live)
     
     // CHECK FOR AUTO-END STREAM WINDOW
     if (!ENABLE_AUTO_END) {
