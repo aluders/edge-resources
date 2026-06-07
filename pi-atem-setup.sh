@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v31 - Force Download Headers)
+# ATEM MONITOR AUTO-INSTALLER (v32 - Configurable Email Links)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -124,6 +124,12 @@ ENABLE_AUDIO_EXTRACT="false"
 # The tunnel serves the entire atem folder (video + audio browseable).
 # Any previous tunnel is killed and replaced on each run.
 ENABLE_TUNNEL="false"
+# Include a direct download link for each M4A audio file in the notification email.
+# Only active when ENABLE_TUNNEL and ENABLE_AUDIO_EXTRACT are both true.
+EMAIL_LINK_AUDIO="true"
+# Include a direct download link for each MP4 video file in the notification email.
+# Only active when ENABLE_TUNNEL is true.
+EMAIL_LINK_VIDEO="false"
 
 # --- EMAIL SETTINGS ---
 SMTP_SERVER="smtp.gmail.com"
@@ -351,6 +357,14 @@ CONFIG FILE:  ~/atem.config
       atem folder (video + audio are both browseable). Any tunnel
       from a previous run is killed and replaced automatically.
       Requires cloudflared to be installed.
+
+  EMAIL_LINK_AUDIO="true|false"
+      Include a direct download link for each M4A file in the email.
+      Only applies when ENABLE_TUNNEL and ENABLE_AUDIO_EXTRACT are true.
+
+  EMAIL_LINK_VIDEO="true|false"
+      Include a direct download link for each MP4 file in the email.
+      Only applies when ENABLE_TUNNEL is true.
 
   ENABLE_AUTO_RECORD="true|false"  Auto-start recording on Sunday
   RECORD_START_TIME="HH:MM"        Time to start recording (24h)
@@ -682,23 +696,38 @@ log "🎉 Complete."
 # Append tunnel links to email body if available
 EMAIL_BODY="$LOG_BUFFER"
 if [[ -n "$TUNNEL_URL" ]]; then
-    EMAIL_BODY+="
+    LINKS_SECTION=""
+
+    # Direct audio links (one per M4A)
+    if [ "${EMAIL_LINK_AUDIO:-true}" = "true" ] && [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ] && [ "${#AUDIO_FILES[@]}" -gt 0 ]; then
+        LINKS_SECTION+="🎵 Audio (M4A):\n"
+        for M4A_PATH in "${AUDIO_FILES[@]}"; do
+            FNAME=$(basename "$M4A_PATH")
+            LINKS_SECTION+="   ${TUNNEL_URL}/${FNAME}\n"
+        done
+        LINKS_SECTION+="\n"
+    fi
+
+    # Direct video links (one per MP4, all files downloaded this run)
+    if [ "${EMAIL_LINK_VIDEO:-false}" = "true" ] && [ "${#DOWNLOADED_FILES[@]}" -gt 0 ]; then
+        LINKS_SECTION+="🎬 Video (MP4):\n"
+        for MP4_PATH in "${DOWNLOADED_FILES[@]}"; do
+            FNAME=$(basename "$MP4_PATH")
+            LINKS_SECTION+="   ${TUNNEL_URL}/${FNAME}\n"
+        done
+        LINKS_SECTION+="\n"
+    fi
+
+    if [[ -n "$LINKS_SECTION" ]]; then
+        EMAIL_BODY+="
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📥 DOWNLOAD LINKS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"
-    # Direct link(s) for each audio file
-    if [ "${#AUDIO_FILES[@]}" -gt 0 ]; then
-        EMAIL_BODY+="🎵 Audio (M4A):\n"
-        for M4A_PATH in "${AUDIO_FILES[@]}"; do
-            FNAME=$(basename "$M4A_PATH")
-            EMAIL_BODY+="   ${TUNNEL_URL}/${FNAME}\n"
-        done
-        EMAIL_BODY+="\n"
+${LINKS_SECTION}"
     fi
+
     EMAIL_BODY+="📁 Full folder (video + audio):\n"
-    EMAIL_BODY+="   ${TUNNEL_URL}/\n"
-    EMAIL_BODY+="\n"
+    EMAIL_BODY+="   ${TUNNEL_URL}/\n\n"
     EMAIL_BODY+="⚠️  Links are active until the Pi reboots or next Sunday's run.\n"
 fi
 
@@ -734,10 +763,11 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v31 (Force Download Headers)"
-echo "   - .mp4 and .m4a links now download instead of"
-echo "     opening in the browser"
-echo "   - Directory listing still works normally"
+echo "✅ UPDATED TO v32 (Configurable Email Links)"
+echo "   - Added: EMAIL_LINK_AUDIO config key"
+echo "   - Added: EMAIL_LINK_VIDEO config key"
+echo "   - Multiple recordings each get their own link"
+echo "   - Folder link always included when tunnel is active"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
