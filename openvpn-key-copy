@@ -1,3 +1,5 @@
+ssh ubnt@router-ip "cat /config/auth/secret9" | pbcopy
+
 1. Initiate the Command with sudo
 Run this command and press Enter (it may ask for your password):
 
