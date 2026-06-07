@@ -73,8 +73,8 @@ const END_STREAM_END_MIN_PT = 5;      // Minute to stop attempting to end (PT)
 // PRIVACY: "public", "unlisted", or "private"
 const PRIVACY_STATUS = "unlisted";
 
-// BROADCAST NAMING: The prefix before the date (e.g., "Abide Live - 3/1/2026")
-const BROADCAST_TITLE_PREFIX = "Abide Live";
+// BROADCAST NAMING: Every character before the date (e.g., "CPC Live - " → "CPC Live - 6/7/2026")
+const BROADCAST_TITLE_PREFIX = "Abide Live - ";
 
 // BROADCAST DESCRIPTION: Shown on the YouTube video
 const BROADCAST_DESCRIPTION = "Abide Calvary Sunday Service\nJoin us this Sunday!";
@@ -558,7 +558,7 @@ async function scheduleNextSunday(env) {
     const m = nextSunday.getUTCMonth() + 1;
     const d = nextSunday.getUTCDate();
     const y = nextSunday.getUTCFullYear();
-    const title = `${BROADCAST_TITLE_PREFIX} - ${m}/${d}/${y}`;
+    const title = `${BROADCAST_TITLE_PREFIX}${m}/${d}/${y}`;
     
     logKeyValue("Next Sunday (UTC)", nextSunday.toISOString().split('T')[0]);
     logKeyValue("Title", title);
