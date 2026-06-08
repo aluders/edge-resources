@@ -45,7 +45,8 @@
     - Browser-like headers on transition API calls
     - ?golive dev endpoint finds any upcoming broadcast (not just today's)
     - DST scheduling derived from SCHEDULE_HOUR_PT (works for any service time)
-    - Feature toggles for scheduling, go-live, auto-end, and logging verbosity
+    - Feature toggles for scheduling, go-live, auto-end, notification, and logging verbosity
+    - Go-live notification via Gmail API (supports SMS gateways)
 ********************************************************************/
 
 /********************************************************************
@@ -83,12 +84,20 @@ const THUMBNAIL_URL = "https://abide.pages.dev/thumbnail-hd-white.png";
 const CATEGORY_ID = "29";
 const YT_STREAM_ID = "Bl48WQE_6YH4u4rbpVtlqA1778617073153287"; // YouTube stream ID for binding
 
+// GO-LIVE NOTIFICATION: Email or SMS gateway address to notify when stream goes live
+// For SMS: number@txt.att.net, number@vtext.com, number@tmomail.net, etc.
+// Keep subject and body very short for SMS gateways (plain text only, no emoji)
+const NOTIFICATION_TO = "number@txt.att.net";
+const NOTIFICATION_SUBJECT = "Live";
+const NOTIFICATION_BODY = "Sunday service is now live.";
+
 /********************************************************************
   FEATURE TOGGLES
 ********************************************************************/
 const ENABLE_SCHEDULING = true;  // Set to false to disable Thursday scheduling
 const ENABLE_GO_LIVE = true;     // Set to false to disable Sunday go-live
-const ENABLE_AUTO_END = true;   // Set to true to automatically end stream at specified time
+const ENABLE_AUTO_END = true;    // Set to true to automatically end stream at specified time
+const ENABLE_GO_LIVE_NOTIFICATION = false;  // Set to true to send email/SMS when stream goes live
 const VERBOSE_LOGGING = true;    // Set to false for condensed logging
 
 const DEVELOPER_MODE = true;    // Set to true to enable ?test, ?keys, etc.
@@ -1029,6 +1038,16 @@ async function goLiveToday(env, todayOnly = true) {
     } else {
       logSimple(`  ✅ Success! State: ${newState}`);
     }
+
+    // Send go-live notification if enabled
+    if (ENABLE_GO_LIVE_NOTIFICATION) {
+      const notifyResult = await sendNotificationEmail(token);
+      if (VERBOSE_LOGGING) {
+        logKeyValue("Notification", notifyResult);
+      } else {
+        logSimple(`  📧 Notification: ${notifyResult}`);
+      }
+    }
     
     return newState === "live" ? "ALREADY_LIVE" : "SUCCESS";
     
@@ -1201,6 +1220,55 @@ async function endStreamToday(env) {
     console.error("❌ endStreamToday error:", err);
     console.error("Stack:", err.stack);
     return "ERROR";
+  }
+}
+
+/********************************************************************
+  SEND GO-LIVE NOTIFICATION EMAIL
+  Requires gmail.send scope on the OAuth token.
+  Works with SMS gateways (number@txt.att.net, etc.) - keep
+  NOTIFICATION_SUBJECT and NOTIFICATION_BODY short and plain text only.
+********************************************************************/
+async function sendNotificationEmail(token) {
+  try {
+    const message = [
+      `To: ${NOTIFICATION_TO}`,
+      `Subject: ${NOTIFICATION_SUBJECT}`,
+      `Content-Type: text/plain; charset=UTF-8`,
+      ``,
+      NOTIFICATION_BODY
+    ].join('\r\n');
+
+    // Base64url encode (URL-safe, no padding) as required by Gmail API
+    const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(message)))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    const res = await fetch(
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ raw: encoded })
+      }
+    );
+
+    const data = await safeJson(res);
+
+    if (VERBOSE_LOGGING) {
+      console.log("  Notification Response:", JSON.stringify(data, null, 2));
+    }
+
+    return res.ok
+      ? `✅ Sent to ${NOTIFICATION_TO}`
+      : `❌ Failed (${res.status}): ${data.error?.message || 'Unknown'}`;
+
+  } catch (err) {
+    return `❌ Error: ${err.toString()}`;
   }
 }
 
