@@ -8,7 +8,7 @@ brew install speedtest --force
 
 # debian
 curl -s https://install.speedtest.net/app/cli/install.deb.sh | sudo bash
-sudo apt-get install speedtest
+sudo apt install speedtest
 
 # raspberry pi
 curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash
