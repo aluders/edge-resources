@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v33 - Renotify Flag)
+# ATEM MONITOR AUTO-INSTALLER (v34 - Cloudflared Binary Integrity Check)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -643,30 +643,50 @@ if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
     if ! command -v cloudflared >/dev/null 2>&1; then
         log "⚠️ cloudflared not found — skipping tunnel."
     else
-        # --- AUTO-UPDATE CHECK ---
-        log "🔍 Checking cloudflared for updates..."
-        CF_INSTALLED=$(cloudflared --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
-        CF_LATEST=$(curl -fsSL "https://api.github.com/repos/cloudflare/cloudflared/releases/latest" \
-                    | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+        # --- CLOUDFLARED BINARY HELPER ---
+        CF_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "arm64")
+        case "$CF_ARCH" in
+            arm64) CF_BIN_ARCH="arm64" ;;
+            armhf) CF_BIN_ARCH="arm"   ;;
+            amd64) CF_BIN_ARCH="amd64" ;;
+            *)     CF_BIN_ARCH="arm64" ;;
+        esac
+        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_BIN_ARCH}"
 
-        if [[ -z "$CF_LATEST" ]]; then
-            log "⚠️ Could not fetch latest cloudflared version — skipping update check."
-        elif [[ "$CF_INSTALLED" == "$CF_LATEST" ]]; then
-            log "✅ cloudflared is up to date (v${CF_INSTALLED})."
-        else
-            log "⬆️  Updating cloudflared v${CF_INSTALLED} -> v${CF_LATEST}..."
-            CF_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "arm64")
-            case "$CF_ARCH" in
-                arm64) CF_BIN_ARCH="arm64" ;;
-                armhf) CF_BIN_ARCH="arm"   ;;
-                amd64) CF_BIN_ARCH="amd64" ;;
-                *)     CF_BIN_ARCH="arm64" ;;
-            esac
-            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_BIN_ARCH}"
+        cf_download() {
+            log "⬇️  Downloading cloudflared binary..."
             if sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared; then
-                log "✅ cloudflared updated to v${CF_LATEST}."
+                if cloudflared --version >/dev/null 2>&1; then
+                    log "✅ cloudflared binary verified: $(cloudflared --version 2>&1 | head -1)"
+                    return 0
+                else
+                    log "❌ cloudflared binary downloaded but failed verification."
+                    return 1
+                fi
             else
-                log "⚠️ cloudflared update failed — continuing with existing version."
+                log "❌ cloudflared download failed."
+                return 1
+            fi
+        }
+
+        # --- INTEGRITY CHECK ON EXISTING BINARY ---
+        log "🔍 Checking cloudflared binary integrity..."
+        if ! cloudflared --version >/dev/null 2>&1; then
+            log "⚠️  Existing cloudflared binary is broken — replacing..."
+            cf_download || { log "⚠️ Could not replace binary — skipping tunnel."; }
+        else
+            # Binary is healthy — check if an update is available
+            CF_INSTALLED=$(cloudflared --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+            CF_LATEST=$(curl -fsSL "https://api.github.com/repos/cloudflare/cloudflared/releases/latest" \
+                        | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+
+            if [[ -z "$CF_LATEST" ]]; then
+                log "⚠️ Could not fetch latest cloudflared version — skipping update check."
+            elif [[ "$CF_INSTALLED" == "$CF_LATEST" ]]; then
+                log "✅ cloudflared is up to date (v${CF_INSTALLED})."
+            else
+                log "⬆️  Updating cloudflared v${CF_INSTALLED} -> v${CF_LATEST}..."
+                cf_download || log "⚠️ Update failed — continuing with existing version."
             fi
         fi
 
@@ -821,10 +841,10 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v33 (Renotify Flag)"
-echo "   - Added: --renotify flag"
-echo "   - Skips download/extraction, uses existing files"
-echo "   - Accepts optional date: --renotify 2025-0601"
+echo "✅ UPDATED TO v34 (Cloudflared Binary Integrity)"
+echo "   - Checks binary health before version comparison"
+echo "   - Broken binary replaced immediately regardless"
+echo "   - Download verified with --version after install"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
