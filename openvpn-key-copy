@@ -1,6 +1,10 @@
 copy local key to clipboard...
 
+# from mac
 ssh ubnt@router-ip "sudo cat /config/auth/secret9" | pbcopy
+
+# from linux (requires xlip)
+ssh ubnt@router-ip "sudo cat /config/auth/secret9" | xclip -selection clipboard
 
 from uisp remote router terminal...
 
