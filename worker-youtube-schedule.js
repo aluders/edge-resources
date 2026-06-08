@@ -100,7 +100,7 @@ const ENABLE_AUTO_END = true;    // Set to true to automatically end stream at s
 const ENABLE_GO_LIVE_NOTIFICATION = false;  // Set to true to send email/SMS when stream goes live
 const VERBOSE_LOGGING = true;    // Set to false for condensed logging
 
-const DEVELOPER_MODE = true;    // Set to true to enable ?test, ?keys, etc.
+const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, etc.
 
 function devModeOn() {
   return DEVELOPER_MODE === true;
