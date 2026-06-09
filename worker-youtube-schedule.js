@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Scheduler + Go-Live + Auto-End Worker
+  YouTube Scheduler + Go-Live + Auto-End Worker  v1.0
   --------------------------------------------------
   Cron Schedule:
     - 0 6 * * thu    Thursday: auto-schedule next Sunday's broadcast
@@ -21,6 +21,19 @@
       checks and adjusts +1 hour if PST is detected
     - PDT (summer): UTC-7  |  PST (winter): UTC-8
 
+  Required OAuth Scopes (all three needed for full functionality):
+    - https://www.googleapis.com/auth/youtube
+    - https://www.googleapis.com/auth/youtube.force-ssl
+    - https://www.googleapis.com/auth/gmail.send
+
+  Cloudflare Environment Variables:
+    Secrets (encrypted):
+      - YT_CLIENT_ID
+      - YT_CLIENT_SECRET
+      - YT_REFRESH_TOKEN
+    Plain text (not encrypted, easy to update):
+      - NOTIFICATION_TO  comma-separated email/SMS addresses
+
   Logging Modes:
     - VERBOSE_LOGGING = true: Full detailed logs (every API call, state change)
     - VERBOSE_LOGGING = false: Condensed logs (just key events and results)
@@ -32,21 +45,14 @@
     - ?golive     Manually trigger go-live (finds any upcoming broadcast)
     - ?endstream  Manually trigger end-stream (today's live broadcast only)
 
-  Recent Updates:
-    - NO API KEY REQUIRED - Uses OAuth for all operations (works with unlisted videos)
-    - Configurable broadcast title prefix (BROADCAST_TITLE_PREFIX)
-    - Configurable broadcast description (BROADCAST_DESCRIPTION)
-    - Auto-end stream feature with configurable time window
-    - Flexible go-live window (supports cross-hour boundaries e.g. 8:57-9:05)
-    - Configurable privacy status (public/unlisted/private)
-    - enableEmbed automatically disabled for unlisted/private broadcasts
-    - Two-step transition: testing → live (simulates YouTube Studio preview)
-    - Skips step 1 if broadcast already in testing state (avoids redundantTransition)
-    - Browser-like headers on transition API calls
-    - ?golive dev endpoint finds any upcoming broadcast (not just today's)
-    - DST scheduling derived from SCHEDULE_HOUR_PT (works for any service time)
-    - Feature toggles for scheduling, go-live, auto-end, notification, and logging verbosity
-    - Go-live notification via Gmail API (supports SMS gateways)
+  Changelog:
+    v1.0 - Initial versioned release
+         - Full scheduling, go-live, auto-end, and notification pipeline
+         - OAuth-only (no API key required)
+         - DST-aware scheduling and go-live windows
+         - Two-step transition (testing → live)
+         - SMS gateway notification support via Gmail API
+         - NOTIFICATION_TO moved to Cloudflare plain text env variable
 ********************************************************************/
 
 /********************************************************************
@@ -84,10 +90,8 @@ const THUMBNAIL_URL = "https://abide.pages.dev/thumbnail-hd-white.png";
 const CATEGORY_ID = "29";
 const YT_STREAM_ID = "Bl48WQE_6YH4u4rbpVtlqA1778617073153287"; // YouTube stream ID for binding
 
-// GO-LIVE NOTIFICATION: Email or SMS gateway address to notify when stream goes live
-// For SMS: number@txt.att.net, number@vtext.com, number@tmomail.net, etc.
-// Keep subject and body very short for SMS gateways (plain text only, no emoji)
-const NOTIFICATION_TO = "number@txt.att.net";
+// GO-LIVE NOTIFICATION: Keep subject and body short for SMS gateways (plain text only, no emoji)
+// NOTIFICATION_TO is set as a plain text Cloudflare environment variable (not in code)
 const NOTIFICATION_SUBJECT = "Live";
 const NOTIFICATION_BODY = "Sunday service is now live.";
 
@@ -100,7 +104,7 @@ const ENABLE_AUTO_END = true;    // Set to true to automatically end stream at s
 const ENABLE_GO_LIVE_NOTIFICATION = false;  // Set to true to send email/SMS when stream goes live
 const VERBOSE_LOGGING = true;    // Set to false for condensed logging
 
-const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, etc.
+const DEVELOPER_MODE = true;    // Set to true to enable ?test, ?keys, etc.
 
 function devModeOn() {
   return DEVELOPER_MODE === true;
@@ -1041,7 +1045,7 @@ async function goLiveToday(env, todayOnly = true) {
 
     // Send go-live notification if enabled
     if (ENABLE_GO_LIVE_NOTIFICATION) {
-      const notifyResult = await sendNotificationEmail(token);
+      const notifyResult = await sendNotificationEmail(token, env);
       if (VERBOSE_LOGGING) {
         logKeyValue("Notification", notifyResult);
       } else {
@@ -1226,13 +1230,20 @@ async function endStreamToday(env) {
 /********************************************************************
   SEND GO-LIVE NOTIFICATION EMAIL
   Requires gmail.send scope on the OAuth token.
+  NOTIFICATION_TO is read from Cloudflare plain text env variable.
+  Supports multiple recipients as comma-separated addresses.
   Works with SMS gateways (number@txt.att.net, etc.) - keep
   NOTIFICATION_SUBJECT and NOTIFICATION_BODY short and plain text only.
 ********************************************************************/
-async function sendNotificationEmail(token) {
+async function sendNotificationEmail(token, env) {
   try {
+    const to = env.NOTIFICATION_TO;
+    if (!to) {
+      return "⚠️ Skipped - NOTIFICATION_TO env variable not set";
+    }
+
     const message = [
-      `To: ${NOTIFICATION_TO}`,
+      `To: ${to}`,
       `Subject: ${NOTIFICATION_SUBJECT}`,
       `Content-Type: text/plain; charset=UTF-8`,
       ``,
@@ -1264,7 +1275,7 @@ async function sendNotificationEmail(token) {
     }
 
     return res.ok
-      ? `✅ Sent to ${NOTIFICATION_TO}`
+      ? `✅ Sent to ${to}`
       : `❌ Failed (${res.status}): ${data.error?.message || 'Unknown'}`;
 
   } catch (err) {
