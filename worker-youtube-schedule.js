@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Scheduler + Go-Live + Auto-End Worker  v1.0
+  YouTube Scheduler + Go-Live + Auto-End Worker  v2.0
   --------------------------------------------------
   Cron Schedule:
     - 0 6 * * thu    Thursday: auto-schedule next Sunday's broadcast
@@ -44,6 +44,7 @@
     - ?schedule   Manually trigger next Sunday's broadcast creation
     - ?golive     Manually trigger go-live (finds any upcoming broadcast)
     - ?endstream  Manually trigger end-stream (today's live broadcast only)
+    - ?notify     Manually trigger go-live notification email/SMS
 
   Changelog:
     v1.0 - Initial versioned release
@@ -53,6 +54,7 @@
          - Two-step transition (testing → live)
          - SMS gateway notification support via Gmail API
          - NOTIFICATION_TO moved to Cloudflare plain text env variable
+    v2.0 - Added ?notify developer endpoint for testing notifications
 ********************************************************************/
 
 /********************************************************************
@@ -398,7 +400,8 @@ export default {
       url.searchParams.has("test") ||
       url.searchParams.has("schedule") ||
       url.searchParams.has("golive") ||
-      url.searchParams.has("endstream");
+      url.searchParams.has("endstream") ||
+      url.searchParams.has("notify");
 
     if (hasAnyFlags && !devModeOn()) {
       return new Response("Not Found", { status: 404 });
@@ -442,9 +445,7 @@ export default {
       let report = `OAUTH STATUS\n`;
       report += `  Token Retrieved: ${token ? "✅ Yes" : "❌ No"}\n`;
       
-      // Test token scopes and permissions
       if (token) {
-        // Test 1: Get token info (check scopes)
         try {
           const tokenInfoRes = await fetch(
             `https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=${token}`
@@ -454,7 +455,9 @@ export default {
           if (tokenInfoRes.ok && tokenInfo.scope) {
             const scopes = tokenInfo.scope.split(' ');
             const hasYouTube = scopes.some(s => s.includes('youtube') && !s.includes('readonly'));
-            report += `  Scopes Valid: ${hasYouTube ? "✅ Yes" : "❌ No (missing write permission)"}\n`;
+            const hasGmail = scopes.some(s => s.includes('gmail'));
+            report += `  YouTube Scopes: ${hasYouTube ? "✅ Yes" : "❌ No (missing write permission)"}\n`;
+            report += `  Gmail Scope: ${hasGmail ? "✅ Yes" : "❌ No (needed for notifications)"}\n`;
             report += `  Token Expires: ${tokenInfo.expires_in} seconds\n`;
           } else {
             report += `  Scopes Valid: ⚠️ Unable to verify\n`;
@@ -463,7 +466,6 @@ export default {
           report += `  Scopes Valid: ⚠️ Check failed\n`;
         }
         
-        // Test 2: Can we list broadcasts?
         try {
           const listRes = await fetch(
             "https://youtube.googleapis.com/youtube/v3/liveBroadcasts?part=id&mine=true&maxResults=1",
@@ -474,7 +476,6 @@ export default {
           report += `  Can List Broadcasts: ❌ Error\n`;
         }
         
-        // Test 3: Check channel access
         try {
           const channelRes = await fetch(
             "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
@@ -491,6 +492,12 @@ export default {
         }
       }
       
+      report += `\nNOTIFICATION CONFIGURATION\n`;
+      report += `  NOTIFICATION_TO: ${env.NOTIFICATION_TO || "⚠️ Not set"}\n`;
+      report += `  NOTIFICATION_SUBJECT: ${NOTIFICATION_SUBJECT}\n`;
+      report += `  NOTIFICATION_BODY: ${NOTIFICATION_BODY}\n`;
+      report += `  ENABLE_GO_LIVE_NOTIFICATION: ${ENABLE_GO_LIVE_NOTIFICATION}\n`;
+
       report += `\nTIME INFORMATION\n`;
       report += `  Server UTC: ${now.toISOString()}\n`;
       report += `  Pacific: ${pt.year}-${pt.month}-${pt.day} ${pt.hour}:${pt.minute}\n`;
@@ -506,13 +513,13 @@ export default {
       
       report += `\nDEVELOPER MODE: ${DEVELOPER_MODE}\n`;
       
-      // Add diagnosis
       if (token) {
         report += `\n${"=".repeat(60)}\n`;
         report += `DIAGNOSIS:\n`;
         report += `If all checks above show ✅, your OAuth is configured correctly.\n`;
-        report += `If you see ❌ on "Scopes Valid" or "Can List Broadcasts",\n`;
+        report += `If you see ❌ on "YouTube Scopes" or "Can List Broadcasts",\n`;
         report += `you need to regenerate your refresh token with full permissions.\n`;
+        report += `If you see ❌ on "Gmail Scope", add gmail.send and regenerate.\n`;
       }
       
       return new Response(report, { 
@@ -527,7 +534,6 @@ export default {
     }
 
     if (url.searchParams.has("golive")) {
-      // Dev mode: skip date filter - finds any upcoming broadcast for testing
       await goLiveToday(env, false);
       return new Response("GoLive attempted (check logs).", { status: 200 });
     }
@@ -535,6 +541,13 @@ export default {
     if (url.searchParams.has("endstream")) {
       await endStreamToday(env);
       return new Response("EndStream attempted (check logs).", { status: 200 });
+    }
+
+    if (url.searchParams.has("notify")) {
+      const token = await getAccessToken(env);
+      if (!token) return new Response("OAuth Failed", { status: 500 });
+      const result = await sendNotificationEmail(token, env);
+      return new Response(`Notification attempted: ${result}`, { status: 200 });
     }
 
     return new Response("OK", { status: 200 });
@@ -548,7 +561,6 @@ async function scheduleNextSunday(env) {
   try {
     logSubSection("Starting Schedule Process");
     
-    // Get OAuth token first
     const token = await getAccessToken(env);
     if (!token) {
       console.error("❌ OAuth token failed");
@@ -556,7 +568,6 @@ async function scheduleNextSunday(env) {
     }
     logKeyValue("OAuth Token", "✅ Obtained");
 
-    // Calculate next Sunday
     const now = new Date();
     const today = now.getUTCDay();
     const daysUntilSunday = (7 - today) % 7 || 7;
@@ -568,7 +579,6 @@ async function scheduleNextSunday(env) {
     const nextSunday = new Date(now);
     nextSunday.setUTCDate(now.getUTCDate() + daysUntilSunday);
 
-    // Generate title
     const m = nextSunday.getUTCMonth() + 1;
     const d = nextSunday.getUTCDate();
     const y = nextSunday.getUTCFullYear();
@@ -577,7 +587,6 @@ async function scheduleNextSunday(env) {
     logKeyValue("Next Sunday (UTC)", nextSunday.toISOString().split('T')[0]);
     logKeyValue("Title", title);
 
-    // Set start time with DST auto-correction
     logSubSection("DST Auto-Correction");
     
     // Start with PDT offset (UTC-7): target PT hour + 7 = starting UTC hour
@@ -590,7 +599,6 @@ async function scheduleNextSunday(env) {
     logKeyValue("Target PT", `${SCHEDULE_HOUR_PT}:${pad2(SCHEDULE_MINUTE_PT)}`);
     
     if (parseInt(checkPT.hour, 10) === SCHEDULE_HOUR_PT - 1) {
-      // One hour short = PST (UTC-8), add 1 hour to compensate
       console.log("  ⚠️  Hour is one less than target (PST detected)");
       nextSunday.setUTCHours(SCHEDULE_HOUR_PT + 8, SCHEDULE_MINUTE_PT, 0, 0);
       const newCheckPT = getPacificTimeParts(nextSunday);
@@ -603,7 +611,6 @@ async function scheduleNextSunday(env) {
 
     const scheduledStart = nextSunday.toISOString();
 
-    // Check for duplicates using liveBroadcasts API (works with unlisted videos)
     logSubSection("Duplicate Check");
     logKeyValue("Checking for existing", title);
     
@@ -630,7 +637,6 @@ async function scheduleNextSunday(env) {
     
     logKeyValue("Duplicate Check", "✅ No duplicates found");
 
-    // Create broadcast
     logSubSection("Creating Broadcast");
 
     const createPayload = {
@@ -647,7 +653,7 @@ async function scheduleNextSunday(env) {
       },
       contentDetails: {
         enableArchive: true,
-        enableEmbed: PRIVACY_STATUS === "public",  // Embedding only allowed for public broadcasts
+        enableEmbed: PRIVACY_STATUS === "public",
         enableDvr: true
       }
     };
@@ -680,7 +686,6 @@ async function scheduleNextSunday(env) {
     logKeyValue("Broadcast ID", broadcastId);
     logKeyValue("Initial State", create.status?.lifeCycleStatus || "unknown");
 
-    // Bind stream
     logSubSection("Binding Stream");
     logKeyValue("Stream ID", YT_STREAM_ID);
     
@@ -696,7 +701,6 @@ async function scheduleNextSunday(env) {
     logKeyValue("Bind Status", bindRes.status);
     console.log("  Bind Response:", JSON.stringify(bind, null, 2));
 
-    // Upload thumbnail & update category
     logSubSection("Post-Processing");
     
     const thumbResult = await uploadThumbnail(token, broadcastId);
@@ -736,7 +740,6 @@ async function goLiveToday(env, todayOnly = true) {
     }
     logKeyValue("OAuth Token", "✅ Obtained");
 
-    // Get today's date in PT
     const nowPT = getPacificTimeParts(new Date());
     const todayPT = `${nowPT.month}/${nowPT.day}/${nowPT.year}`;
     
@@ -783,11 +786,9 @@ async function goLiveToday(env, todayOnly = true) {
 
     logKeyValue("Total Broadcasts Found", data.items.length);
 
-    // Filter broadcasts based on mode
     let candidateBroadcasts;
 
     if (todayOnly) {
-      // Production: only today's date
       candidateBroadcasts = data.items.filter((item) => {
         const scheduledStr = item.snippet?.scheduledStartTime;
         if (!scheduledStr) return false;
@@ -800,7 +801,6 @@ async function goLiveToday(env, todayOnly = true) {
       });
       logKeyValue("Today's Broadcasts", candidateBroadcasts.length);
     } else {
-      // Dev mode: any non-completed broadcast, sorted soonest first
       const excludedStates = ["complete", "revoked"];
       candidateBroadcasts = data.items
         .filter(item => !excludedStates.includes(item.status?.lifeCycleStatus))
@@ -812,7 +812,6 @@ async function goLiveToday(env, todayOnly = true) {
       logKeyValue("Upcoming Broadcasts", candidateBroadcasts.length);
     }
     
-    // Log details of candidates
     if (candidateBroadcasts.length > 0) {
       logSubSection(todayOnly ? "Today's Broadcast Details" : "Upcoming Broadcast Details");
       candidateBroadcasts.forEach((item, idx) => {
@@ -840,7 +839,6 @@ async function goLiveToday(env, todayOnly = true) {
       return "NOT_FOUND";
     }
 
-    // Check if any are already live
     logSubSection("Checking Current State");
     
     const alreadyLive = candidateBroadcasts.find(b => b.status?.lifeCycleStatus === "live");
@@ -850,7 +848,6 @@ async function goLiveToday(env, todayOnly = true) {
       return "ALREADY_LIVE";
     }
 
-    // Find best candidate by state
     const stateOrder = ["ready", "testing", "testStarting", "upcoming"];
     
     let broadcast = null;
@@ -877,19 +874,16 @@ async function goLiveToday(env, todayOnly = true) {
     logKeyValue("Selection Reason", selectedReason);
 
     // Two-step transition: testing → live
-    // This simulates what YouTube Studio does when you preview the stream
     logSubSection("Transitioning to Live (Two-Step Process)");
     
     const alreadyTesting = broadcast.status?.lifeCycleStatus === "testing";
     
     if (alreadyTesting) {
-      // Already in testing state - skip step 1 to avoid redundantTransition error
       logKeyValue("Step 1", "Skipped - already in testing state");
       if (!VERBOSE_LOGGING) {
         logSimple(`  Step 1: Skipped (already in testing)`);
       }
     } else {
-      // STEP 1: Transition to testing
       if (!VERBOSE_LOGGING) {
         logSimple(`  Step 1: Transitioning to testing...`);
       }
@@ -950,7 +944,6 @@ async function goLiveToday(env, todayOnly = true) {
       }
     }
     
-    // Wait for YouTube to stabilize (skip if already in testing - already stable)
     if (!alreadyTesting) {
       logKeyValue("Waiting", "10 seconds for YouTube to stabilize...");
       if (!VERBOSE_LOGGING) {
@@ -959,7 +952,6 @@ async function goLiveToday(env, todayOnly = true) {
       await new Promise(resolve => setTimeout(resolve, 10000));
     }
     
-    // STEP 2: Transition to live
     if (!VERBOSE_LOGGING) {
       logSimple(`  Step 2: Transitioning to live...`);
     }
@@ -1019,7 +1011,6 @@ async function goLiveToday(env, todayOnly = true) {
           console.log("  Full Error:", JSON.stringify(liveData.error, null, 2));
         }
         
-        // Special handling for 403
         if (liveRes.status === 403) {
           console.log("\n⚠️  403 FORBIDDEN - Possible causes:");
           console.log("  1. Broadcast not in transitionable state");
@@ -1076,7 +1067,6 @@ async function endStreamToday(env) {
     }
     logKeyValue("OAuth Token", "✅ Obtained");
 
-    // Get today's date in PT
     const nowPT = getPacificTimeParts(new Date());
     const todayPT = `${nowPT.month}/${nowPT.day}/${nowPT.year}`;
     
@@ -1119,18 +1109,16 @@ async function endStreamToday(env) {
 
     logKeyValue("Total Broadcasts Found", data.items.length);
     
-    // Filter for today's broadcasts
     const todaysBroadcasts = data.items.filter((item) => {
       const scheduledStr = item.snippet?.scheduledStartTime;
       if (!scheduledStr) return false;
 
       const scheduledPT = getPacificTimeParts(new Date(scheduledStr));
-      const isToday = 
+      return (
         scheduledPT.day === nowPT.day &&
         scheduledPT.month === nowPT.month &&
-        scheduledPT.year === nowPT.year;
-
-      return isToday;
+        scheduledPT.year === nowPT.year
+      );
     });
 
     logKeyValue("Today's Broadcasts", todaysBroadcasts.length);
@@ -1140,7 +1128,6 @@ async function endStreamToday(env) {
       return "NOT_FOUND";
     }
 
-    // Find broadcasts that are currently live
     const liveBroadcasts = todaysBroadcasts.filter(b => 
       b.status?.lifeCycleStatus === "live" || 
       b.status?.lifeCycleStatus === "liveStarting"
@@ -1153,7 +1140,6 @@ async function endStreamToday(env) {
       return "NOT_LIVE";
     }
 
-    // End all live broadcasts (usually just one)
     const broadcast = liveBroadcasts[0];
     
     logSubSection("Ending Live Broadcast");
@@ -1161,7 +1147,6 @@ async function endStreamToday(env) {
     logKeyValue("ID", broadcast.id);
     logKeyValue("Current State", broadcast.status?.lifeCycleStatus);
     
-    // Transition to complete
     const transitionUrl = 
       "https://youtube.googleapis.com/youtube/v3/liveBroadcasts/transition" +
       `?part=id,snippet,status` +
@@ -1313,7 +1298,7 @@ function getPacificTimeParts(date) {
 }
 
 /********************************************************************
-  HELPER: AUTH & VIDEO FINDING
+  HELPER: AUTH
 ********************************************************************/
 async function getAccessToken(env) {
   const r = await fetch("https://oauth2.googleapis.com/token", {
@@ -1368,7 +1353,6 @@ async function uploadThumbnail(accessToken, videoId) {
 
     const imgBuf = await img.arrayBuffer();
     
-    // Use native FormData instead of manually constructing multipart body
     const formData = new FormData();
     formData.append('videoFile', new Blob([imgBuf], { type: 'image/png' }), 'thumb.png');
 
@@ -1378,7 +1362,6 @@ async function uploadThumbnail(accessToken, videoId) {
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`
-          // Don't set Content-Type - FormData sets it automatically with correct boundary
         },
         body: formData
       }
