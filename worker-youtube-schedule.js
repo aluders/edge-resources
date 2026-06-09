@@ -92,7 +92,7 @@ const YT_STREAM_ID = "Bl48WQE_6YH4u4rbpVtlqA1778617073153287"; // YouTube stream
 
 // GO-LIVE NOTIFICATION: Keep subject and body short for SMS gateways (plain text only, no emoji)
 // NOTIFICATION_TO is set as a plain text Cloudflare environment variable (not in code)
-const NOTIFICATION_SUBJECT = "Live";
+const NOTIFICATION_SUBJECT = "Abide Live";
 const NOTIFICATION_BODY = "Sunday service is now live.";
 
 /********************************************************************
@@ -104,7 +104,7 @@ const ENABLE_AUTO_END = true;    // Set to true to automatically end stream at s
 const ENABLE_GO_LIVE_NOTIFICATION = false;  // Set to true to send email/SMS when stream goes live
 const VERBOSE_LOGGING = true;    // Set to false for condensed logging
 
-const DEVELOPER_MODE = true;    // Set to true to enable ?test, ?keys, etc.
+const DEVELOPER_MODE = false;    // Set to true to enable ?test, ?keys, etc.
 
 function devModeOn() {
   return DEVELOPER_MODE === true;
