@@ -16,12 +16,18 @@
     OA_CLIENT_SECRET
     OA_REFRESH_TOKEN
   --------------------------------------------------
-  Dev Mode behavior:
-    - DEVELOPER_MODE = "OFF": ignores ?refresh
-    - DEVELOPER_MODE = "ON" : allows ?refresh to bypass cache
-  Notes:
-    - ?embed works on both routes
-    - Each route has its own cache key
+  URL Flags:
+    ?embed    → Returns YouTube embed URL instead of watch URL.
+                Works on both routes in all modes.
+    ?refresh  → Bypasses cache and fetches fresh data.
+                Only active when DEVELOPER_MODE = true.
+    ?test     → Returns diagnostic JSON: OAuth status, route,
+                fetched titles, selected video and reason.
+                Only active when DEVELOPER_MODE = true.
+  --------------------------------------------------
+  Dev Mode:
+    DEVELOPER_MODE = true  : enables ?refresh and ?test
+    DEVELOPER_MODE = false : ignores ?refresh and ?test
 ********************************************************************/
 
 // ============================================================
@@ -40,10 +46,7 @@ const CACHE_KEY_LAST = `https://cache.local/yt-redirect-last/${UPLOADS_PLAYLIST_
 // ============================================================
 //  DEVELOPER MODE
 // ============================================================
-const DEVELOPER_MODE = "OFF";  // "ON" or "OFF"
-function devModeOn() {
-  return String(DEVELOPER_MODE).trim().toUpperCase() === "ON";
-}
+const DEVELOPER_MODE = false;  // true = enables ?refresh and ?test
 
 // ============================================================
 //  OAUTH
@@ -120,8 +123,12 @@ async function handleLive(authHeader) {
   const videoIds = items.map(i => i.snippet.resourceId.videoId);
   const videos   = await fetchVideoDetails(videoIds, authHeader);
 
+  let target;
+  let reason;
+
   // 1. Live
-  let target = videos.find(v => v.snippet.liveBroadcastContent === "live");
+  target = videos.find(v => v.snippet.liveBroadcastContent === "live");
+  if (target) { reason = "live"; }
 
   // 2. Upcoming
   if (!target) {
@@ -130,15 +137,17 @@ async function handleLive(authHeader) {
         v.snippet.liveBroadcastContent === "upcoming" ||
         (v.liveStreamingDetails?.scheduledStartTime && !v.liveStreamingDetails?.actualEndTime)
     );
+    if (target) { reason = "upcoming"; }
   }
 
   // 3. Newest upload
   if (!target) {
     videos.sort((a, b) => new Date(b.snippet.publishedAt) - new Date(a.snippet.publishedAt));
     target = videos[0];
+    reason = "newest upload (no live or upcoming found)";
   }
 
-  return target.id;
+  return { id: target.id, title: target.snippet.title, reason };
 }
 
 // ============================================================
@@ -157,7 +166,7 @@ async function handleLast(authHeader) {
   );
 
   if (!target) throw new Error("No completed or uploaded videos found.");
-  return target.id;
+  return { id: target.id, title: target.snippet.title, reason: "latest completed/non-live video" };
 }
 
 // ============================================================
@@ -181,7 +190,8 @@ export default {
   async fetch(request, env) {
     const url          = new URL(request.url);
     const isEmbed      = url.searchParams.has("embed");
-    const allowRefresh = devModeOn() && url.searchParams.has("refresh");
+    const allowRefresh = DEVELOPER_MODE && url.searchParams.has("refresh");
+    const allowTest    = DEVELOPER_MODE && url.searchParams.has("test");
 
     // Determine route from hostname
     const hostname = url.hostname;
@@ -199,8 +209,8 @@ export default {
     const cache    = caches.default;
     const cacheReq = new Request(cacheKey);
 
-    // Check cache
-    if (!allowRefresh) {
+    // Check cache (skip if refresh or test)
+    if (!allowRefresh && !allowTest) {
       const cached = await cache.match(cacheReq);
       if (cached) return rewriteRedirect(cached, isEmbed);
     }
@@ -210,24 +220,64 @@ export default {
       return new Response("Missing OAuth secrets", { status: 500 });
     }
 
+    // Test OAuth before anything else
+    let accessToken;
     try {
-      const accessToken = await getAccessToken(env);
-      const authHeader  = { Authorization: `Bearer ${accessToken}` };
+      accessToken = await getAccessToken(env);
+    } catch (err) {
+      if (allowTest) {
+        return new Response(JSON.stringify({
+          oauth:  "FAILED",
+          error:  err.message
+        }, null, 2), { headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("OAuth error: " + err.message, { status: 500 });
+    }
 
-      const videoId = isLive
+    const authHeader = { Authorization: `Bearer ${accessToken}` };
+
+    try {
+      const result = isLive
         ? await handleLive(authHeader)
         : await handleLast(authHeader);
 
+      // Return diagnostic JSON if test mode
+      if (allowTest) {
+        return new Response(JSON.stringify({
+          oauth:      "OK",
+          devMode:    DEVELOPER_MODE,
+          route:      isLive ? "live" : "last",
+          channelId:  CHANNEL_ID,
+          selected: {
+            id:     result.id,
+            title:  result.title,
+            reason: result.reason,
+            url:    `https://www.youtube.com/watch?v=${result.id}`,
+            embed:  `https://www.youtube.com/embed/${result.id}`
+          }
+        }, null, 2), { headers: { "Content-Type": "application/json" } });
+      }
+
+      // Cache and redirect
       await cache.put(
         cacheReq,
-        new Response(videoId, { headers: { "Content-Type": "text/plain" } }).clone(),
+        new Response(result.id, { headers: { "Content-Type": "text/plain" } }).clone(),
         { expirationTtl: CACHE_TTL }
       );
 
-      return redirectForMode(videoId, isEmbed);
+      return redirectForMode(result.id, isEmbed);
 
     } catch (err) {
       console.error(err);
+
+      if (allowTest) {
+        return new Response(JSON.stringify({
+          oauth:  "OK",
+          route:  isLive ? "live" : "last",
+          error:  err.message
+        }, null, 2), { headers: { "Content-Type": "application/json" } });
+      }
+
       const fallback = await cache.match(cacheReq);
       if (fallback) return rewriteRedirect(fallback, isEmbed);
       return new Response("Server error: " + (err?.message || String(err)), { status: 500 });
