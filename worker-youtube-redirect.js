@@ -1,9 +1,11 @@
 /********************************************************************
-  YouTube Redirect Worker v1.0
+  YouTube Redirect Worker v2.0
   --------------------------------------------------
   Version History:
     1.0 - Initial release. Combined live/last routes into single
           worker, switched to OAuth for unlisted video support.
+    2.0 - Added ?test diagnostic flag. Switched DEVELOPER_MODE
+          from "ON"/"OFF" string to true/false boolean.
   --------------------------------------------------
   ⚠️  Set CHANNEL_ID below before deploying to a new church.
   --------------------------------------------------
@@ -227,8 +229,8 @@ export default {
     } catch (err) {
       if (allowTest) {
         return new Response(JSON.stringify({
-          oauth:  "FAILED",
-          error:  err.message
+          oauth: "FAILED",
+          error: err.message
         }, null, 2), { headers: { "Content-Type": "application/json" } });
       }
       return new Response("OAuth error: " + err.message, { status: 500 });
@@ -244,10 +246,10 @@ export default {
       // Return diagnostic JSON if test mode
       if (allowTest) {
         return new Response(JSON.stringify({
-          oauth:      "OK",
-          devMode:    DEVELOPER_MODE,
-          route:      isLive ? "live" : "last",
-          channelId:  CHANNEL_ID,
+          oauth:     "OK",
+          devMode:   DEVELOPER_MODE,
+          route:     isLive ? "live" : "last",
+          channelId: CHANNEL_ID,
           selected: {
             id:     result.id,
             title:  result.title,
@@ -272,9 +274,9 @@ export default {
 
       if (allowTest) {
         return new Response(JSON.stringify({
-          oauth:  "OK",
-          route:  isLive ? "live" : "last",
-          error:  err.message
+          oauth: "OK",
+          route: isLive ? "live" : "last",
+          error: err.message
         }, null, 2), { headers: { "Content-Type": "application/json" } });
       }
 
