@@ -54,10 +54,10 @@
     - ?endstream  Manually trigger end-stream (today's live broadcast only)
     - ?notify     Manually trigger go-live notification email/SMS
     Redirect routes also support:
-    - live.*/?test     Diagnostic JSON for live redirect
-    - last.*/?test     Diagnostic JSON for last redirect
-    - live.*/?refresh  Bypass cache
-    - last.*/?refresh  Bypass cache
+    - live.*?test     Diagnostic JSON for live redirect
+    - last.*?test     Diagnostic JSON for last redirect
+    - live.*?refresh  Bypass cache
+    - last.*?refresh  Bypass cache
 
   Changelog:
     v1.0 - Initial YouTube Toolkit release
@@ -77,16 +77,16 @@
   SCHEDULER CONFIGURATION
 ********************************************************************/
 // STREAM SCHEDULE: When the event technically starts
-const SCHEDULE_HOUR_PT = 9;
-const SCHEDULE_MINUTE_PT = 0;
+const SCHEDULE_HOUR_PT = 10;
+const SCHEDULE_MINUTE_PT = 30;
 
 // GO LIVE TIMING: When to start attempting to go live
 // For a 10:30 service, start at 10:27 and end at 10:35
 // For a 9:00 service, you might use 8:57 to 9:05
-const GO_LIVE_START_HOUR_PT = 8;   // Hour to start attempting (PT)
-const GO_LIVE_START_MIN_PT = 55;   // Minute to start attempting (PT)
-const GO_LIVE_END_HOUR_PT = 9;     // Hour to stop attempting (PT)
-const GO_LIVE_END_MIN_PT = 10;     // Minute to stop attempting (PT)
+const GO_LIVE_START_HOUR_PT = 10;   // Hour to start attempting (PT)
+const GO_LIVE_START_MIN_PT = 27;   // Minute to start attempting (PT)
+const GO_LIVE_END_HOUR_PT = 10;     // Hour to stop attempting (PT)
+const GO_LIVE_END_MIN_PT = 35;     // Minute to stop attempting (PT)
 
 // END STREAM TIMING: When to automatically end the live stream
 const END_STREAM_START_HOUR_PT = 13;
@@ -95,27 +95,27 @@ const END_STREAM_END_HOUR_PT = 13;
 const END_STREAM_END_MIN_PT = 5;
 
 // PRIVACY: "public", "unlisted", or "private"
-const PRIVACY_STATUS = "unlisted";
+const PRIVACY_STATUS = "public";
 
 // BROADCAST NAMING: Every character before the date (e.g., "Abide Live - " → "Abide Live - 6/7/2026")
-const BROADCAST_TITLE_PREFIX = "Abide Live - ";
+const BROADCAST_TITLE_PREFIX = "CPC Live - ";
 
 // BROADCAST DESCRIPTION: Shown on the YouTube video
-const BROADCAST_DESCRIPTION = "Abide Calvary Sunday Service\nJoin us this Sunday!";
+const BROADCAST_DESCRIPTION = "Covenant Worship Service\nJoin us this Sunday!";
 
-const THUMBNAIL_URL = "https://abide.pages.dev/thumbnail-hd-white.png";
+const THUMBNAIL_URL = "https://covenantpaso.pages.dev/cpc-youtube.png";
 const CATEGORY_ID = "29";
-const YT_STREAM_ID = "Bl48WQE_6YH4u4rbpVtlqA1778617073153287";
+const YT_STREAM_ID = "xZ8LTstrCOotf74qO0dOFA1768252326942616";
 
 // GO-LIVE NOTIFICATION: Keep subject and body short for SMS gateways (plain text only, no emoji)
 // NOTIFICATION_TO is set as a plain text Cloudflare environment variable (not in code)
-const NOTIFICATION_SUBJECT = "Abide Live";
+const NOTIFICATION_SUBJECT = "CPC Live";
 const NOTIFICATION_BODY = "Sunday service is now live.";
 
 /********************************************************************
   REDIRECT CONFIGURATION
 ********************************************************************/
-const CHANNEL_ID          = "UCBl48WQE_6YH4u4rbpVtlqA";
+const CHANNEL_ID          = "UCxZ8LTstrCOotf74qO0dOFA";
 const UPLOADS_PLAYLIST_ID = "UU" + CHANNEL_ID.slice(2);
 
 const CACHE_TTL      = 21600; // 6 hours
