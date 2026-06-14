@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Toolkit  v1.0
+  YouTube Toolkit  v1.1
   --------------------------------------------------
   Combines the YouTube Scheduler and YouTube Redirect
   workers into a single deployment per church.
@@ -60,6 +60,8 @@
     - last.*?refresh  Bypass cache
 
   Changelog:
+    v1.1 - Added ENABLE_NOTIFICATION_SUBJECT toggle
+         - Omitting subject header sends cleaner SMS via email-to-text gateways
     v1.0 - Initial YouTube Toolkit release
          - Merged scheduler and redirect workers into single deployment
          - Shared OAuth credentials (OA_CLIENT_ID/SECRET/REFRESH_TOKEN)
@@ -129,7 +131,8 @@ const ENABLE_SCHEDULING = true;
 const ENABLE_GO_LIVE = true;
 const ENABLE_AUTO_END = true;
 const ENABLE_GO_LIVE_NOTIFICATION = false;
-const ENABLE_REDIRECT = true;      // Set to false to disable live/last redirect routes
+const ENABLE_NOTIFICATION_SUBJECT = true;  // Set to false to omit subject (cleaner for SMS gateways)
+const ENABLE_REDIRECT = true;
 const VERBOSE_LOGGING = true;
 const DEVELOPER_MODE = false;
 
@@ -570,6 +573,7 @@ export default {
       report += `\nNOTIFICATION CONFIGURATION\n`;
       report += `  NOTIFICATION_TO: ${env.NOTIFICATION_TO || "⚠️ Not set"}\n`;
       report += `  NOTIFICATION_SUBJECT: ${NOTIFICATION_SUBJECT}\n`;
+      report += `  ENABLE_NOTIFICATION_SUBJECT: ${ENABLE_NOTIFICATION_SUBJECT}\n`;
       report += `  NOTIFICATION_BODY: ${NOTIFICATION_BODY}\n`;
       report += `  ENABLE_GO_LIVE_NOTIFICATION: ${ENABLE_GO_LIVE_NOTIFICATION}\n`;
 
@@ -1304,13 +1308,14 @@ async function sendNotificationEmail(token, env) {
     const to = env.NOTIFICATION_TO;
     if (!to) return "⚠️ Skipped - NOTIFICATION_TO env variable not set";
 
-    const message = [
+    const headers = [
       `To: ${to}`,
-      `Subject: ${NOTIFICATION_SUBJECT}`,
+      ...(ENABLE_NOTIFICATION_SUBJECT && NOTIFICATION_SUBJECT ? [`Subject: ${NOTIFICATION_SUBJECT}`] : []),
       `Content-Type: text/plain; charset=UTF-8`,
-      ``,
-      NOTIFICATION_BODY
-    ].join('\r\n');
+      ``
+    ];
+
+    const message = [...headers, NOTIFICATION_BODY].join('\r\n');
 
     const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(message)))
       .replace(/\+/g, '-')
