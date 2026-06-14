@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v34 - Cloudflared Binary Integrity Check)
+# ATEM MONITOR AUTO-INSTALLER (v35 - Cloudflared Sudoers Fix)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -53,6 +53,25 @@ else
     sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared
     sudo chmod +x /usr/local/bin/cloudflared
     echo ">>> cloudflared installed: $(cloudflared --version 2>&1 | head -1)"
+fi
+
+# SUDOERS: allow edgeadmin to overwrite cloudflared binary without password
+# Required so the control script can self-update cloudflared from the systemd service
+SUDOERS_FILE="/etc/sudoers.d/atem-cloudflared"
+SUDOERS_RULE="${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/curl * -o /usr/local/bin/cloudflared, /bin/chmod +x /usr/local/bin/cloudflared"
+if [ -f "$SUDOERS_FILE" ] && grep -qF "$CURRENT_USER" "$SUDOERS_FILE" 2>/dev/null; then
+    echo ">>> Sudoers rule for cloudflared already exists. Skipping."
+else
+    echo ">>> Adding sudoers rule for passwordless cloudflared update..."
+    echo "$SUDOERS_RULE" | sudo tee "$SUDOERS_FILE" > /dev/null
+    sudo chmod 440 "$SUDOERS_FILE"
+    # Validate — if visudo check fails, remove the file rather than leave a broken sudoers
+    if ! sudo visudo -cf "$SUDOERS_FILE" >/dev/null 2>&1; then
+        echo "❌ Sudoers rule failed validation — removing."
+        sudo rm -f "$SUDOERS_FILE"
+    else
+        echo ">>> Sudoers rule added: $SUDOERS_FILE"
+    fi
 fi
 
 # 4. PERSISTENT JOURNAL SETUP
@@ -655,6 +674,7 @@ if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
 
         cf_download() {
             log "⬇️  Downloading cloudflared binary..."
+            # sudo is allowed passwordlessly via /etc/sudoers.d/atem-cloudflared
             if sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared; then
                 if cloudflared --version >/dev/null 2>&1; then
                     log "✅ cloudflared binary verified: $(cloudflared --version 2>&1 | head -1)"
@@ -841,10 +861,10 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v34 (Cloudflared Binary Integrity)"
-echo "   - Checks binary health before version comparison"
-echo "   - Broken binary replaced immediately regardless"
-echo "   - Download verified with --version after install"
+echo "✅ UPDATED TO v35 (Cloudflared Sudoers Fix)"
+echo "   - Added sudoers rule for passwordless cloudflared update"
+echo "   - Auto-update now works correctly from systemd service"
+echo "   - Sudoers rule validated with visudo before applying"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
