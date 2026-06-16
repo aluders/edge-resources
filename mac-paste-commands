@@ -1,3 +1,6 @@
+paste clipboard into file...
+pbpaste > script.sh
+
 keyboard maestro on mac...
 
 shift-command-t
