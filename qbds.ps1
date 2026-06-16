@@ -4,22 +4,25 @@
     Checks and repairs Windows Firewall rules for QuickBooks Database Server Manager 2024.
 
 .DESCRIPTION
-    Verifies that all required firewall rules exist for QuickBooks 2024 (QBDBMgrN24),
+    Verifies that all required firewall rules exist for QuickBooks 2024 (QuickBooksDB34),
     including inbound/outbound rules for QB executables and the required TCP ports.
-    Applies any missing rules automatically.
+    Also ensures QuickBooksDB34 is set to Automatic startup and QBCFMonitorService is running.
+    Applies any missing rules or fixes automatically.
 
 .EXAMPLE
     .\Repair-QBFirewall.ps1
 
 .NOTES
     Must be run as Administrator.
-    Targets QuickBooks 2024 / QBDBMgrN24.
+    Targets QuickBooks 2024 / QuickBooksDB34 / QBCFMonitorService.
+    Note: QB Desktop 2024 installs its DB service as 'QuickBooksDB34', not 'QBDBMgrN24'.
 #>
 
 # ── CONFIGURATION ────────────────────────────────────────────────────────────
 
 $QB_VERSION       = "2024"
-$QB_SERVICE_NAME  = "QBDBMgrN24"
+$QB_DB_SERVICE    = "QuickBooksDB34"      # QB Desktop 2024 uses this internal service name
+$QB_CF_SERVICE    = "QBCFMonitorService"  # QuickBooks Communication Framework monitor
 $QB_PORTS         = @(8019, 56728, 55378, 55379, 55380, 55381, 55382)
 
 # Common install paths — script will check all and use whichever exist
@@ -212,46 +215,71 @@ foreach ($port in $QB_PORTS) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 4 — QB Database Service Check
+# SECTION 4 — QB Service Checks
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Header "QuickBooks Database Service — $QB_SERVICE_NAME"
+function Ensure-QBService {
+    param(
+        [string]$ServiceName,
+        [string]$FriendlyName,
+        [string]$RequiredStartType = "Automatic"  # Automatic | Manual
+    )
 
-$svc = Get-Service -Name $QB_SERVICE_NAME -ErrorAction SilentlyContinue
+    Write-Header "$FriendlyName — $ServiceName"
 
-if (-not $svc) {
-    Write-Status $warn "Service '$QB_SERVICE_NAME' not found. Is QB Database Server Manager installed?" Yellow
-    $results.Warnings++
-} else {
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+
+    if (-not $svc) {
+        Write-Status $warn "Service '$ServiceName' not found on this machine." Yellow
+        $results.Warnings++
+        return
+    }
+
     # Check startup type
-    $startType = (Get-WmiObject Win32_Service -Filter "Name='$QB_SERVICE_NAME'").StartMode
-    if ($startType -ne "Auto") {
+    $wmiSvc = Get-WmiObject Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+    $startMode = $wmiSvc.StartMode  # "Auto" | "Manual" | "Disabled"
+
+    $expectedWmi = if ($RequiredStartType -eq "Automatic") { "Auto" } else { $RequiredStartType }
+
+    if ($startMode -ne $expectedWmi) {
         try {
-            Set-Service -Name $QB_SERVICE_NAME -StartupType Automatic -ErrorAction Stop
-            Write-Status $fixed "Set '$QB_SERVICE_NAME' startup to Automatic" Yellow
+            Set-Service -Name $ServiceName -StartupType $RequiredStartType -ErrorAction Stop
+            Write-Status $fixed "Set startup type to $RequiredStartType (was: $startMode)" Yellow
             $results.Fixed++
         } catch {
             Write-Status $fail "Could not set startup type: $_" Red
             $results.Failed++
         }
     } else {
-        Write-Status $pass "Startup type: Automatic" Green
+        Write-Status $pass "Startup type: $startMode" Green
     }
 
-    # Check running state
+    # Refresh service object after potential changes
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+
     if ($svc.Status -ne "Running") {
         try {
-            Start-Service -Name $QB_SERVICE_NAME -ErrorAction Stop
-            Write-Status $fixed "Started service '$QB_SERVICE_NAME'" Yellow
+            Start-Service -Name $ServiceName -ErrorAction Stop
+            Write-Status $fixed "Started service '$ServiceName'" Yellow
             $results.Fixed++
         } catch {
-            Write-Status $fail "Could not start service: $_" Red
+            Write-Status $fail "Could not start '$ServiceName': $_" Red
             $results.Failed++
         }
     } else {
         Write-Status $pass "Service status: Running" Green
     }
 }
+
+# QuickBooksDB34 — the actual database engine (should be Automatic)
+Ensure-QBService -ServiceName $QB_DB_SERVICE `
+                 -FriendlyName "QuickBooks Database Service" `
+                 -RequiredStartType "Automatic"
+
+# QBCFMonitorService — communication framework monitor (should be Automatic)
+Ensure-QBService -ServiceName $QB_CF_SERVICE `
+                 -FriendlyName "QuickBooks CF Monitor Service" `
+                 -RequiredStartType "Automatic"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 5 — Windows Firewall Profile State
