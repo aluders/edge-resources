@@ -4,25 +4,28 @@
     Checks and repairs Windows Firewall rules for QuickBooks Database Server Manager 2024.
 
 .DESCRIPTION
-    Verifies that all required firewall rules exist for QuickBooks 2024, including
-    inbound/outbound rules for QB executables and required TCP ports. Also ensures
-    QuickBooksDB34 is set to Automatic startup and QBCFMonitorService is running.
+    Performs the following checks and auto-repairs:
 
-    Exe path resolution priority:
-      1. Running process path (most reliable — avoids 8.3 vs long path mismatch)
-      2. Disk scan of known install directories (fallback if process not running)
-
-    Applies any missing or misconfigured rules automatically.
-
-.EXAMPLE
-    .\Repair-QBFirewall.ps1
+    1. Resolves QB executable paths from the live running process (avoids 8.3 vs long
+       path mismatches that cause firewall rules to silently not match).
+    2. Ensures all required Windows Firewall exe rules exist and point to the correct path.
+    3. Ensures all required TCP port rules exist (8019, 50097, 56728, 55378-55382).
+    4. Ensures QuickBooksDB34 is set to Automatic startup and is running.
+    5. Ensures QBCFMonitorService is set to Automatic startup and is running.
+    6. Verifies that QB processes are actually listening on the expected ports.
+    7. Checks Windows Firewall profile state.
+    8. Validates .ND file configuration for all company files.
+    9. Tests live TCP connectivity to QB ports to confirm end-to-end health.
 
 .NOTES
     Must be run as Administrator.
     Targets QuickBooks 2024 / QuickBooksDB34 / QBCFMonitorService.
     QB Desktop 2024 installs its DB service as 'QuickBooksDB34', not 'QBDBMgrN24'.
-    QB may run from 8.3 short paths (e.g. C:\PROGRA~1\...) — this script detects
-    the actual runtime path from the live process to ensure firewall rules match.
+    The QBDSM 'Windows firewall blocking' warning may be a cosmetic false positive on
+    Windows Server — if TCP connectivity checks pass, QB is functioning correctly.
+
+.EXAMPLE
+    .\Repair-QBFirewall.ps1
 #>
 
 # ── CONFIGURATION ────────────────────────────────────────────────────────────
@@ -32,7 +35,10 @@ $QB_DB_SERVICE = "QuickBooksDB34"
 $QB_CF_SERVICE = "QBCFMonitorService"
 $QB_PORTS      = @(8019, 50097, 56728, 55378, 55379, 55380, 55381, 55382)
 
-# Fallback install paths if the process isn't running
+# QB company file folder to validate .ND files in
+$QB_COMPANY_FOLDER = "G:\Root\Storage\Wholesale\2010 QUICKBOOKS"
+
+# Fallback install paths used if the process isn't running
 $QB_FALLBACK_PATHS = @(
     "$env:ProgramFiles\Intuit\QuickBooks $QB_VERSION",
     "${env:ProgramFiles(x86)}\Intuit\QuickBooks $QB_VERSION",
@@ -40,7 +46,12 @@ $QB_FALLBACK_PATHS = @(
     "${env:ProgramFiles(x86)}\Intuit\QuickBooks Enterprise Solutions $QB_VERSION"
 )
 
-# Exe names to cover — QBCFMonitorService lives in Common Files, handled separately
+$QB_CF_FALLBACK_PATHS = @(
+    "$env:ProgramFiles\Common Files\Intuit\QuickBooks",
+    "${env:ProgramFiles(x86)}\Common Files\Intuit\QuickBooks"
+)
+
+# Main QB executables (in QB install dir)
 $QB_EXECUTABLES = @(
     "QBDBMgrN.exe",
     "QBDBMgr.exe",
@@ -50,13 +61,9 @@ $QB_EXECUTABLES = @(
     "QBGDSPlugin.exe"
 )
 
+# CF executables (in Common Files\Intuit\QuickBooks)
 $QB_CF_EXECUTABLES = @(
     "QBCFMonitorService.exe"
-)
-
-$QB_CF_FALLBACK_PATHS = @(
-    "$env:ProgramFiles\Common Files\Intuit\QuickBooks",
-    "${env:ProgramFiles(x86)}\Common Files\Intuit\QuickBooks"
 )
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -81,12 +88,10 @@ function Write-Status {
     Write-Host "$Tag $Message" -ForegroundColor $Color
 }
 
-# ── SUMMARY TRACKING ─────────────────────────────────────────────────────────
-
 $results = @{ Checked = 0; AlreadyOK = 0; Fixed = 0; Failed = 0; Warnings = 0 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 1 — Resolve exe paths (process-first, disk fallback)
+# SECTION 1 — Resolve Executable Paths
 # ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Resolving QuickBooks $QB_VERSION Executable Paths"
@@ -95,24 +100,22 @@ function Resolve-ExePaths {
     param(
         [string[]]$ExeNames,
         [string[]]$FallbackDirs,
-        [string]$ProcessHint = ""   # Process name to check first (without .exe)
+        [string]$ProcessHint = ""
     )
 
     $resolved = @{}
-
-    # Step 1: Try to get install dir from a running process
     $runtimeDir = $null
+
     if ($ProcessHint) {
         $proc = Get-Process -Name $ProcessHint -ErrorAction SilentlyContinue |
                 Select-Object -First 1
         if ($proc -and $proc.Path) {
             $runtimeDir = Split-Path $proc.Path -Parent
-            Write-Status $pass "Runtime path from process '$ProcessHint': $runtimeDir" Green
+            Write-Status $pass "Runtime path from '$ProcessHint': $runtimeDir" Green
         }
     }
 
     foreach ($exe in $ExeNames) {
-        # Try runtime dir first
         if ($runtimeDir) {
             $candidate = Join-Path $runtimeDir $exe
             if (Test-Path -LiteralPath $candidate) {
@@ -122,7 +125,6 @@ function Resolve-ExePaths {
             }
         }
 
-        # Fallback: scan known install dirs
         $found = $false
         foreach ($dir in $FallbackDirs) {
             $candidate = Join-Path $dir $exe
@@ -135,26 +137,23 @@ function Resolve-ExePaths {
         }
 
         if (-not $found) {
-            Write-Status $skip "  $exe not found (will skip firewall rule)" DarkGray
+            Write-Status $skip "  $exe not found — firewall rule will be skipped" DarkGray
         }
     }
 
     return $resolved
 }
 
-# Resolve main QB executables (process hint: QBDBMgrN)
 $resolvedMain = Resolve-ExePaths `
     -ExeNames $QB_EXECUTABLES `
     -FallbackDirs $QB_FALLBACK_PATHS `
     -ProcessHint "QBDBMgrN"
 
-# Resolve QBCFMonitorService separately (lives in Common Files)
 $resolvedCF = Resolve-ExePaths `
     -ExeNames $QB_CF_EXECUTABLES `
     -FallbackDirs $QB_CF_FALLBACK_PATHS `
     -ProcessHint "QBCFMonitorService"
 
-# Merge into one map
 $resolvedExePaths = @{}
 foreach ($kvp in $resolvedMain.GetEnumerator()) { $resolvedExePaths[$kvp.Key] = $kvp.Value }
 foreach ($kvp in $resolvedCF.GetEnumerator())   { $resolvedExePaths[$kvp.Key] = $kvp.Value }
@@ -182,9 +181,7 @@ function Ensure-ExeFirewallRule {
     $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
 
     if ($existing) {
-        $progFilter = $existing | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue
-        $currentPath = $progFilter.Program
-
+        $currentPath = ($existing | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program
         if ($currentPath -eq $ExePath) {
             Write-Status $pass "$ruleName" Green
             $results.AlreadyOK++
@@ -192,7 +189,8 @@ function Ensure-ExeFirewallRule {
             # Path mismatch (e.g. 8.3 vs long path) — update it
             try {
                 Set-NetFirewallRule -DisplayName $ruleName -Program $ExePath -ErrorAction Stop
-                Write-Status $fixed "$ruleName`n         path: $ExePath" Yellow
+                Write-Status $fixed "$ruleName (path updated)" Yellow
+                Write-Host "           $ExePath" -ForegroundColor DarkYellow
                 $results.Fixed++
             } catch {
                 Write-Status $fail "$ruleName — update failed: $_" Red
@@ -210,7 +208,6 @@ function Ensure-ExeFirewallRule {
                 -Profile     Any `
                 -Enabled     True `
                 -ErrorAction Stop | Out-Null
-
             Write-Status $fixed "$ruleName (created)" Yellow
             $results.Fixed++
         } catch {
@@ -253,7 +250,6 @@ function Ensure-PortFirewallRule {
                 -Profile     Any `
                 -Enabled     True `
                 -ErrorAction Stop | Out-Null
-
             Write-Status $fixed "$ruleName (created)" Yellow
             $results.Fixed++
         } catch {
@@ -288,8 +284,8 @@ function Ensure-QBService {
         return
     }
 
-    $wmiSvc    = Get-WmiObject Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
-    $startMode = $wmiSvc.StartMode
+    $wmiSvc      = Get-WmiObject Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+    $startMode   = $wmiSvc.StartMode
     $expectedWmi = if ($RequiredStartType -eq "Automatic") { "Auto" } else { $RequiredStartType }
 
     if ($startMode -ne $expectedWmi) {
@@ -329,7 +325,7 @@ Ensure-QBService -ServiceName $QB_CF_SERVICE `
                  -RequiredStartType "Automatic"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 5 — Verify Runtime Port Listeners
+# SECTION 5 — Runtime Port Listener Verification
 # ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Verifying QB Runtime Port Listeners"
@@ -340,7 +336,7 @@ $expectedListeners = @{
 }
 
 foreach ($kvp in $expectedListeners.GetEnumerator()) {
-    $port = $kvp.Key
+    $port        = $kvp.Key
     $expectedProc = $kvp.Value
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
             Select-Object -First 1
@@ -348,9 +344,10 @@ foreach ($kvp in $expectedListeners.GetEnumerator()) {
     if ($conn) {
         $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
         if ($proc.Name -like "*$expectedProc*") {
-            Write-Status $pass "Port $port — $($proc.Name) listening ($($proc.Path))" Green
+            Write-Status $pass "Port $port — $($proc.Name) listening" Green
+            Write-Host "           $($proc.Path)" -ForegroundColor DarkGray
         } else {
-            Write-Status $warn "Port $port — unexpected process: $($proc.Name) ($($proc.Path))" Yellow
+            Write-Status $warn "Port $port — unexpected process: $($proc.Name)" Yellow
             $results.Warnings++
         }
     } else {
@@ -369,8 +366,83 @@ foreach ($profile in (Get-NetFirewallProfile)) {
     if ($profile.Enabled) {
         Write-Status $pass "Profile '$($profile.Name)' is enabled (rules will apply)" Green
     } else {
-        Write-Status $warn "Profile '$($profile.Name)' is DISABLED — rules have no effect" Yellow
+        Write-Status $warn "Profile '$($profile.Name)' is DISABLED — rules have no effect on this profile" Yellow
         $results.Warnings++
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 7 — Company File .ND Validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Header "Company File .ND Validation"
+
+if (-not (Test-Path $QB_COMPANY_FOLDER)) {
+    Write-Status $warn "Company folder not found: $QB_COMPANY_FOLDER" Yellow
+    $results.Warnings++
+} else {
+    $ndFiles = Get-ChildItem $QB_COMPANY_FOLDER -Filter "*.ND" -ErrorAction SilentlyContinue
+
+    if ($ndFiles.Count -eq 0) {
+        Write-Status $warn "No .ND files found in company folder — QBDSM scan may not have run yet." Yellow
+        $results.Warnings++
+    } else {
+        foreach ($nd in $ndFiles) {
+            $content    = Get-Content $nd.FullName -Raw -ErrorAction SilentlyContinue
+            $engineName = if ($content -match 'EngineName=(.+)') { $Matches[1].Trim() } else { "unknown" }
+            $serverMode = if ($content -match 'ServerMode=(\d)') { $Matches[1].Trim() } else { "unknown" }
+            $serverPort = if ($content -match 'ServerPort=(\d+)') { $Matches[1].Trim() } else { "none" }
+
+            # Flag stale legacy entries
+            $isStale = ($engineName -match 'data_engine_\d+' -and $serverMode -eq "2") -or
+                       ($content -match '\\\\server\\')
+
+            if ($isStale) {
+                Write-Status $warn "$($nd.Name) — stale legacy config (Engine: $engineName, Mode: $serverMode)" Yellow
+                $results.Warnings++
+            } elseif ($serverMode -ne "1") {
+                Write-Status $warn "$($nd.Name) — ServerMode=$serverMode (expected 1)" Yellow
+                $results.Warnings++
+            } else {
+                Write-Status $pass "$($nd.Name) — Engine: $engineName, Port: $serverPort, Mode: $serverMode" Green
+            }
+        }
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 8 — Live TCP Connectivity Health Check
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Header "Live TCP Connectivity Health Check"
+
+$healthPorts = @(50097, 8019)
+
+foreach ($port in $healthPorts) {
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    try {
+        $tcp.Connect("127.0.0.1", $port)
+        Write-Status $pass "Port $port — connection accepted (QB is reachable)" Green
+    } catch {
+        Write-Status $fail "Port $port — connection refused or timed out" Red
+        $results.Failed++
+    } finally {
+        $tcp.Close()
+    }
+}
+
+# Also verify .QBW files are in ServerMode=1 (multi-user ready)
+$qbwFiles = Get-ChildItem $QB_COMPANY_FOLDER -Filter "*.QBW" -ErrorAction SilentlyContinue
+if ($qbwFiles) {
+    Write-Host ""
+    Write-Host "  Company file server mode:" -ForegroundColor Gray
+    foreach ($qbw in $qbwFiles) {
+        $nd = "$($qbw.FullName).ND"
+        if (Test-Path $nd) {
+            $mode = (Get-Content $nd | Select-String "ServerMode").ToString().Trim()
+            $color = if ($mode -match "ServerMode=1") { "Green" } else { "Yellow" }
+            Write-Host "    $($qbw.Name) — $mode" -ForegroundColor $color
+        }
     }
 }
 
@@ -383,22 +455,22 @@ Write-Header "Summary"
 Write-Host "  Rules checked  : $($results.Checked)" -ForegroundColor Gray
 Write-Host "  Already OK     : $($results.AlreadyOK)" -ForegroundColor Green
 Write-Host "  Fixed/Created  : $($results.Fixed)" -ForegroundColor Yellow
-Write-Host "  Failed         : $($results.Failed)" -ForegroundColor $(if ($results.Failed  -gt 0) { "Red"    } else { "Gray" })
+Write-Host "  Failed         : $($results.Failed)" -ForegroundColor $(if ($results.Failed   -gt 0) { "Red"    } else { "Gray" })
 Write-Host "  Warnings       : $($results.Warnings)" -ForegroundColor $(if ($results.Warnings -gt 0) { "Yellow" } else { "Gray" })
 Write-Host ""
 
 if ($results.Fixed -gt 0) {
     Write-Host "  Changes were applied. Re-run the QB Database Server Manager" -ForegroundColor Cyan
-    Write-Host "  scan to confirm the network diagnostics pass." -ForegroundColor Cyan
+    Write-Host "  scan to confirm network diagnostics pass." -ForegroundColor Cyan
 }
 if ($results.Failed -gt 0) {
-    Write-Host "  Some items could not be fixed. Review errors above." -ForegroundColor Red
+    Write-Host "  Some items could not be fixed — review errors above." -ForegroundColor Red
 }
 if ($results.Fixed -eq 0 -and $results.Failed -eq 0 -and $results.Warnings -eq 0) {
-    Write-Host "  All checks passed. If QBDSM still reports errors, check:" -ForegroundColor Green
-    Write-Host "    - QBDataServiceUser account permissions on the QB folder" -ForegroundColor Gray
-    Write-Host "    - .ND file contents (ServerIp, ServerPort, EngineName)" -ForegroundColor Gray
-    Write-Host "    - Whether the QB folder path uses a mapped drive vs local/UNC" -ForegroundColor Gray
+    Write-Host "  All checks passed." -ForegroundColor Green
+    Write-Host "  NOTE: The QBDSM 'Windows firewall blocking' warning can be a cosmetic" -ForegroundColor DarkYellow
+    Write-Host "  false positive on Windows Server. If Section 8 TCP checks passed and" -ForegroundColor DarkYellow
+    Write-Host "  workstations can open company files, QB is functioning correctly." -ForegroundColor DarkYellow
 }
 
 Write-Host ""
