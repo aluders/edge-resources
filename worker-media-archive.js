@@ -1,5 +1,5 @@
 /********************************************************************
-  Church Media Archive Worker (OAuth 2.0 — supports unlisted videos)
+  Church Media Archive Worker v1.2
   --------------------------------------------------
   Secrets required:
     OA_CLIENT_ID
@@ -7,11 +7,32 @@
     OA_REFRESH_TOKEN
   --------------------------------------------------
   Dev Mode behavior:
-    - DEVELOPER_MODE = "OFF": ignores ?refresh
-    - DEVELOPER_MODE = "ON" : allows ?refresh to bypass cache
+    - DEVELOPER_MODE = false: ignores ?refresh
+    - DEVELOPER_MODE = true : allows ?refresh to bypass cache
   Notes:
     - ?test returns OAuth scope info, YouTube status, Drive status,
              raw counts, titles, and parsed services
+  --------------------------------------------------
+  CHANGELOG
+  v1.0 — Initial release
+    - OAuth 2.0 for YouTube and Google Drive
+    - Year selector with card grid
+    - Series-specific thumbnails
+    - Service / Sermon / Audio buttons per card
+    - ?test diagnostic endpoint
+    - DEVELOPER_MODE ?refresh cache bypass (used "ON"/"OFF" string)
+    - Optional suffix parsing from video titles (e.g. "- Recital")
+    - CARD_TITLE_PREFIX for verbatim card title control
+
+  v1.1 — 2026-06-15
+    - Cards with a title suffix (e.g. "Recital") no longer inherit
+      Drive sermon/audio files from the same date, preventing
+      cross-contamination when two streams share a date
+    - DEVELOPER_MODE changed from "ON"/"OFF" string to true/false boolean
+
+  v1.2 — 2026-06-15
+    - Added lang="en" to <html> tag to prevent Chrome from
+      misidentifying the page language and prompting translation
 ********************************************************************/
 
 // ============================================================
@@ -23,9 +44,9 @@ const UPLOADS_PLAYLIST_ID = "UU" + CHANNEL_ID.slice(2);
 // ============================================================
 //  PAGE CONFIG
 // ============================================================
-const PAGE_TITLE        = "Covenant Media Archive";
+const PAGE_TITLE        = "Covenant Media";
 const FAVICON_URL       = "https://covenantpaso.pages.dev/cpc-favicon.webp";
-const CARD_TITLE_PREFIX = "Covenant - ";  // Used verbatim before the date — include any spacing/punctuation you want
+const CARD_TITLE_PREFIX = "";  // Used verbatim before the date — include any spacing/punctuation you want
 
 // ============================================================
 //  FEATURE TOGGLES
@@ -79,9 +100,9 @@ const CACHE_KEY = "https://cache.local/church-media-archive-v1";
 // ============================================================
 //  DEVELOPER MODE
 // ============================================================
-const DEVELOPER_MODE = "ON";  // "ON" or "OFF"
+const DEVELOPER_MODE = true;  // true or false
 function devModeOn() {
-  return String(DEVELOPER_MODE).trim().toUpperCase() === "ON";
+  return DEVELOPER_MODE === true;
 }
 
 // ============================================================
@@ -269,21 +290,18 @@ export default {
       //  TEST MODE — enhanced OAuth + API diagnostics
       // ------------------------------------------------------------
       if (testMode) {
-        // Sample YouTube call (1 item)
         const ytTestRes = await fetch(
           `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId=${UPLOADS_PLAYLIST_ID}&maxResults=1`,
           { headers: authHeader }
         );
         const ytTestJson = await ytTestRes.json();
 
-        // Sample Drive call (1 item from audio folder)
         const driveTestRes = await fetch(
           `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${AUDIO_FOLDER_ID}' in parents`)}&pageSize=1&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
           { headers: authHeader }
         );
         const driveTestJson = await driveTestRes.json();
 
-        // Token info — shows granted scopes
         const tokenInfoRes  = await fetch(
           `https://oauth2.googleapis.com/tokeninfo?access_token=${accessToken}`
         );
@@ -292,18 +310,18 @@ export default {
         return new Response(
           JSON.stringify({
             youtube: {
-              status:      ytTestRes.status,
-              ok:          ytTestRes.ok,
-              itemCount:   playlistItems.length,
-              titles:      playlistItems.map(i => i.snippet?.title),
-              services:    services,
+              status:       ytTestRes.status,
+              ok:           ytTestRes.ok,
+              itemCount:    playlistItems.length,
+              titles:       playlistItems.map(i => i.snippet?.title),
+              services:     services,
               sampleResult: ytTestJson
             },
             drive: {
-              status:      driveTestRes.status,
-              ok:          driveTestRes.ok,
-              audioCount:  audioFiles.length,
-              sermonCount: sermonFiles.length,
+              status:       driveTestRes.status,
+              ok:           driveTestRes.ok,
+              audioCount:   audioFiles.length,
+              sermonCount:  sermonFiles.length,
               sampleResult: driveTestJson
             },
             token: {
@@ -324,7 +342,7 @@ export default {
       // ============================================================
       let html = `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <link rel="icon" type="image/webp" href="${FAVICON_URL}">
@@ -490,13 +508,14 @@ h1 {
             );
           }
 
-          if (ENABLE_SERMON_VIDEO && v.sermonFile) {
+          // v1.1 — suffix cards skip Drive files to avoid date collision
+          if (ENABLE_SERMON_VIDEO && v.sermonFile && !v.suffix) {
             btns.push(
               `<a class="sermon-video" target="_blank" href="${v.sermonFile.webViewLink}">Sermon</a>`
             );
           }
 
-          if (ENABLE_SERMON_AUDIO && v.audioFile) {
+          if (ENABLE_SERMON_AUDIO && v.audioFile && !v.suffix) {
             const safeName = encodeURIComponent(v.audioFile.name);
             btns.push(
               `<a class="sermon-audio" target="_blank" href="/audio/${v.audioFile.id}/${safeName}">Audio</a>`
