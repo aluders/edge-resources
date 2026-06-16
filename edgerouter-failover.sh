@@ -213,13 +213,9 @@ done
 
 # ─── Firewall rule numbers ─────────────────────────────────────────────────────
 echo ""
-echo -e "${YLW}Firewall rule number for bypass (local traffic)${RST} [default: 5]: "
-read -r RULE_BYPASS
-RULE_BYPASS="${RULE_BYPASS:-5}"
-
-echo -e "${YLW}Firewall rule number for load-balance action${RST} [default: 10]: "
-read -r RULE_LB
-RULE_LB="${RULE_LB:-10}"
+# ─── Firewall rule numbers (per Ubiquiti convention) ─────────────────────────
+RULE_BYPASS=10
+RULE_LB=110
 
 # ─── Build commands ───────────────────────────────────────────────────────────
 # DISPLAY: formatted with section headers and blank lines for readability
@@ -263,16 +259,31 @@ done
 for net in $EXTRA_NETS; do
     cmd "set firewall group network-group PRIVATE_NETS network ${net}"
 done
-cmd "set firewall modify balance rule ${RULE_BYPASS} description \"Bypass load balancer for local traffic\""
+cmd "set firewall modify balance rule ${RULE_BYPASS} action modify"
 cmd "set firewall modify balance rule ${RULE_BYPASS} destination group network-group PRIVATE_NETS"
-cmd "set firewall modify balance rule ${RULE_BYPASS} action accept"
+cmd "set firewall modify balance rule ${RULE_BYPASS} modify table main"
+
+# Per-WAN bypass rules for traffic destined to the router's own WAN IP addresses
+wan_rule=$(( RULE_BYPASS + 10 ))
+for (( i=1; i<=WAN_COUNT; i++ )); do
+    iface=$(get_field "$IFACE_LIST" $i)
+    cmd "set firewall modify balance rule ${wan_rule} action modify"
+    cmd "set firewall modify balance rule ${wan_rule} destination group address-group ADDRv4_${iface}"
+    cmd "set firewall modify balance rule ${wan_rule} modify table main"
+    wan_rule=$(( wan_rule + 10 ))
+done
 
 section "Firewall modify — load-balance action (rule $RULE_LB)"
 cmd "set firewall modify balance rule ${RULE_LB} action modify"
 cmd "set firewall modify balance rule ${RULE_LB} modify lb-group ${LB_GROUP}"
 
 section "Apply firewall modify to LAN ingress"
-cmd "set interfaces ethernet ${LAN_IFACE} firewall in modify balance"
+# switch0 is a switch interface, not ethernet — requires 'interfaces switch' not 'interfaces ethernet'
+if echo "$LAN_IFACE" | grep -q '^switch'; then
+    cmd "set interfaces switch ${LAN_IFACE} firewall in modify balance"
+else
+    cmd "set interfaces ethernet ${LAN_IFACE} firewall in modify balance"
+fi
 
 section "Route distances"
 for (( i=1; i<=WAN_COUNT; i++ )); do
