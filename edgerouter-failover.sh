@@ -306,8 +306,16 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
     echo -e "    set service nat rule <n> outbound-interface ${iface}"
     echo -e "    set service nat rule <n> type masquerade"
 done
+echo -e "  ${BLD}DHCP DNS — prevent lease renewals from overwriting DNS settings${RST}"
+echo -e "  For each DHCP WAN interface, run:"
+for (( i=1; i<=WAN_COUNT; i++ )); do
+    iface=$(get_field "$IFACE_LIST" $i)
+    ctype=$(get_field "$CONN_TYPES" $i)
+    if [ "$ctype" = "dhcp" ]; then
+        echo -e "    set interfaces ethernet ${iface} dhcp-options name-server no-update"
+    fi
+done
 echo ""
-echo -e "  ${BLD}Firewall — WAN in/local rules${RST}"
 echo -e "  Each WAN interface needs its own firewall rule sets applied, e.g.:"
 for (( i=1; i<=WAN_COUNT; i++ )); do
     iface=$(get_field "$IFACE_LIST" $i)
