@@ -43,10 +43,6 @@ if ! echo "$WAN_COUNT" | grep -qE '^[2-9]$'; then
     WAN_COUNT=2
 fi
 
-# Distance ladder for non-primary interfaces (static only — DHCP failover left at EdgeOS default 210)
-# Primary gets 200 (beats DHCP default of 210); secondary static interfaces step up from there
-DISTANCE_DEFAULTS="200 220 230 240 250 260 270 280 290"
-
 # Ping target defaults per slot
 PING_DEFAULTS="1.0.0.1 1.0.0.2 8.8.8.8 8.8.4.4 9.9.9.9 149.112.112.112 208.67.222.222 208.67.220.220 1.1.1.1"
 
@@ -76,8 +72,6 @@ set_field() {
 
 # ─── Phase 1: Collect all interface details ───────────────────────────────────
 IFACE_LIST=""
-CONN_TYPES=""
-GATEWAYS=""
 PING_TARGETS=""
 
 for (( i=1; i<=WAN_COUNT; i++ )); do
@@ -93,24 +87,6 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
     iface="${iface:-$default_iface}"
     IFACE_LIST="$IFACE_LIST $iface"
 
-    # Connection type
-    echo -e "${YLW}Connection type${RST} for $iface — (d)hcp or (s)tatic? [d]: "
-    read -r ctype
-    ctype="${ctype:-d}"
-    if echo "$ctype" | grep -iqE '^s'; then
-        CONN_TYPES="$CONN_TYPES static"
-        echo -e "${YLW}Static gateway IP${RST} for $iface: "
-        read -r gw
-        while [ -z "$gw" ]; do
-            echo -e "${RED}Gateway IP cannot be empty for static connections.${RST}"
-            read -r gw
-        done
-        GATEWAYS="$GATEWAYS $gw"
-    else
-        CONN_TYPES="$CONN_TYPES dhcp"
-        GATEWAYS="$GATEWAYS NONE"
-    fi
-
     # Ping target
     default_ping=$(get_field "$PING_DEFAULTS" $i)
     echo -e "${YLW}Ping target IP${RST} for route-test on $iface [default: ${default_ping}]: "
@@ -119,8 +95,6 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
 done
 
 IFACE_LIST="${IFACE_LIST# }"
-CONN_TYPES="${CONN_TYPES# }"
-GATEWAYS="${GATEWAYS# }"
 PING_TARGETS="${PING_TARGETS# }"
 
 # ─── Phase 2: Assign primary, failover flags, and distances ───────────────────
@@ -134,12 +108,11 @@ echo ""
 echo -e "Interfaces collected:"
 for (( i=1; i<=WAN_COUNT; i++ )); do
     iface=$(get_field "$IFACE_LIST" $i)
-    ctype=$(get_field "$CONN_TYPES" $i)
-    echo -e "  ${BLD}$i)${RST} $iface  (${ctype})"
+    echo -e "  ${BLD}$i)${RST} $iface"
 done
 
 echo ""
-echo -e "${YLW}Which interface is the PRIMARY (lowest distance)?${RST} [default: 1]: "
+echo -e "${YLW}Which interface is the PRIMARY?${RST} [default: 1]: "
 read -r primary_idx
 primary_idx="${primary_idx:-1}"
 
@@ -151,22 +124,16 @@ if ! echo "$primary_idx" | grep -qE '^[0-9]+$' || \
 fi
 
 primary_iface=$(get_field "$IFACE_LIST" $primary_idx)
-echo -e "${GRN}→ $primary_iface will be PRIMARY (distance 200, beats DHCP default of 210)${RST}"
+echo -e "${GRN}→ $primary_iface will be PRIMARY (lb-local-metric-change will handle route distances automatically)${RST}"
 
-# Build failover flags and distances
+# Build failover flags
 FAILOVER_FLAGS=""
-DISTANCES=""
-
-# We'll assign distances from the ladder, skipping slot 1 (reserved for primary)
-# Secondary interfaces get ladder positions 2, 3, 4...
-secondary_slot=2
 
 for (( i=1; i<=WAN_COUNT; i++ )); do
     iface=$(get_field "$IFACE_LIST" $i)
 
     if [ "$i" -eq "$primary_idx" ]; then
         FAILOVER_FLAGS="$FAILOVER_FLAGS no"
-        DISTANCES="$DISTANCES 200"
     else
         echo ""
         echo -e "${YLW}Is $iface a failover-only interface?${RST} (Y/n) [Y]: "
@@ -177,24 +144,10 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
         else
             FAILOVER_FLAGS="$FAILOVER_FLAGS yes"
         fi
-
-        default_dist=$(get_field "$DISTANCE_DEFAULTS" $secondary_slot)
-        ctype_i=$(get_field "$CONN_TYPES" $i)
-        if [ "$ctype_i" = "static" ]; then
-            echo -e "${YLW}Route distance${RST} for $iface [default: ${default_dist}]: "
-            read -r dist
-            dist="${dist:-$default_dist}"
-            DISTANCES="$DISTANCES $dist"
-        else
-            echo -e "${GRN}→ $iface is DHCP failover — leaving distance at EdgeOS default (210), no override needed.${RST}"
-            DISTANCES="$DISTANCES SKIP"
-        fi
-        secondary_slot=$(( secondary_slot + 1 ))
     fi
 done
 
 FAILOVER_FLAGS="${FAILOVER_FLAGS# }"
-DISTANCES="${DISTANCES# }"
 
 # ─── Private Networks ─────────────────────────────────────────────────────────
 echo ""
@@ -250,6 +203,7 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
     fi
 done
 cmd "set load-balance group ${LB_GROUP} flush-on-active enable"
+cmd "set load-balance group ${LB_GROUP} lb-local-metric-change enable"
 
 section "Firewall modify — bypass local traffic (rule $RULE_BYPASS)"
 cmd "set firewall group network-group PRIVATE_NETS description \"Private Networks\""
@@ -285,20 +239,7 @@ else
     cmd "set interfaces ethernet ${LAN_IFACE} firewall in modify balance"
 fi
 
-section "Route distances"
-for (( i=1; i<=WAN_COUNT; i++ )); do
-    iface=$(get_field "$IFACE_LIST" $i)
-    ctype=$(get_field "$CONN_TYPES" $i)
-    dist=$(get_field "$DISTANCES" $i)
-    gw=$(get_field "$GATEWAYS" $i)
 
-    if [ "$ctype" = "static" ]; then
-        cmd "set protocols static route 0.0.0.0/0 next-hop ${gw} distance ${dist}"
-    elif [ "$dist" != "SKIP" ]; then
-        cmd "set interfaces ethernet ${iface} dhcp-options default-route-distance ${dist}"
-    fi
-    # DHCP failover (SKIP) — no command needed, EdgeOS default of 210 is correct
-done
 
 # ─── Output ───────────────────────────────────────────────────────────────────
 echo ""
