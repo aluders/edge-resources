@@ -46,32 +46,19 @@ fi
 # Ping target defaults per slot
 PING_DEFAULTS="1.0.0.1 1.0.0.2 8.8.8.8 8.8.4.4 9.9.9.9 149.112.112.112 208.67.222.222 208.67.220.220 1.1.1.1"
 
+# Distance ladder for non-primary static interfaces
+DISTANCE_DEFAULTS="200 220 230 240 250 260 270 280 290"
+
 get_field() {
     local list="$1"
     local idx="$2"
     echo "$list" | tr ' ' '\n' | sed -n "${idx}p"
 }
 
-set_field() {
-    # Replace field at index $2 (1-based) in space-separated list $1 with value $3
-    local list="$1"
-    local idx="$2"
-    local val="$3"
-    local result=""
-    local n=1
-    for item in $list; do
-        if [ "$n" -eq "$idx" ]; then
-            result="$result $val"
-        else
-            result="$result $item"
-        fi
-        n=$(( n + 1 ))
-    done
-    echo "${result# }"
-}
-
 # ─── Phase 1: Collect all interface details ───────────────────────────────────
 IFACE_LIST=""
+CONN_TYPES=""
+GATEWAYS=""
 PING_TARGETS=""
 
 for (( i=1; i<=WAN_COUNT; i++ )); do
@@ -87,6 +74,24 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
     iface="${iface:-$default_iface}"
     IFACE_LIST="$IFACE_LIST $iface"
 
+    # Connection type
+    echo -e "${YLW}Connection type${RST} for $iface — (d)hcp or (s)tatic? [d]: "
+    read -r ctype
+    ctype="${ctype:-d}"
+    if echo "$ctype" | grep -iqE '^s'; then
+        CONN_TYPES="$CONN_TYPES static"
+        echo -e "${YLW}Static gateway IP${RST} for $iface: "
+        read -r gw
+        while [ -z "$gw" ]; do
+            echo -e "${RED}Gateway IP cannot be empty for static connections.${RST}"
+            read -r gw
+        done
+        GATEWAYS="$GATEWAYS $gw"
+    else
+        CONN_TYPES="$CONN_TYPES dhcp"
+        GATEWAYS="$GATEWAYS NONE"
+    fi
+
     # Ping target
     default_ping=$(get_field "$PING_DEFAULTS" $i)
     echo -e "${YLW}Ping target IP${RST} for route-test on $iface [default: ${default_ping}]: "
@@ -95,6 +100,8 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
 done
 
 IFACE_LIST="${IFACE_LIST# }"
+CONN_TYPES="${CONN_TYPES# }"
+GATEWAYS="${GATEWAYS# }"
 PING_TARGETS="${PING_TARGETS# }"
 
 # ─── Phase 2: Assign primary, failover flags, and distances ───────────────────
@@ -108,7 +115,8 @@ echo ""
 echo -e "Interfaces collected:"
 for (( i=1; i<=WAN_COUNT; i++ )); do
     iface=$(get_field "$IFACE_LIST" $i)
-    echo -e "  ${BLD}$i)${RST} $iface"
+    ctype=$(get_field "$CONN_TYPES" $i)
+    echo -e "  ${BLD}$i)${RST} $iface  (${ctype})"
 done
 
 echo ""
@@ -124,16 +132,19 @@ if ! echo "$primary_idx" | grep -qE '^[0-9]+$' || \
 fi
 
 primary_iface=$(get_field "$IFACE_LIST" $primary_idx)
-echo -e "${GRN}→ $primary_iface will be PRIMARY (lb-local-metric-change will handle route distances automatically)${RST}"
+echo -e "${GRN}→ $primary_iface will be PRIMARY (distance 200, beats DHCP default of 210)${RST}"
 
-# Build failover flags
+# Build failover flags and distances
 FAILOVER_FLAGS=""
+DISTANCES=""
+secondary_slot=2
 
 for (( i=1; i<=WAN_COUNT; i++ )); do
     iface=$(get_field "$IFACE_LIST" $i)
 
     if [ "$i" -eq "$primary_idx" ]; then
         FAILOVER_FLAGS="$FAILOVER_FLAGS no"
+        DISTANCES="$DISTANCES 200"
     else
         echo ""
         echo -e "${YLW}Is $iface a failover-only interface?${RST} (Y/n) [Y]: "
@@ -144,10 +155,24 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
         else
             FAILOVER_FLAGS="$FAILOVER_FLAGS yes"
         fi
+
+        ctype_i=$(get_field "$CONN_TYPES" $i)
+        if [ "$ctype_i" = "static" ]; then
+            default_dist=$(get_field "$DISTANCE_DEFAULTS" $secondary_slot)
+            echo -e "${YLW}Route distance${RST} for $iface [default: ${default_dist}]: "
+            read -r dist
+            dist="${dist:-$default_dist}"
+            DISTANCES="$DISTANCES $dist"
+        else
+            echo -e "${GRN}→ $iface is DHCP — leaving distance at EdgeOS default (210), no override needed.${RST}"
+            DISTANCES="$DISTANCES SKIP"
+        fi
+        secondary_slot=$(( secondary_slot + 1 ))
     fi
 done
 
 FAILOVER_FLAGS="${FAILOVER_FLAGS# }"
+DISTANCES="${DISTANCES# }"
 
 # ─── Private Networks ─────────────────────────────────────────────────────────
 echo ""
@@ -164,8 +189,6 @@ while true; do
     EXTRA_NETS="$EXTRA_NETS $extra"
 done
 
-# ─── Firewall rule numbers ─────────────────────────────────────────────────────
-echo ""
 # ─── Firewall rule numbers (per Ubiquiti convention) ─────────────────────────
 RULE_BYPASS=10
 RULE_LB=110
@@ -177,7 +200,6 @@ DISPLAY=""
 CLIP=""
 
 cmd() {
-    # Append a single command to both outputs
     DISPLAY="${DISPLAY}  $1
 "
     CLIP="${CLIP}$1
@@ -203,9 +225,8 @@ for (( i=1; i<=WAN_COUNT; i++ )); do
     fi
 done
 cmd "set load-balance group ${LB_GROUP} flush-on-active enable"
-cmd "set load-balance group ${LB_GROUP} lb-local-metric-change enable"
 
-section "Firewall modify — bypass local traffic (rule $RULE_BYPASS)"
+section "Firewall modify — private nets and WAN address bypass"
 cmd "set firewall group network-group PRIVATE_NETS description \"Private Networks\""
 for net in "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16"; do
     cmd "set firewall group network-group PRIVATE_NETS network ${net}"
@@ -217,7 +238,6 @@ cmd "set firewall modify balance rule ${RULE_BYPASS} action modify"
 cmd "set firewall modify balance rule ${RULE_BYPASS} destination group network-group PRIVATE_NETS"
 cmd "set firewall modify balance rule ${RULE_BYPASS} modify table main"
 
-# Per-WAN bypass rules for traffic destined to the router's own WAN IP addresses
 wan_rule=$(( RULE_BYPASS + 10 ))
 for (( i=1; i<=WAN_COUNT; i++ )); do
     iface=$(get_field "$IFACE_LIST" $i)
@@ -232,14 +252,27 @@ cmd "set firewall modify balance rule ${RULE_LB} action modify"
 cmd "set firewall modify balance rule ${RULE_LB} modify lb-group ${LB_GROUP}"
 
 section "Apply firewall modify to LAN ingress"
-# switch0 is a switch interface, not ethernet — requires 'interfaces switch' not 'interfaces ethernet'
 if echo "$LAN_IFACE" | grep -q '^switch'; then
     cmd "set interfaces switch ${LAN_IFACE} firewall in modify balance"
 else
     cmd "set interfaces ethernet ${LAN_IFACE} firewall in modify balance"
 fi
 
+section "Route distances"
+for (( i=1; i<=WAN_COUNT; i++ )); do
+    iface=$(get_field "$IFACE_LIST" $i)
+    ctype=$(get_field "$CONN_TYPES" $i)
+    dist=$(get_field "$DISTANCES" $i)
+    gw=$(get_field "$GATEWAYS" $i)
 
+    if [ "$ctype" = "static" ]; then
+        cmd "set protocols static route 0.0.0.0/0 next-hop ${gw} distance ${dist}"
+    elif [ "$dist" != "SKIP" ]; then
+        # Primary DHCP — override to 200 so it wins over failover's default 210
+        cmd "set interfaces ethernet ${iface} dhcp-options default-route-distance ${dist}"
+    fi
+    # DHCP failover (SKIP) — no command needed, EdgeOS default of 210 is correct
+done
 
 # ─── Output ───────────────────────────────────────────────────────────────────
 echo ""
