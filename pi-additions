@@ -13,6 +13,7 @@ sudo apt update && sudo apt install fastfetch -y
 sudo apt install smartmontools
 
 # alias commands for easy status checks and changes
+
 nano ~/.bashrc
 
 alias checkdrive='sudo smartctl -i -H /dev/sda'
