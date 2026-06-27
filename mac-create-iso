@@ -1,0 +1,1 @@
+hdiutil makehybrid -iso -joliet -o /Users/admin/Desktop/techstream.iso /Users/admin/Desktop/techstream
