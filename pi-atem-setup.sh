@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v35 - Cloudflared Sudoers Fix)
+# ATEM MONITOR AUTO-INSTALLER (v41 - Rename checkdrive to drivecheck)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -36,7 +36,33 @@ echo ">>> Starting Installation for user: $CURRENT_USER"
 sudo apt update
 sudo apt install -y nodejs npm lftp swaks ffmpeg
 
-# 3. INSTALL CLOUDFLARED (not in Pi OS repos — install binary from GitHub)
+# 3. INSTALL SYSTEM TOOLS
+
+# --- fastfetch ---
+if command -v fastfetch >/dev/null 2>&1; then
+    echo ">>> fastfetch already installed."
+else
+    echo ">>> Installing fastfetch..."
+    sudo apt install -y fastfetch
+fi
+
+# --- smartmontools ---
+if command -v smartctl >/dev/null 2>&1; then
+    echo ">>> smartmontools already installed."
+else
+    echo ">>> Installing smartmontools..."
+    sudo apt install -y smartmontools
+fi
+
+# --- Ookla Speedtest ---
+if command -v speedtest >/dev/null 2>&1; then
+    echo ">>> Ookla speedtest already installed."
+else
+    echo ">>> Installing Ookla speedtest..."
+    sudo apt-get install -y curl
+    curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash
+    sudo apt-get install -y speedtest
+fi
 if command -v cloudflared >/dev/null 2>&1; then
     echo ">>> cloudflared already installed: $(cloudflared --version 2>&1 | head -1)"
 else
@@ -421,7 +447,12 @@ fi
 # HELPERS
 # ===================================================
 LOG_BUFFER=""
-log() { echo "$1"; LOG_BUFFER+="${1}\n"; }
+
+# journal only — does NOT appear in email
+log() { echo "$1"; }
+
+# journal + email buffer
+email_log() { echo "$1"; LOG_BUFFER+="${1}\n"; }
 
 send_notification() {
     if [ "$ENABLE_EMAIL" != "true" ]; then echo "📧 Email Disabled."; return; fi
@@ -449,7 +480,7 @@ send_notification() {
     if [ $? -eq 0 ]; then echo "✅ Email Sent."; else echo "❌ Email Failed."; fi
 }
 
-die() { log "❌ FATAL: $1"; send_notification "FAILED" "$LOG_BUFFER"; exit 1; }
+die() { email_log "❌ FATAL: $1"; send_notification "FAILED" "$LOG_BUFFER"; exit 1; }
 
 # ===================================================
 # FLAGS
@@ -517,7 +548,7 @@ if [ "$RENOTIFY_MODE" = true ]; then
         exit 1
     fi
 
-    log "📋 Found ${#DOWNLOADED_FILES[@]} video file(s) and ${#AUDIO_FILES[@]} audio file(s)."
+    email_log "📋 Found ${#DOWNLOADED_FILES[@]} video file(s) and ${#AUDIO_FILES[@]} audio file(s)."
 
     # Jump straight to tunnel + email (skip download/extraction)
     # shellcheck disable=SC2034
@@ -591,7 +622,7 @@ if [[ -z "$TMP_LIST" ]]; then die "No .mp4 files found."; fi
 # Latest
 LATEST_DATE=$(echo "$TMP_LIST" | cut -d'|' -f1 | sort -u | tail -n 1)
 if [[ -z "$LATEST_DATE" ]]; then die "No date found."; fi
-log "📅 Latest Date: $LATEST_DATE"
+email_log "📅 Latest Date: $LATEST_DATE"
 LATEST_MP4=$(echo "$TMP_LIST" | awk -F'|' -v d="$LATEST_DATE" '$1==d {print $2}' | sort)
 
 # ===================================================
@@ -606,11 +637,11 @@ while IFS= read -r file; do
     NEW_NAME="${FILE_PREFIX}-${COUNT}.mp4"
     LOCAL_PATH="$DEST_DIR/$NEW_NAME"
     if [ -f "$LOCAL_PATH" ]; then
-        log "   ⚠️ Exists: $NEW_NAME"
+        email_log "   ⚠️ Exists: $NEW_NAME"
     else
-        log "   ➡️  $file -> $NEW_NAME"
+        email_log "   ➡️  $file -> $NEW_NAME"
         lftp -c "set net:timeout $TIMEOUT; open ftp://anonymous:@$ATEM_IP; cd $ATEM_SOURCE_DIR; get \"$file\" -o \"$LOCAL_PATH\"" || die "Download failed"
-        log "   ✅ Saved."
+        email_log "   ✅ Saved."
         DOWNLOADED_FILES+=("$LOCAL_PATH")
     fi
     COUNT=$((COUNT+1))
@@ -623,7 +654,7 @@ AUDIO_FILES=()   # extracted M4A paths
 
 if [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ]; then
     if ! command -v ffmpeg >/dev/null 2>&1; then
-        log "⚠️ ffmpeg not found — skipping audio extraction."
+        email_log "⚠️ ffmpeg not found — skipping audio extraction."
     elif [ "${#DOWNLOADED_FILES[@]}" -eq 0 ]; then
         log "ℹ️  No new files downloaded — skipping audio extraction."
     else
@@ -631,7 +662,7 @@ if [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ]; then
         for MP4_PATH in "${DOWNLOADED_FILES[@]}"; do
             M4A_PATH="${MP4_PATH%.mp4}.m4a"
             if [ -f "$M4A_PATH" ]; then
-                log "   ⚠️ Audio exists: $(basename "$M4A_PATH")"
+                email_log "   ⚠️ Audio exists: $(basename "$M4A_PATH")"
                 AUDIO_FILES+=("$M4A_PATH")
             else
                 log "   🎵 $(basename "$MP4_PATH") -> $(basename "$M4A_PATH")"
@@ -640,10 +671,10 @@ if [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ]; then
                           -acodec copy \
                           "$M4A_PATH" \
                           -y -loglevel error 2>&1; then
-                    log "   ✅ Audio saved: $(basename "$M4A_PATH")"
+                    email_log "   ✅ Audio saved: $(basename "$M4A_PATH")"
                     AUDIO_FILES+=("$M4A_PATH")
                 else
-                    log "   ❌ Audio extraction failed for $(basename "$MP4_PATH")"
+                    email_log "   ❌ Audio extraction failed for $(basename "$MP4_PATH")"
                 fi
             fi
         done
@@ -660,7 +691,7 @@ CF_LOG="/tmp/atem-cloudflared.log"
 
 if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
     if ! command -v cloudflared >/dev/null 2>&1; then
-        log "⚠️ cloudflared not found — skipping tunnel."
+        email_log "⚠️ cloudflared not found — skipping tunnel."
     else
         # --- CLOUDFLARED BINARY HELPER ---
         CF_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "arm64")
@@ -673,60 +704,57 @@ if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
         CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_BIN_ARCH}"
 
         cf_download() {
+            local reason="$1"
+            local from_ver="$2"
+            local to_ver="$3"
             log "⬇️  Downloading cloudflared binary..."
-            # sudo is allowed passwordlessly via /etc/sudoers.d/atem-cloudflared
             if sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared; then
                 if cloudflared --version >/dev/null 2>&1; then
-                    log "✅ cloudflared binary verified: $(cloudflared --version 2>&1 | head -1)"
+                    if [[ "$reason" == "reinstalled" ]]; then
+                        email_log "☁️  cloudflared reinstalled v${from_ver} -> v${from_ver}"
+                    else
+                        email_log "☁️  cloudflared updated v${from_ver} -> v${to_ver}"
+                    fi
                     return 0
                 else
-                    log "❌ cloudflared binary downloaded but failed verification."
+                    email_log "⚠️ cloudflared binary downloaded but failed verification."
                     return 1
                 fi
             else
-                log "❌ cloudflared download failed."
+                email_log "⚠️ cloudflared download failed."
                 return 1
             fi
         }
 
-        # --- INTEGRITY CHECK ON EXISTING BINARY ---
-        log "🔍 Checking cloudflared binary integrity..."
         if ! cloudflared --version >/dev/null 2>&1; then
-            log "⚠️  Existing cloudflared binary is broken — replacing..."
-            cf_download || { log "⚠️ Could not replace binary — skipping tunnel."; }
+            CF_INSTALLED="unknown"
+            cf_download "reinstalled" "$CF_INSTALLED" "$CF_INSTALLED" || true
         else
-            # Binary is healthy — check if an update is available
             CF_INSTALLED=$(cloudflared --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
             CF_LATEST=$(curl -fsSL "https://api.github.com/repos/cloudflare/cloudflared/releases/latest" \
                         | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
 
             if [[ -z "$CF_LATEST" ]]; then
-                log "⚠️ Could not fetch latest cloudflared version — skipping update check."
+                email_log "☁️  cloudflared v${CF_INSTALLED} (update check unavailable)"
             elif [[ "$CF_INSTALLED" == "$CF_LATEST" ]]; then
-                log "✅ cloudflared is up to date (v${CF_INSTALLED})."
+                email_log "☁️  cloudflared up to date v${CF_INSTALLED}"
             else
-                log "⬆️  Updating cloudflared v${CF_INSTALLED} -> v${CF_LATEST}..."
-                cf_download || log "⚠️ Update failed — continuing with existing version."
+                cf_download "updated" "$CF_INSTALLED" "$CF_LATEST" || \
+                    email_log "☁️  cloudflared v${CF_INSTALLED} (update to v${CF_LATEST} failed)"
             fi
         fi
 
-        # Kill any existing tunnel from a previous run
-        if pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
-            log "🔄 Stopping previous cloudflared tunnel..."
-            pkill -f "cloudflared tunnel" || true
-            sleep 2
-        fi
+        # --- START TUNNEL (up to 5 attempts, 30s between each) ---
+        TUNNEL_MAX_ATTEMPTS=5
+        TUNNEL_RETRY_DELAY=30
+        TUNNEL_ATTEMPT=0
 
-        log "🌐 Starting Cloudflare tunnel for: $DEST_DIR"
-        cloudflared tunnel --url "http://localhost:8080" --no-autoupdate > "$CF_LOG" 2>&1 &
-        CF_TUNNEL_PID=$!
-
-        # Start Python HTTP server to serve the atem folder.
-        # Custom handler forces download (Content-Disposition: attachment)
-        # for .mp4 and .m4a files so they download rather than play in browser.
-        pkill -f "python3 -m http.server 8080" 2>/dev/null || true
+        # Kill any previous tunnel and HTTP server
+        pkill -f "cloudflared tunnel" 2>/dev/null || true
         pkill -f "AtemFileHandler" 2>/dev/null || true
-        sleep 1
+        sleep 2
+
+        # Start Python HTTP server once — it stays up across tunnel retries
         python3 - "$DEST_DIR" <<'PYEOF' > /tmp/atem-httpd.log 2>&1 &
 import http.server
 import socketserver
@@ -746,7 +774,6 @@ class AtemFileHandler(http.server.SimpleHTTPRequestHandler):
         path = self.translate_path(self.path)
         _, ext = os.path.splitext(path)
         if os.path.isfile(path) and ext.lower() in DOWNLOAD_EXTENSIONS:
-            # Force download instead of inline playback
             try:
                 f = open(path, 'rb')
             except OSError:
@@ -769,27 +796,44 @@ class AtemFileHandler(http.server.SimpleHTTPRequestHandler):
 with socketserver.TCPServer(('', PORT), AtemFileHandler) as httpd:
     httpd.serve_forever()
 PYEOF
+        sleep 1
 
-        # Wait for the trycloudflare.com URL to appear in the log (up to 30s)
-        log "⏳ Waiting for tunnel URL..."
-        for i in $(seq 1 30); do
-            TUNNEL_URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | tail -1 || true)
-            [[ -n "$TUNNEL_URL" ]] && break
+        while [ $TUNNEL_ATTEMPT -lt $TUNNEL_MAX_ATTEMPTS ]; do
+            TUNNEL_ATTEMPT=$((TUNNEL_ATTEMPT + 1))
+
+            # Kill any previous cloudflared attempt before starting fresh
+            pkill -f "cloudflared tunnel" 2>/dev/null || true
             sleep 1
-        done
 
-        if [[ -n "$TUNNEL_URL" ]]; then
-            log "✅ Tunnel active: $TUNNEL_URL"
-        else
-            log "⚠️ Tunnel started but URL not detected — check $CF_LOG"
-        fi
+            cloudflared tunnel --url "http://localhost:8080" --no-autoupdate > "$CF_LOG" 2>&1 &
+
+            # Wait up to 30s for URL to appear
+            TUNNEL_URL=""
+            for i in $(seq 1 30); do
+                TUNNEL_URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | tail -1 || true)
+                [[ -n "$TUNNEL_URL" ]] && break
+                sleep 1
+            done
+
+            if [[ -n "$TUNNEL_URL" ]]; then
+                email_log "✅ Tunnel active: $TUNNEL_URL"
+                break
+            fi
+
+            if [ $TUNNEL_ATTEMPT -lt $TUNNEL_MAX_ATTEMPTS ]; then
+                email_log "⚠️ Tunnel attempt ${TUNNEL_ATTEMPT}/${TUNNEL_MAX_ATTEMPTS} failed — retrying in ${TUNNEL_RETRY_DELAY}s..."
+                sleep $TUNNEL_RETRY_DELAY
+            else
+                email_log "❌ Tunnel failed after ${TUNNEL_MAX_ATTEMPTS} attempts — use --renotify when Cloudflare recovers."
+            fi
+        done
     fi
 fi
 
 # ===================================================
 # BUILD EMAIL BODY & NOTIFY
 # ===================================================
-log "🎉 Complete."
+email_log "🎉 Complete."
 
 # Append tunnel links to email body if available
 EMAIL_BODY="$LOG_BUFFER"
@@ -840,7 +884,34 @@ chown "$CURRENT_USER:$CURRENT_USER" "$TRIGGER_SCRIPT"
 chown "$CURRENT_USER:$CURRENT_USER" "$CONFIG_FILE"
 chmod 700 "$CONTROL_SCRIPT"
 
-# 12. RESTART SERVICE
+# 12. SETUP ALIASES
+BASHRC="$HOME_DIR/.bashrc"
+echo ">>> Setting up aliases..."
+
+# Remove old alias names from previous installs
+for OLD_ALIAS in checkatem logatem restartatem checkdrive; do
+    sed -i "/^alias ${OLD_ALIAS}=/d" "$BASHRC"
+done
+
+# Define the aliases we manage — add new ones here as needed
+declare -A ATEM_ALIASES=(
+    ["atemcheck"]="sudo systemctl status atem-monitor --no-pager -l"
+    ["atemlog"]="journalctl -u atem-monitor --no-pager"
+    ["atemrestart"]="sudo systemctl restart atem-monitor"
+    ["drivecheck"]="sudo smartctl -i -H /dev/sda"
+    ["ff"]="fastfetch"
+)
+
+for ALIAS_NAME in "${!ATEM_ALIASES[@]}"; do
+    ALIAS_CMD="${ATEM_ALIASES[$ALIAS_NAME]}"
+    ALIAS_LINE="alias ${ALIAS_NAME}='${ALIAS_CMD}'"
+    # Remove any existing version of this alias then re-add it
+    sed -i "/^alias ${ALIAS_NAME}=/d" "$BASHRC"
+    echo "$ALIAS_LINE" >> "$BASHRC"
+    echo ">>> alias ${ALIAS_NAME} set."
+done
+
+# 13. RESTART SERVICE
 sudo bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
 Description=ATEM Automation System
@@ -861,10 +932,10 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v35 (Cloudflared Sudoers Fix)"
-echo "   - Added sudoers rule for passwordless cloudflared update"
-echo "   - Auto-update now works correctly from systemd service"
-echo "   - Sudoers rule validated with visudo before applying"
+echo "✅ UPDATED TO v41 (Renamed checkdrive -> drivecheck)"
+echo "   - drivecheck → sudo smartctl -i -H /dev/sda"
+echo "   - Old checkdrive alias removed"
+echo "   - Run 'source ~/.bashrc' to activate in current session"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
