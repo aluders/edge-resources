@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v43 - Clean Tunnel Active Line)
+# ATEM MONITOR AUTO-INSTALLER (v44 - Remove Trailing Periods)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -548,7 +548,7 @@ if [ "$RENOTIFY_MODE" = true ]; then
         exit 1
     fi
 
-    email_log "📋 Found ${#DOWNLOADED_FILES[@]} video file(s) and ${#AUDIO_FILES[@]} audio file(s)."
+    email_log "📋 Found ${#DOWNLOADED_FILES[@]} video file(s) and ${#AUDIO_FILES[@]} audio file(s)"
 
     # Jump straight to tunnel + email (skip download/extraction)
     # shellcheck disable=SC2034
@@ -641,7 +641,7 @@ while IFS= read -r file; do
     else
         email_log "   ➡️  $file -> $NEW_NAME"
         lftp -c "set net:timeout $TIMEOUT; open ftp://anonymous:@$ATEM_IP; cd $ATEM_SOURCE_DIR; get \"$file\" -o \"$LOCAL_PATH\"" || die "Download failed"
-        email_log "   ✅ Saved."
+        email_log "   ✅ Saved"
         DOWNLOADED_FILES+=("$LOCAL_PATH")
     fi
     COUNT=$((COUNT+1))
@@ -654,7 +654,7 @@ AUDIO_FILES=()   # extracted M4A paths
 
 if [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ]; then
     if ! command -v ffmpeg >/dev/null 2>&1; then
-        email_log "⚠️ ffmpeg not found — skipping audio extraction."
+        email_log "⚠️ ffmpeg not found — skipping audio extraction"
     elif [ "${#DOWNLOADED_FILES[@]}" -eq 0 ]; then
         log "ℹ️  No new files downloaded — skipping audio extraction."
     else
@@ -691,7 +691,7 @@ CF_LOG="/tmp/atem-cloudflared.log"
 
 if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
     if ! command -v cloudflared >/dev/null 2>&1; then
-        email_log "⚠️ cloudflared not found — skipping tunnel."
+        email_log "⚠️ cloudflared not found — skipping tunnel"
     else
         # --- CLOUDFLARED BINARY HELPER ---
         CF_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "arm64")
@@ -717,11 +717,11 @@ if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
                     fi
                     return 0
                 else
-                    email_log "⚠️ cloudflared binary downloaded but failed verification."
+                    email_log "⚠️ cloudflared binary downloaded but failed verification"
                     return 1
                 fi
             else
-                email_log "⚠️ cloudflared download failed."
+                email_log "⚠️ cloudflared download failed"
                 return 1
             fi
         }
@@ -824,7 +824,7 @@ PYEOF
                 email_log "⚠️ Tunnel attempt ${TUNNEL_ATTEMPT}/${TUNNEL_MAX_ATTEMPTS} failed — retrying in ${TUNNEL_RETRY_DELAY}s..."
                 sleep $TUNNEL_RETRY_DELAY
             else
-                email_log "❌ Tunnel failed after ${TUNNEL_MAX_ATTEMPTS} attempts — use --renotify when Cloudflare recovers."
+                email_log "❌ Tunnel failed after ${TUNNEL_MAX_ATTEMPTS} attempts — use --renotify when Cloudflare recovers"
             fi
         done
     fi
@@ -833,7 +833,7 @@ fi
 # ===================================================
 # BUILD EMAIL BODY & NOTIFY
 # ===================================================
-email_log "🎉 Complete."
+email_log "🎉 Complete"
 
 # Append tunnel links to email body if available
 EMAIL_BODY="$LOG_BUFFER"
@@ -931,9 +931,8 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v43 (Clean Tunnel Active Line)"
-echo "   - Tunnel URL no longer duplicated in status line"
-echo "   - URL appears only in download links section"
+echo "✅ UPDATED TO v44 (Remove Trailing Periods)"
+echo "   - Trailing periods removed from all email log lines"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
