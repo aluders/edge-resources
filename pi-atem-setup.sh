@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v41 - Rename checkdrive to drivecheck)
+# ATEM MONITOR AUTO-INSTALLER (v42 - Remove ff Alias)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -889,7 +889,7 @@ BASHRC="$HOME_DIR/.bashrc"
 echo ">>> Setting up aliases..."
 
 # Remove old alias names from previous installs
-for OLD_ALIAS in checkatem logatem restartatem checkdrive; do
+for OLD_ALIAS in checkatem logatem restartatem checkdrive ff; do
     sed -i "/^alias ${OLD_ALIAS}=/d" "$BASHRC"
 done
 
@@ -899,7 +899,6 @@ declare -A ATEM_ALIASES=(
     ["atemlog"]="journalctl -u atem-monitor --no-pager"
     ["atemrestart"]="sudo systemctl restart atem-monitor"
     ["drivecheck"]="sudo smartctl -i -H /dev/sda"
-    ["ff"]="fastfetch"
 )
 
 for ALIAS_NAME in "${!ATEM_ALIASES[@]}"; do
@@ -932,9 +931,8 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v41 (Renamed checkdrive -> drivecheck)"
-echo "   - drivecheck → sudo smartctl -i -H /dev/sda"
-echo "   - Old checkdrive alias removed"
+echo "✅ UPDATED TO v42 (Remove ff Alias)"
+echo "   - ff alias removed"
 echo "   - Run 'source ~/.bashrc' to activate in current session"
 echo "================================================="
 
