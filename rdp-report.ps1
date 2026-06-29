@@ -1,5 +1,5 @@
 # elevated powershell
-# irm rdpreport.vcc.net | iex
+# irm rdp-report.vcc.net | iex
 
 # 1. Check for Administrator privileges
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
