@@ -2,7 +2,297 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v44 - Remove Trailing Periods)
+# ATEM MONITOR AUTO-INSTALLER (v44)
+# ==========================================
+#
+# WHAT THIS SCRIPT DOES
+# ------------------------------------------
+# This installer sets up a fully automated ATEM video switcher
+# monitoring and media pipeline on a Raspberry Pi. Once installed,
+# the system runs as a systemd service and handles:
+#
+#   1. AUTO-RECORD   — Triggers ATEM recording to start at a
+#                      configured time on configured day(s).
+#
+#   2. AUTO-STREAM   — Triggers ATEM streaming to start at a
+#                      configured time on configured day(s).
+#
+#   3. DOWNLOAD      — When recording stops (detected via the ATEM
+#                      network protocol), downloads the latest MP4
+#                      files from the ATEM's built-in FTP server.
+#                      Protected by day-of-week and time-of-day
+#                      guards to prevent accidental downloads from
+#                      test recordings.
+#
+#   4. AUDIO EXTRACT — Extracts the AAC audio track from downloaded
+#                      MP4 files as M4A using ffmpeg stream copy
+#                      (no re-encoding — fast and lossless).
+#
+#   5. TUNNEL        — Starts a Cloudflare quick tunnel serving the
+#                      atem/ folder so files can be downloaded
+#                      remotely without port forwarding. The tunnel
+#                      self-updates cloudflared before starting and
+#                      retries up to 5 times if Cloudflare's API
+#                      is briefly unavailable.
+#
+#   6. EMAIL         — Sends a notification email via SMTP (swaks)
+#                      when the pipeline completes, including direct
+#                      download links for audio and/or video files
+#                      and a folder browse link via the tunnel URL.
+#
+# SAFE TO RE-RUN
+# ------------------------------------------
+# This installer is idempotent. Running it again over an existing
+# install updates scripts and the service without touching your
+# atem.config (credentials and settings are always preserved).
+# New config keys added in later versions must be added to your
+# existing config manually — the script defaults safely if they
+# are missing (except DOWNLOAD_DAY and DOWNLOAD_AFTER_HOUR which
+# are required and will error loudly if absent).
+#
+# INSTALLED FILES
+# ------------------------------------------
+#   ~/atem.config              Central config file (credentials,
+#                              schedule, feature toggles)
+#   ~/atem-control.sh          Main control script (download,
+#                              extract, tunnel, email)
+#   ~/atem-monitor-js/         Node.js project directory
+#     monitor.js               Watchdog — connects to ATEM,
+#                              detects recording state changes,
+#                              runs scheduler for auto-record/stream
+#     trigger.js               One-shot script to send record or
+#                              stream commands to the ATEM
+#   ~/atem/                    Download destination for MP4 and
+#                              M4A files
+#   /etc/systemd/system/
+#     atem-monitor.service     systemd service that keeps monitor.js
+#                              running on boot and after crashes
+#   /etc/sudoers.d/
+#     atem-cloudflared         Allows passwordless sudo for
+#                              cloudflared binary updates
+#   /etc/systemd/journald.conf.d/
+#     50-persistent.conf       Configures persistent journal logging
+#
+# SHELL ALIASES (added to ~/.bashrc)
+# ------------------------------------------
+#   atemcheck    sudo systemctl status atem-monitor --no-pager -l
+#   atemlog      journalctl -u atem-monitor --no-pager
+#   atemrestart  sudo systemctl restart atem-monitor
+#   drivecheck   sudo smartctl -i -H /dev/sda
+#
+# SYSTEM TOOLS INSTALLED
+# ------------------------------------------
+#   nodejs, npm      Required for monitor.js and trigger.js
+#   lftp             FTP client for downloading from ATEM
+#   swaks            SMTP client for sending notification emails
+#   ffmpeg           Audio extraction (M4A stream copy)
+#   cloudflared      Cloudflare tunnel binary (installed from
+#                    GitHub releases, not apt — not in Pi OS repos)
+#   fastfetch        System info display
+#   smartmontools    Drive health monitoring (smartctl)
+#   speedtest        Ookla CLI speedtest (installed via packagecloud)
+#
+# CONTROL SCRIPT FLAGS (~/atem-control.sh)
+# ------------------------------------------
+#   (no flag)      Normal run — download, extract, tunnel, email.
+#                  Day and time guards apply.
+#   --on-demand    Bypass day/time guards. Runs full pipeline
+#                  immediately. Good for testing end-to-end.
+#   --renotify     Skip download and extraction entirely. Finds
+#                  existing files in ~/atem/ matching today's date,
+#                  starts a fresh tunnel, and sends a new email.
+#                  Use if the tunnel died after a successful download.
+#                  Optional date filter: --renotify 2026-0628
+#   --test-email   Sends a test email using current SMTP settings.
+#   --test-record  Connects to ATEM and triggers START RECORDING.
+#   --test-stream  Connects to ATEM and triggers START STREAMING.
+#   --help         Full usage guide with all flags and config keys.
+#
+# CONFIG FILE REFERENCE (~/atem.config)
+# ------------------------------------------
+#   CONNECTION:
+#     ATEM_IP              IP address of the ATEM switcher
+#     ATEM_SOURCE_DIR      FTP directory on the ATEM to download from
+#
+#   SCHEDULE:
+#     ENABLE_AUTO_RECORD   true/false — auto-start ATEM recording
+#     RECORD_START_TIME    HH:MM (24h) — when to start recording
+#     ENABLE_AUTO_STREAM   true/false — auto-start ATEM streaming
+#     STREAM_START_TIME    HH:MM (24h) — when to start streaming
+#
+#   DOWNLOAD:
+#     ENABLE_DOWNLOAD      true/false — enable FTP download
+#     DOWNLOAD_DAY         Day(s) to allow downloads. 1=Mon...7=Sun
+#                          Comma-separated for multiple: "3,7"
+#     DOWNLOAD_AFTER_HOUR  Only download if recording stops at or
+#                          after this hour (24h). Required — no
+#                          default. Prevents accidental downloads
+#                          from early test recordings.
+#
+#   AUDIO:
+#     ENABLE_AUDIO_EXTRACT true/false — extract M4A from MP4s
+#
+#   TUNNEL:
+#     ENABLE_TUNNEL        true/false — start Cloudflare tunnel
+#     EMAIL_LINK_AUDIO     true/false — include M4A links in email
+#                          (requires ENABLE_TUNNEL + ENABLE_AUDIO_EXTRACT)
+#     EMAIL_LINK_VIDEO     true/false — include MP4 links in email
+#                          (requires ENABLE_TUNNEL)
+#
+#   EMAIL:
+#     ENABLE_EMAIL         true/false — send notification emails
+#     SMTP_SERVER          SMTP server hostname
+#     SMTP_PORT            SMTP port (typically 587)
+#     SMTP_USER            SMTP auth username
+#     SMTP_PASS            SMTP auth password (use app password)
+#     EMAIL_FROM           Sender address
+#     EMAIL_FROM_NAME      Sender display name (optional)
+#     EMAIL_TO             Recipient(s), comma-separated
+#     EMAIL_SUBJECT_PREFIX Prefix added to all email subjects
+#
+# LOGGING
+# ------------------------------------------
+# The service logs to the systemd journal. Two logging functions
+# are used internally:
+#   log()        Writes to journal only (internal plumbing detail)
+#   email_log()  Writes to journal AND the email body buffer
+#
+# This means the email you receive contains a clean summary of
+# meaningful events, while the full detail (FTP listing, binary
+# download progress, tunnel startup) remains available in the
+# journal for debugging via atemlog.
+#
+# TROUBLESHOOTING
+# ------------------------------------------
+# Tunnel URL not detected in email:
+#   → Cloudflare's quick tunnel API occasionally returns a 500.
+#     The script retries up to 5 times at 30-second intervals.
+#     If all attempts fail, use --renotify once Cloudflare recovers.
+#
+# cloudflared update fails silently from service:
+#   → sudo inside a non-interactive systemd session requires the
+#     sudoers rule in /etc/sudoers.d/atem-cloudflared. The installer
+#     creates this automatically. Verify with:
+#     sudo cat /etc/sudoers.d/atem-cloudflared
+#
+# Download skipped every week (not Sunday / before hour):
+#   → Check DOWNLOAD_DAY and DOWNLOAD_AFTER_HOUR in atem.config.
+#     Use --on-demand to bypass guards for testing.
+#
+# No files found on ATEM FTP:
+#   → Verify ATEM_SOURCE_DIR matches the folder name on the ATEM.
+#     Test FTP manually: lftp ftp://anonymous:@<ATEM_IP>
+#
+# Email not sending:
+#   → Run --test-email to isolate SMTP issues from the rest of
+#     the pipeline. Check SMTP_USER/SMTP_PASS (use app password
+#     for Gmail, not your account password).
+#
+# Journal logs not persisting after reboot:
+#   → The installer configures persistent journal logging. If logs
+#     are still lost after reboot, check:
+#     cat /etc/systemd/journald.conf.d/50-persistent.conf
+#     A reboot is required after first install for this to take effect.
+#
+# CHANGELOG
+# ------------------------------------------
+# v44 - Removed trailing periods from all email log lines
+#       for consistent formatting.
+#
+# v43 - Tunnel URL removed from the "Tunnel active" status line
+#       in the email — it was redundant since the URL already
+#       appears in the download links section below it.
+#
+# v42 - Removed the ff (fastfetch) alias — unnecessary shortcut.
+#
+# v41 - Renamed checkdrive alias to drivecheck to match the
+#       verb-noun convention used by the other aliases.
+#
+# v40 - Added system tools installation: fastfetch, smartmontools,
+#       and Ookla speedtest (via packagecloud).
+#       Added drivecheck and ff aliases.
+#
+# v39 - Renamed aliases to verb-noun convention:
+#       checkatem → atemcheck, logatem → atemlog,
+#       restartatem → atemrestart.
+#       Updated atemlog to drop -f flag (dump and exit).
+#       Updated atemcheck to add --no-pager -l flags.
+#       Old alias names are cleaned up on re-run.
+#
+# v38 - Added managed aliases to ~/.bashrc. Installer now creates
+#       and updates atemcheck, atemlog, atemrestart on every run.
+#
+# v37 - Split logging into log() (journal only) and email_log()
+#       (journal + email buffer). Internal plumbing lines no longer
+#       appear in notification emails. Email now shows a clean
+#       summary of meaningful events only.
+#
+# v36 - Tunnel startup now retries up to 5 times at 30-second
+#       intervals before giving up. Cloudflared version logging
+#       consolidated to a single clean status line. Python HTTP
+#       server stays up across tunnel retry attempts.
+#
+# v35 - Added /etc/sudoers.d/atem-cloudflared so the service can
+#       update the cloudflared binary without a password prompt.
+#       Fixes silent update failures when running from systemd.
+#
+# v34 - Cloudflared binary integrity check added. Broken binaries
+#       (correct version string but corrupt) are now detected and
+#       replaced automatically before starting the tunnel.
+#       Post-download verification confirms the new binary works.
+#
+# v33 - Added --renotify flag. Skips download and extraction,
+#       finds existing files matching today's date (or an optional
+#       date argument), starts a fresh tunnel, and resends the
+#       notification email. Useful when the tunnel dies after a
+#       successful download.
+#
+# v32 - Added EMAIL_LINK_AUDIO and EMAIL_LINK_VIDEO config keys
+#       to control which file types get direct download links in
+#       the notification email. Multiple recordings each get their
+#       own link. Folder link always included when tunnel is active.
+#
+# v31 - Python HTTP server now forces Content-Disposition: attachment
+#       for .mp4 and .m4a files so they download rather than play
+#       in the browser when links are clicked.
+#
+# v30 - Cloudflared auto-update added to tunnel startup. Checks
+#       GitHub releases API, updates binary in-place if behind.
+#       Gracefully skips update if GitHub is unreachable.
+#
+# v29 - cloudflared removed from apt and installed directly from
+#       GitHub releases binary. Auto-detects arm64/armhf/amd64.
+#       Skipped if cloudflared is already present.
+#
+# v28 - DOWNLOAD_DAY now accepts comma-separated values for
+#       multi-day support (e.g. "3,7" for Wednesday and Sunday).
+#       monitor.js scheduler updated to match.
+#
+# v27 - DOWNLOAD_DAY config key added (replaces hardcoded Sunday
+#       check). DOWNLOAD_AFTER_HOUR fallback removed — both keys
+#       are now required and error loudly if absent.
+#       monitor.js scheduler reads DOWNLOAD_DAY from config.
+#
+# v26 - DOWNLOAD_AFTER_HOUR config key added. Previously hardcoded
+#       11 AM guard is now user-configurable per deployment.
+#
+# v25 - Cloudflare tunnel added. After extraction, a quick tunnel
+#       is started serving the atem/ folder. Direct M4A and folder
+#       browse links included in the notification email. Previous
+#       tunnel killed and replaced on each run.
+#
+# v24 - Audio extraction changed from MP3 (libmp3lame) to M4A
+#       stream copy (-acodec copy). Faster, lossless, no ffmpeg
+#       re-encoding. Installer now checks and configures persistent
+#       systemd journal logging with reboot prompt if needed.
+#
+# v23 - Added --help flag with full usage guide. Added
+#       ENABLE_AUDIO_EXTRACT and AUDIO_EMAIL_ATTACH config keys.
+#       Added ffmpeg to dependency install.
+#
+# v22 - Initial clean config release. Config comments simplified.
+#       Central atem.config file introduced for all settings.
+#
 # ==========================================
 
 # 1. DETECT REAL USER
