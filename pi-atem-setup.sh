@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v42 - Remove ff Alias)
+# ATEM MONITOR AUTO-INSTALLER (v43 - Clean Tunnel Active Line)
 # ==========================================
 
 # 1. DETECT REAL USER
@@ -816,7 +816,7 @@ PYEOF
             done
 
             if [[ -n "$TUNNEL_URL" ]]; then
-                email_log "✅ Tunnel active: $TUNNEL_URL"
+                email_log "✅ Tunnel active"
                 break
             fi
 
@@ -931,9 +931,9 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v42 (Remove ff Alias)"
-echo "   - ff alias removed"
-echo "   - Run 'source ~/.bashrc' to activate in current session"
+echo "✅ UPDATED TO v43 (Clean Tunnel Active Line)"
+echo "   - Tunnel URL no longer duplicated in status line"
+echo "   - URL appears only in download links section"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
