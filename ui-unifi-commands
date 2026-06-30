@@ -45,6 +45,6 @@ jq '.enableSsh=true' /etc/unifi-protect/config.json 2>/dev/null \
 systemctl restart unifi-protect
 
 # manual ssh install or upgrade unifi os example...
-$ sudo curl -LO https://fw-download.ubnt.com/data/unifi-os-server/c2e4-linux-x64-5.0.8-bcb62759-753a-4be2-8546-a6e0de63e59a.8-x64
-$ sudo chmod +x ./c2e4-linux-x64-5.0.8-bcb62759-753a-4be2-8546-a6e0de63e59a.8-x64
+$ curl -LO https://fw-download.ubnt.com/data/unifi-os-server/c2e4-linux-x64-5.0.8-bcb62759-753a-4be2-8546-a6e0de63e59a.8-x64
+$ chmod +x ./c2e4-linux-x64-5.0.8-bcb62759-753a-4be2-8546-a6e0de63e59a.8-x64
 $ sudo ./c2e4-linux-x64-5.0.8-bcb62759-753a-4be2-8546-a6e0de63e59a.8-x64
