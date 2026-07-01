@@ -15,6 +15,5 @@ curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.
 sudo apt install speedtest
 
 # ubuntu 26.04 lts (resolute raccoon)
-curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash
-sudo sed -i 's/resolute/noble/g' /etc/apt/sources.list.d/ookla_speedtest-cli.list
-sudo apt install speedtest
+curl -L -o speedtest.deb https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.deb
+sudo dpkg -i speedtest.deb
