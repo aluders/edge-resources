@@ -13,3 +13,8 @@ sudo apt install speedtest
 # raspberry pi
 curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash
 sudo apt install speedtest
+
+# ubuntu 26.04 lts (resolute raccoon)
+curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash
+sudo sed -i 's/resolute/noble/g' /etc/apt/sources.list.d/ookla_speedtest-cli.list
+sudo apt install speedtest
