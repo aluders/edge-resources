@@ -1,4 +1,56 @@
 #!/usr/bin/env bash
+#
+# install_speedtest.sh
+# ---------------------------------------------------------------------------
+# Installs (or updates) the official Ookla Speedtest CLI binary directly from
+# Ookla's download CDN, bypassing their apt/packagecloud repo.
+#
+# WHY THIS EXISTS:
+#   Ookla's published apt repo (packagecloud.io / install.deb.sh) does not
+#   currently have a build for Ubuntu 26.04's codename, so `apt install
+#   speedtest` fails with an unrecognized-distribution error on this release.
+#   This script works around that by scraping the current download URL from
+#   the Speedtest CLI landing page and installing the raw binary to
+#   /usr/local/bin instead of going through apt.
+#
+# WHAT IT DOES:
+#   1. Removes any stale apt source/keyring left behind by a previous
+#      install.deb.sh attempt, so they don't conflict with future `apt
+#      update` runs.
+#   2. Detects CPU architecture (x86_64 / aarch64 / armhf / i386) and scrapes
+#      https://www.speedtest.net/apps/cli for the matching .tgz download URL.
+#   3. Compares the upstream version against any currently installed
+#      `speedtest` binary; skips reinstalling if already current.
+#   4. Downloads and extracts the binary into a temp dir, then moves it to
+#      /usr/local/bin/speedtest.
+#   5. Verifies the install and prints the resulting version.
+#
+# Re-run this script any time to check for/apply updates (idempotent).
+#
+# ---------------------------------------------------------------------------
+# OFFICIAL INSTALL METHODS ON OTHER PLATFORMS (for reference / other hosts):
+#
+#   # Windows (PowerShell)
+#   winget install --id Ookla.Speedtest.CLI -e
+#
+#   # macOS (Homebrew)
+#   brew tap teamookla/speedtest
+#   brew update
+#   brew install speedtest --force
+#
+#   # Debian/Ubuntu (official Ookla apt repo — works on supported releases)
+#   curl -s https://install.speedtest.net/app/cli/install.deb.sh | sudo bash
+#   sudo apt install speedtest
+#
+#   # Raspberry Pi (Ookla's packagecloud repo, separate from the one above)
+#   curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash
+#   sudo apt install speedtest
+#
+#   NOTE: This script (install_speedtest.sh) is the fallback for hosts where
+#   the repo-based methods above don't work — e.g. Ubuntu 26.04 as of this
+#   writing.
+# ---------------------------------------------------------------------------
+
 set -euo pipefail
 
 # 1. Clean up stale repository configurations left over from previous methods
