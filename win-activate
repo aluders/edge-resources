@@ -1,4 +1,4 @@
 https://github.com/massgravel/Microsoft-Activation-Scripts
 
 elevated powershell
-irm https://get.activated.win | iex
+irm get.activated.win | iex
