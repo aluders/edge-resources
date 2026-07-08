@@ -2,9 +2,84 @@
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EdgeRouter WAN Failover Config Generator
-# Compatible with macOS default bash (3.2) — no associative arrays used.
-# Run: bash er-failover-gen.sh   OR   chmod +x er-failover-gen.sh && ./er-failover-gen.sh
 # ─────────────────────────────────────────────────────────────────────────────
+# Interactively walks through a multi-WAN EdgeOS load-balance/failover setup
+# and generates the corresponding `set` commands, ready to paste into an
+# EdgeRouter `configure` session. The clean command list is also copied to
+# the clipboard via pbcopy.
+#
+# USAGE:
+#   bash er-failover-gen.sh
+#   ./er-failover-gen.sh          (after chmod +x)
+#   er-failover-gen.sh -h | --help
+#
+# INTERACTIVE PROMPTS (in order):
+#   - Load-balance group name              (default: WLB)
+#   - LAN interface                        (default: switch0)
+#   - Number of WAN interfaces             (default: 2, range 2-9)
+#   - Per-WAN: interface name, connection type (dhcp/static),
+#     static gateway IP (if static), ping target for route-test
+#   - Primary WAN selection
+#   - Per-secondary-WAN: failover-only flag, route distance (static only)
+#   - Extra private/bypass networks (blank line to finish)
+#
+# OUTPUT:
+#   - Formatted command list printed to the terminal, grouped by section
+#   - Clean (comment-free) command list copied to the clipboard via pbcopy
+#   - A manual-configuration checklist (NAT masquerade, DHCP DNS no-update,
+#     per-WAN firewall ruleset assignment) printed at the end
+#
+# NOTES:
+#   - Compatible with macOS default bash (3.2) — no associative arrays used.
+#   - Requires pbcopy (macOS) and python3 for clipboard copy.
+#   - Generated commands still require manual firewall ruleset names and
+#     NAT masquerade rules to be applied per WAN interface — see the
+#     checklist printed at the end of the script's output.
+#
+# REQUIREMENTS:
+#   bash 3.2+, python3, pbcopy (macOS)
+#
+# VERSION: 1.1
+# ─────────────────────────────────────────────────────────────────────────────
+
+show_help() {
+    cat << 'EOF'
+EdgeRouter WAN Failover Config Generator
+
+Usage:
+  bash er-failover-gen.sh
+  ./er-failover-gen.sh
+  er-failover-gen.sh -h | --help
+
+Interactively prompts for:
+  - Load-balance group name (default: WLB)
+  - LAN interface (default: switch0)
+  - Number of WAN interfaces (default: 2, range 2-9)
+  - Per-WAN interface name, connection type, gateway/ping target
+  - Primary WAN selection and failover flags for secondaries
+  - Route distances for static secondary interfaces
+  - Extra private networks to bypass the load balancer
+
+Output:
+  - Prints the generated EdgeOS 'set' commands, grouped by section
+  - Copies a clean, comment-free version of the commands to the clipboard
+  - Prints a manual-configuration checklist (NAT masquerade, DHCP DNS
+    no-update, per-WAN firewall ruleset assignment)
+
+Requirements:
+  bash 3.2+, python3, pbcopy (macOS)
+EOF
+}
+
+# --- Help Flag ---
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+    esac
+done
 
 RED='\033[0;31m'
 GRN='\033[0;32m'
