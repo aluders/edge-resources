@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 1.1
+# Version: 1.2
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -23,8 +23,21 @@
 #          - Full verbose output for every folder now logged to
 #            C:\VSSCopyLogs\<timestamp>\<user>-<folder>.log for later
 #            review (e.g. drives with SMART caution status / bad sectors).
+#   v1.2 - Prerequisite auto-install.
+#          - Checks for .NET Framework 4.8 (registry Release value) and
+#            silently installs Microsoft's offline installer if missing.
+#          - Checks for VSSCopy.exe and silently installs from the hosted
+#            SetupVSSCopy.exe (Inno Setup, /VERYSILENT) if missing.
+#          - Handles the "installed, reboot required" case (exit 3010)
+#            explicitly instead of proceeding into a guaranteed failure.
 
-$VssCopyExe = "C:\Program Files\VSSCopy\VSSCopy.exe"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
+
+$VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
+$VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
+$DotNetInstallerUrl  = "https://go.microsoft.com/fwlink/?linkid=2088631"  # official .NET Framework 4.8 offline installer
+$DotNet48Release     = 528040  # minimum registry 'Release' value for .NET Framework 4.8
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
 $LogDir = "C:\VSSCopyLogs\$(Get-Date -Format 'yyyy-MM-dd_HHmmss')"
 
@@ -32,6 +45,65 @@ function Exit-WithPause($code = 0) {
     Write-Host "------------------------------------" -ForegroundColor Gray
     Read-Host " Press Enter to exit"
     return
+}
+
+function Test-DotNet48 {
+    try {
+        $release = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -Name Release -ErrorAction Stop).Release
+        return ($release -ge $DotNet48Release)
+    } catch {
+        return $false
+    }
+}
+
+function Install-DotNet48 {
+    Write-Host " [~] .NET Framework 4.8 not detected. Downloading installer..." -ForegroundColor Yellow
+    $installerPath = Join-Path $env:TEMP "ndp48-setup.exe"
+    try {
+        Invoke-WebRequest -Uri $DotNetInstallerUrl -OutFile $installerPath -UseBasicParsing
+    } catch {
+        Write-Host " [!] Failed to download .NET Framework installer: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host " [~] Installing .NET Framework 4.8 (silent, can take a few minutes)..." -ForegroundColor Yellow
+    $proc = Start-Process -FilePath $installerPath -ArgumentList '/q', '/norestart' -Wait -PassThru
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+
+    if ($proc.ExitCode -eq 0) {
+        Write-Host " [+] .NET Framework 4.8 installed successfully." -ForegroundColor Green
+        return $true
+    } elseif ($proc.ExitCode -eq 3010) {
+        Write-Host " [!] .NET Framework 4.8 installed, but a REBOOT is required before VSSCopy will work." -ForegroundColor Red
+        Write-Host "     Reboot the machine, then re-run this script." -ForegroundColor Red
+        return $false
+    } else {
+        Write-Host " [!] .NET Framework install failed (exit code $($proc.ExitCode))." -ForegroundColor Red
+        return $false
+    }
+}
+
+function Install-VSSCopy {
+    Write-Host " [~] VSSCopy.exe not found. Downloading installer..." -ForegroundColor Yellow
+    $installerPath = Join-Path $env:TEMP "SetupVSSCopy.exe"
+    try {
+        Invoke-WebRequest -Uri $VssCopySetupUrl -OutFile $installerPath -UseBasicParsing
+    } catch {
+        Write-Host " [!] Failed to download VSSCopy installer: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host " [~] Installing VSSCopy (silent)..." -ForegroundColor Yellow
+    $proc = Start-Process -FilePath $installerPath -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+
+    if ($proc.ExitCode -eq 0) {
+        Write-Host " [+] VSSCopy installed successfully." -ForegroundColor Green
+        return $true
+    } else {
+        Write-Host " [!] VSSCopy install failed (exit code $($proc.ExitCode))." -ForegroundColor Red
+        return $false
+    }
 }
 
 Write-Host "------------------------------------" -ForegroundColor Gray
@@ -46,11 +118,25 @@ if (-not $isAdmin) {
     return
 }
 
-# --- Verify VSSCopy.exe exists ---
+# --- Check / install .NET Framework 4.8 prerequisite ---
+if (-not (Test-DotNet48)) {
+    if (-not (Install-DotNet48)) {
+        Exit-WithPause 1
+        return
+    }
+}
+
+# --- Check / install VSSCopy ---
 if (-not (Test-Path $VssCopyExe)) {
-    Write-Host " [!] VSSCopy.exe not found at $VssCopyExe" -ForegroundColor Red
-    Exit-WithPause 1
-    return
+    if (-not (Install-VSSCopy)) {
+        Exit-WithPause 1
+        return
+    }
+    if (-not (Test-Path $VssCopyExe)) {
+        Write-Host " [!] VSSCopy install reported success but $VssCopyExe still not found." -ForegroundColor Red
+        Exit-WithPause 1
+        return
+    }
 }
 
 # --- Prompt for source/destination drive letters ---
@@ -176,6 +262,6 @@ foreach ($user in $users) {
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " [i] Done. Success: $successCount  Skipped: $skipCount  Failed: $failCount" -ForegroundColor Cyan
-Write-Host " [i] Copy-UserFolders.ps1 v1.1" -ForegroundColor Gray
+Write-Host " [i] Copy-UserFolders.ps1 v1.2" -ForegroundColor Gray
 Write-Host "------------------------------------" -ForegroundColor Gray
 Exit-WithPause
