@@ -1,12 +1,32 @@
 # Copy-UserFolders.ps1
+# Version: 1.1
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
 # <Source>:\Users to <Destination>:\Users using VSSCopy.exe (VSS-aware,
 # handles open/locked files).
+#
+# CHANGELOG:
+#   v1.0 - Initial release.
+#          - Prompts for source/destination drive letters.
+#          - Enumerates users under <Source>:\Users, copies Documents/
+#            Desktop/Pictures to <Destination>:\Users via VSSCopy -s -v.
+#          - Skips (does not fail) folders missing on source.
+#          - Admin + VSSCopy.exe existence checks, confirm-before-run.
+#          - Final success/skip/fail summary.
+#   v1.1 - Live progress + logging overhaul.
+#          - Streams VSSCopy output line-by-line instead of dumping the
+#            full transcript only on failure.
+#          - Rolling single-line status shows current file being copied.
+#          - Error/fatal/"cannot find"/access-denied lines print
+#            immediately in red as they occur, instead of only at the end.
+#          - Full verbose output for every folder now logged to
+#            C:\VSSCopyLogs\<timestamp>\<user>-<folder>.log for later
+#            review (e.g. drives with SMART caution status / bad sectors).
 
 $VssCopyExe = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
+$LogDir = "C:\VSSCopyLogs\$(Get-Date -Format 'yyyy-MM-dd_HHmmss')"
 
 function Exit-WithPause($code = 0) {
     Write-Host "------------------------------------" -ForegroundColor Gray
@@ -87,6 +107,10 @@ if ($confirm -ne 'y') {
     return
 }
 
+# --- Prep log directory ---
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+Write-Host " [i] Full logs will be written to: $LogDir" -ForegroundColor Gray
+
 # --- Copy loop ---
 $successCount = 0
 $skipCount    = 0
@@ -114,16 +138,37 @@ foreach ($user in $users) {
 
         Write-Host "   [~] Copying $folder..." -ForegroundColor Yellow
 
+        $logFile = Join-Path $LogDir "$userName-$folder.log"
         $vssArgs = @('-s', '-v', $srcPath, $dstPath)
-        $output = & $VssCopyExe @vssArgs 2>&1
+        $lineCount = 0
+        $errorCount = 0
+
+        & $VssCopyExe @vssArgs 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            Add-Content -Path $logFile -Value $line
+            $lineCount++
+
+            if ($line -match 'error|fatal|cannot find|access is denied') {
+                $errorCount++
+                Write-Host ""
+                Write-Host "     [!] $line" -ForegroundColor Red
+            }
+            elseif ($line -match '^Copying:\s+(.+?)\s+->') {
+                $fileName = Split-Path $matches[1] -Leaf
+                if ($fileName.Length -gt 55) { $fileName = $fileName.Substring(0, 52) + "..." }
+                $status = "     [~] ($lineCount) $fileName"
+                Write-Host "`r$($status.PadRight(90))" -ForegroundColor DarkGray -NoNewline
+            }
+        }
         $exitCode = $LASTEXITCODE
+        Write-Host ""
 
         if ($exitCode -eq 0) {
-            Write-Host "   [+] $folder copied successfully." -ForegroundColor Green
+            Write-Host "   [+] $folder copied successfully. ($lineCount lines)" -ForegroundColor Green
             $successCount++
         } else {
-            Write-Host "   [!] $folder failed (exit code $exitCode)." -ForegroundColor Red
-            Write-Host "       $output" -ForegroundColor Gray
+            Write-Host "   [!] $folder failed (exit code $exitCode, $errorCount error line(s))." -ForegroundColor Red
+            Write-Host "       Full log: $logFile" -ForegroundColor Gray
             $failCount++
         }
     }
@@ -131,5 +176,6 @@ foreach ($user in $users) {
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " [i] Done. Success: $successCount  Skipped: $skipCount  Failed: $failCount" -ForegroundColor Cyan
+Write-Host " [i] Copy-UserFolders.ps1 v1.1" -ForegroundColor Gray
 Write-Host "------------------------------------" -ForegroundColor Gray
 Exit-WithPause
