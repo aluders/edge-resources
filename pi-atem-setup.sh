@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v45)
+# ATEM MONITOR AUTO-INSTALLER (v46)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -75,7 +75,7 @@ set -e
 #
 # SHELL ALIASES (added to ~/.bashrc)
 # ------------------------------------------
-#   atemcheck    sudo systemctl status atem-monitor --no-pager -l
+#   atemstatus   sudo systemctl status atem-monitor --no-pager -l
 #   atemlog      journalctl -u atem-monitor --no-pager
 #   atemrestart  sudo systemctl restart atem-monitor
 #   drivecheck   sudo smartctl -i -H /dev/sda
@@ -196,6 +196,9 @@ set -e
 #
 # CHANGELOG
 # ------------------------------------------
+# v46 - Renamed atemcheck alias to atemstatus.
+#       Old atemcheck alias removed on re-run.
+#
 # v45 - Version number added to systemd service description so it
 #       appears in atemcheck output under "ATEM Automation System vXX".
 #
@@ -1182,13 +1185,13 @@ BASHRC="$HOME_DIR/.bashrc"
 echo ">>> Setting up aliases..."
 
 # Remove old alias names from previous installs
-for OLD_ALIAS in checkatem logatem restartatem checkdrive ff; do
+for OLD_ALIAS in checkatem logatem restartatem checkdrive ff atemcheck; do
     sed -i "/^alias ${OLD_ALIAS}=/d" "$BASHRC"
 done
 
 # Define the aliases we manage — add new ones here as needed
 declare -A ATEM_ALIASES=(
-    ["atemcheck"]="sudo systemctl status atem-monitor --no-pager -l"
+    ["atemstatus"]="sudo systemctl status atem-monitor --no-pager -l"
     ["atemlog"]="journalctl -u atem-monitor --no-pager"
     ["atemrestart"]="sudo systemctl restart atem-monitor"
     ["drivecheck"]="sudo smartctl -i -H /dev/sda"
@@ -1224,8 +1227,10 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v45 (Version in Service Description)"
-echo "   - atemcheck now shows: ATEM Automation System v45"
+echo "✅ UPDATED TO v46 (Renamed atemcheck -> atemstatus)"
+echo "   - atemstatus → systemctl status atem-monitor --no-pager -l"
+echo "   - Old atemcheck alias removed"
+echo "   - Run 'source ~/.bashrc' to activate in current session"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
