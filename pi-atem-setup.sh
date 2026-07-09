@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v44)
+# ATEM MONITOR AUTO-INSTALLER (v45)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -196,6 +196,9 @@ set -e
 #
 # CHANGELOG
 # ------------------------------------------
+# v45 - Version number added to systemd service description so it
+#       appears in atemcheck output under "ATEM Automation System vXX".
+#
 # v44 - Removed trailing periods from all email log lines
 #       for consistent formatting.
 #
@@ -1203,7 +1206,7 @@ done
 # 13. RESTART SERVICE
 sudo bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
-Description=ATEM Automation System
+Description=ATEM Automation System v45
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -1221,8 +1224,8 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v44 (Remove Trailing Periods)"
-echo "   - Trailing periods removed from all email log lines"
+echo "✅ UPDATED TO v45 (Version in Service Description)"
+echo "   - atemcheck now shows: ATEM Automation System v45"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
