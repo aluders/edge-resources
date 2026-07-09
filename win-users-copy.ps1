@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 1.9
+# Version: 2.0
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -87,10 +87,28 @@
 #            screen during this one-time install -- expected and required,
 #            not a bug.
 
+#   v2.0 - Fixed premature timeout killing an in-progress install.
+#          - The 120-second poll cap was too short: NetFx3's FOD download
+#            can genuinely take several minutes depending on payload size
+#            and connection speed. When the cap was hit, the script moved
+#            on AND unregistered the scheduled task regardless of whether
+#            it was still Running -- which can forcibly tear down a task
+#            mid-execution, turning a slow-but-working install into a
+#            false failure (and possibly a genuinely half-applied one).
+#          - Poll window extended to 10 minutes, with a progress message
+#            every 15 seconds so it's clear it's still working rather than
+#            looking hung.
+#          - If still Running when the extended cap is hit, the task is now
+#            left alone (NOT unregistered) rather than killed. The script
+#            reports this clearly and tells the person to check back /
+#            re-run rather than silently destroying in-progress work.
+#          - Cleanup (unregister task + remove script) now only happens
+#            once the task has actually finished on its own.
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "1.9"
+$ScriptVersion       = "2.0"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
@@ -179,9 +197,11 @@ try {
         return $false
     }
 
-    # Poll instead of a fixed sleep -- NetFx3 install can take anywhere
-    # from a few seconds to over a minute depending on the machine.
-    $maxWaitSeconds = 120
+    # Poll instead of a fixed sleep. NetFx3's FOD download/install can
+    # genuinely take several minutes depending on payload size and
+    # connection speed -- give it real room, and show progress so it's
+    # clear this is still working rather than hung.
+    $maxWaitSeconds = 600
     $elapsed = 0
     $taskState = $null
     while ($elapsed -lt $maxWaitSeconds) {
@@ -193,8 +213,24 @@ try {
             break
         }
         if ($taskState -ne 'Running') { break }
+        if ($elapsed % 15 -eq 0) {
+            Write-Host " [~] Still installing... (${elapsed}s elapsed)" -ForegroundColor Yellow
+        }
     }
     Start-Sleep -Seconds 2   # let any final file writes flush
+
+    if ($taskState -eq 'Running') {
+        # Do NOT unregister a task that's still genuinely running --
+        # doing so can forcibly kill a slow-but-working install partway
+        # through, turning it into a real failure instead of just a slow
+        # success. Leave it alone and let the person check back.
+        Write-Host " [!] Still running after ${maxWaitSeconds}s. Leaving the task in place rather than killing it." -ForegroundColor Yellow
+        Write-Host "     Task name: $taskName" -ForegroundColor Gray
+        Write-Host "     Check status with: Get-ScheduledTask -TaskName '$taskName' | Select State" -ForegroundColor Gray
+        Write-Host "     Then check: Get-WindowsOptionalFeature -Online -FeatureName NetFx3" -ForegroundColor Gray
+        Write-Host "     Once it finishes, re-run this script -- it'll skip straight past this step if enabled." -ForegroundColor Gray
+        return $false
+    }
 
     $logContent = Get-Content $taskLogPath -ErrorAction SilentlyContinue
 
