@@ -1,8 +1,10 @@
 #!/bin/bash
 set -e
 
+INSTALLER_VERSION="47"
+
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v46)
+# ATEM MONITOR AUTO-INSTALLER (v47)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -196,6 +198,10 @@ set -e
 #
 # CHANGELOG
 # ------------------------------------------
+# v47 - Added INSTALLER_VERSION constant at top of script. Service
+#       description and completion banner now derive from this single
+#       value so version only needs updating in one place.
+#
 # v46 - Renamed atemcheck alias to atemstatus.
 #       Old atemcheck alias removed on re-run.
 #
@@ -1209,7 +1215,7 @@ done
 # 13. RESTART SERVICE
 sudo bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
-Description=ATEM Automation System v45
+Description=ATEM Automation System v${INSTALLER_VERSION}
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -1227,10 +1233,10 @@ sudo systemctl enable atem-monitor
 sudo systemctl restart atem-monitor
 
 echo "================================================="
-echo "✅ UPDATED TO v46 (Renamed atemcheck -> atemstatus)"
-echo "   - atemstatus → systemctl status atem-monitor --no-pager -l"
-echo "   - Old atemcheck alias removed"
-echo "   - Run 'source ~/.bashrc' to activate in current session"
+echo "✅ UPDATED TO v${INSTALLER_VERSION} (Version Constant)"
+echo "   - Single INSTALLER_VERSION constant drives all version strings"
+echo "   - Service description, banner all stay in sync automatically"
+echo "   - Run 'source ~/.bashrc' to activate aliases in current session"
 echo "================================================="
 
 if [ "$JOURNAL_NEEDS_REBOOT" = true ]; then
