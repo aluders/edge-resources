@@ -45,6 +45,7 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
+$ScriptVersion       = "1.4"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
@@ -157,8 +158,10 @@ function Install-VSSCopy {
     }
 }
 
+$Host.UI.RawUI.WindowTitle = "Copy-UserFolders v$ScriptVersion"
+
 Write-Host "------------------------------------" -ForegroundColor Gray
-Write-Host "      USER FOLDER COPY (VSS)        " -ForegroundColor Black -BackgroundColor Cyan
+Write-Host "   USER FOLDER COPY (VSS) v$ScriptVersion" -ForegroundColor Black -BackgroundColor Cyan
 Write-Host "------------------------------------" -ForegroundColor Gray
 
 # --- Admin check (VSS shadow copies require elevation) ---
@@ -313,6 +316,6 @@ foreach ($user in $users) {
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " [i] Done. Success: $successCount  Skipped: $skipCount  Failed: $failCount" -ForegroundColor Cyan
-Write-Host " [i] Copy-UserFolders.ps1 v1.4" -ForegroundColor Gray
+Write-Host " [i] Copy-UserFolders.ps1 v$ScriptVersion" -ForegroundColor Gray
 Write-Host "------------------------------------" -ForegroundColor Gray
 Exit-WithPause
