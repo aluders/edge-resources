@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 2.0
+# Version: 2.1
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -105,10 +105,23 @@
 #          - Cleanup (unregister task + remove script) now only happens
 #            once the task has actually finished on its own.
 
+#   v2.1 - Fixed scheduled task running at low priority.
+#          - Identical command ran fast typed directly at the console, but
+#            crawled when launched via the scheduled task. Root cause:
+#            Task Scheduler's default Priority (7, "Below Normal") is lower
+#            than interactive/Normal priority -- and for a WU/FOD download
+#            specifically, lower process priority can cascade into the
+#            transfer itself being bandwidth-throttled (BITS/Delivery
+#            Optimization background mode), not just CPU scheduling.
+#          - Task now uses explicit Settings: Priority 4 (Normal, matching
+#            interactive), and idle/battery restrictions disabled so the
+#            task can't be paused/stopped by unrelated power-state changes
+#            during a long-running install.
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "2.0"
+$ScriptVersion       = "2.1"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
@@ -190,7 +203,18 @@ try {
         $principal = New-ScheduledTaskPrincipal -UserId $consoleUser -LogonType Interactive -RunLevel Highest
         $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
 
-        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Force -ErrorAction Stop | Out-Null
+        # Task Scheduler defaults to Priority 7 (Below Normal), which can
+        # cause WU/FOD downloads specifically to run bandwidth-throttled
+        # compared to the same command typed interactively. Priority 4
+        # matches Normal/interactive priority. Idle/battery restrictions
+        # disabled so nothing unrelated pauses a long-running install.
+        $settings = New-ScheduledTaskSettingsSet `
+            -Priority 4 `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force -ErrorAction Stop | Out-Null
         Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
     } catch {
         Write-Host " [!] Failed to create/start scheduled task: $($_.Exception.Message)" -ForegroundColor Red
