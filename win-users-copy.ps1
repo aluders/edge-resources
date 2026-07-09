@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 1.3
+# Version: 1.4
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -23,6 +23,7 @@
 #          - Full verbose output for every folder now logged to
 #            C:\VSSCopyLogs\<timestamp>\<user>-<folder>.log for later
 #            review (e.g. drives with SMART caution status / bad sectors).
+#   v1.2 - Prerequisite auto-install (superseded by v1.3 -- see below).
 #   v1.3 - Corrected .NET prerequisite.
 #          - VSSCopy actually requires .NET Framework 3.5 (includes 2.0/3.0),
 #            confirmed via the "Windows Features" prompt it triggers on
@@ -31,6 +32,15 @@
 #            based), not a standalone redistributable, so detection/install
 #            now uses Get-/Enable-WindowsOptionalFeature -FeatureName NetFx3
 #            instead of downloading Microsoft's 4.8 offline installer.
+#   v1.4 - NetFx3 enable resilience.
+#          - Enable-WindowsOptionalFeature can fail with "Access is denied"
+#            in some sessions (observed over SSH/remote PowerShell) even
+#            when running as Administrator. Now checks/starts the
+#            TrustedInstaller (Windows Modules Installer) service first,
+#            since DISM/CBS operations depend on it.
+#          - Falls back to calling dism.exe directly if the cmdlet fails,
+#            since that has succeeded in cases where the cmdlet did not.
+#          - dism.exe attempt logs to %TEMP%\netfx3-dism.log for diagnosis.
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
@@ -62,24 +72,66 @@ function Test-NetFx3 {
 }
 
 function Install-NetFx3 {
-    Write-Host " [~] .NET Framework 3.5 not enabled. Enabling via Windows Optional Features (Windows Update)..." -ForegroundColor Yellow
+    Write-Host " [~] .NET Framework 3.5 not enabled. Attempting to enable..." -ForegroundColor Yellow
+
+    # DISM/CBS operations depend on the Windows Modules Installer service.
+    # If it's disabled or can't start, Enable-WindowsOptionalFeature will
+    # fail with "Access is denied" even when running as Administrator.
+    try {
+        $twi = Get-Service -Name TrustedInstaller -ErrorAction Stop
+        if ($twi.StartType -eq 'Disabled') {
+            Write-Host " [~] Windows Modules Installer service is disabled -- enabling it." -ForegroundColor Yellow
+            Set-Service -Name TrustedInstaller -StartupType Manual
+        }
+        if ($twi.Status -ne 'Running') {
+            Start-Service -Name TrustedInstaller -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Host " [!] Could not query/start TrustedInstaller service: $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    # --- Attempt 1: PowerShell cmdlet ---
     try {
         $result = Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All -NoRestart -ErrorAction Stop
+        if ($result.RestartNeeded) {
+            Write-Host " [!] .NET Framework 3.5 enabled, but a REBOOT is required before VSSCopy will work." -ForegroundColor Red
+            Write-Host "     Reboot the machine, then re-run this script." -ForegroundColor Red
+            return $false
+        }
+        Write-Host " [+] .NET Framework 3.5 enabled successfully." -ForegroundColor Green
+        return $true
     } catch {
-        Write-Host " [!] Failed to enable .NET Framework 3.5: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "     This usually means Windows Update access is blocked (firewall/Pi-hole/proxy)." -ForegroundColor Red
-        Write-Host "     Manual fallback: Dism /online /enable-feature /featurename:NetFx3 /All /Source:<path-to-sources\sxs> /LimitAccess" -ForegroundColor Red
-        return $false
+        Write-Host " [!] Enable-WindowsOptionalFeature failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host " [~] Falling back to dism.exe directly..." -ForegroundColor Yellow
     }
 
-    if ($result.RestartNeeded) {
-        Write-Host " [!] .NET Framework 3.5 enabled, but a REBOOT is required before VSSCopy will work." -ForegroundColor Red
-        Write-Host "     Reboot the machine, then re-run this script." -ForegroundColor Red
-        return $false
-    }
+    # --- Attempt 2: dism.exe directly ---
+    # Some sessions (notably non-interactive SSH/remote PowerShell) fail the
+    # cmdlet with "Access is denied" but succeed via dism.exe.
+    $dismLog = Join-Path $env:TEMP "netfx3-dism.log"
+    $proc = Start-Process -FilePath "$env:WINDIR\System32\dism.exe" `
+        -ArgumentList '/online', '/enable-feature', '/featurename:NetFx3', '/All', '/NoRestart', "/LogPath:$dismLog" `
+        -Wait -PassThru -WindowStyle Hidden
 
-    Write-Host " [+] .NET Framework 3.5 enabled successfully." -ForegroundColor Green
-    return $true
+    switch ($proc.ExitCode) {
+        0 {
+            Write-Host " [+] .NET Framework 3.5 enabled successfully (via dism.exe)." -ForegroundColor Green
+            return $true
+        }
+        3010 {
+            Write-Host " [!] .NET Framework 3.5 enabled, but a REBOOT is required before VSSCopy will work." -ForegroundColor Red
+            Write-Host "     Reboot the machine, then re-run this script." -ForegroundColor Red
+            return $false
+        }
+        default {
+            Write-Host " [!] dism.exe also failed (exit code $($proc.ExitCode))." -ForegroundColor Red
+            Write-Host "     Log: $dismLog" -ForegroundColor Gray
+            Write-Host "     Try running the script directly at the console (not over SSH) to rule out" -ForegroundColor Red
+            Write-Host "     session/token issues, or supply offline media:" -ForegroundColor Red
+            Write-Host "     dism /online /enable-feature /featurename:NetFx3 /All /Source:<sources\sxs> /LimitAccess" -ForegroundColor Red
+            return $false
+        }
+    }
 }
 
 function Install-VSSCopy {
@@ -261,6 +313,6 @@ foreach ($user in $users) {
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " [i] Done. Success: $successCount  Skipped: $skipCount  Failed: $failCount" -ForegroundColor Cyan
-Write-Host " [i] Copy-UserFolders.ps1 v1.3" -ForegroundColor Gray
+Write-Host " [i] Copy-UserFolders.ps1 v1.4" -ForegroundColor Gray
 Write-Host "------------------------------------" -ForegroundColor Gray
 Exit-WithPause
