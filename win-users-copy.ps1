@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 2.1
+# Version: 2.2
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -118,10 +118,17 @@
 #            task can't be paused/stopped by unrelated power-state changes
 #            during a long-running install.
 
+#   v2.2 - Verbose dependency status.
+#          - Both .NET Framework 3.5 and VSSCopy now print a clear
+#            Installed/Not installed status line up front, instead of only
+#            saying anything when a dependency needs to be installed.
+#            Makes it obvious at a glance what's already satisfied vs what
+#            the script is about to act on.
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "2.1"
+$ScriptVersion       = "2.2"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
@@ -327,16 +334,26 @@ if (-not $isAdmin) {
     return
 }
 
-# --- Check / enable .NET Framework 3.5 prerequisite ---
-if (-not (Test-NetFx3)) {
+# --- Dependency check ---
+Write-Host "------------------------------------" -ForegroundColor Gray
+Write-Host " DEPENDENCY CHECK" -ForegroundColor Cyan
+Write-Host "------------------------------------" -ForegroundColor Gray
+
+if (Test-NetFx3) {
+    Write-Host " [+] .NET Framework 3.5: Installed" -ForegroundColor Green
+} else {
+    Write-Host " [!] .NET Framework 3.5: Not installed -- installing now" -ForegroundColor Yellow
     if (-not (Install-NetFx3)) {
         Exit-WithPause 1
         return
     }
+    Write-Host " [+] .NET Framework 3.5: Installed" -ForegroundColor Green
 }
 
-# --- Check / install VSSCopy ---
-if (-not (Test-Path $VssCopyExe)) {
+if (Test-Path $VssCopyExe) {
+    Write-Host " [+] VSSCopy: Installed" -ForegroundColor Green
+} else {
+    Write-Host " [!] VSSCopy: Not installed -- installing now" -ForegroundColor Yellow
     if (-not (Install-VSSCopy)) {
         Exit-WithPause 1
         return
@@ -346,7 +363,10 @@ if (-not (Test-Path $VssCopyExe)) {
         Exit-WithPause 1
         return
     }
+    Write-Host " [+] VSSCopy: Installed" -ForegroundColor Green
 }
+
+Write-Host "------------------------------------" -ForegroundColor Gray
 
 # --- Prompt for source/destination drive letters ---
 $srcDrive = Read-Host " Enter source drive letter (e.g. D)"
