@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 1.8
+# Version: 1.9
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -65,10 +65,32 @@
 #            for this to work (same as the manual test). Fails with a
 #            clear message if no explorer.exe owner can be found.
 
+#   v1.9 - Actual root cause found: hidden window, not session/user.
+#          - Side-by-side test isolated it cleanly: identical scheduled
+#            task, same console-user principal, only difference was
+#            -WindowStyle Hidden vs default (visible). Hidden silently
+#            stalled every time (matching v1.7/v1.8's failures); visible
+#            succeeded immediately (Online: True, RestartNeeded: False).
+#          - CBS's UI handler (CbsConUIHandler, seen throughout CBS.log)
+#            appears to require an actual window/message pump to complete
+#            the FOD install, even when no dialog is ever shown -- a
+#            hidden window doesn't provide one, so it stalls instead of
+#            erroring. This also explains the "Windows Features" GUI
+#            dialog seen at the very start of this investigation when
+#            running vsscopy.exe directly at a visible console.
+#          - v1.8's "must run as the console user, not SYSTEM" conclusion
+#            was half right (console user was still used successfully
+#            here) but incomplete -- SYSTEM vs real user was never the
+#            actual blocker; window visibility was.
+#          - Removed -WindowStyle Hidden from the scheduled task action.
+#            A PowerShell window will now briefly appear on the console
+#            screen during this one-time install -- expected and required,
+#            not a bug.
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "1.8"
+$ScriptVersion       = "1.9"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
@@ -141,10 +163,12 @@ try {
 
     try {
         $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$taskScriptPath`""
-        # Key fix: run as the actual console-logged-in user, not SYSTEM.
-        # SYSTEM's "Interactive" logon type does not attach to a real
-        # WinSta0 the way a genuine user logon session does.
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$taskScriptPath`""
+        # Key fix: no -WindowStyle Hidden. CBS's UI handler appears to
+        # need an actual window/message pump to complete the FOD install
+        # -- confirmed via side-by-side test where Hidden stalled silently
+        # and a visible window succeeded immediately. A window will
+        # briefly flash on the console screen; that's expected.
         $principal = New-ScheduledTaskPrincipal -UserId $consoleUser -LogonType Interactive -RunLevel Highest
         $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
 
