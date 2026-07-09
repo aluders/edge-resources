@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 1.6
+# Version: 1.7
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -41,28 +41,32 @@
 #          - Falls back to calling dism.exe directly if the cmdlet fails,
 #            since that has succeeded in cases where the cmdlet did not.
 #          - dism.exe attempt logs to %TEMP%\netfx3-dism.log for diagnosis.
-#   v1.6 - Switched to standalone .NET 3.5 installer.
-#          - Every online path (Enable-WindowsOptionalFeature, dism.exe,
-#            with/without wuauserv running) consistently failed at the same
-#            internal CBS call (CFCAcquirerWrapper) fetching the FOD
-#            payload from Windows Update, for a root cause that resisted
-#            every diagnostic tried. Rather than continue guessing, or
-#            require an interactive offline sxs path every time, now uses
-#            a standalone hosted dotNetFx35setup.exe instead. If that
-#            installer bundles its own payload (common for repackaged
-#            NetFx3 installers) it bypasses CBS/WU entirely; if it's just
-#            a WU-based wrapper it will fail identically, which would at
-#            least confirm the online path itself is the dead end.
-#          - v1.4/v1.5's DISM/CBS/offline-sxs-prompt logic removed in favor
-#            of this simpler, non-interactive download+install.
+#   v1.6 - Switched to standalone .NET 3.5 installer (later confirmed to be
+#          a thin WU-based wrapper with no bundled payload -- see v1.7).
+#   v1.7 - SYSTEM-interactive scheduled task workaround.
+#          - Confirmed NetFx3 is in "DisabledWithPayloadRemoved" state on
+#            this hardware -- the local payload was purged, so CBS has no
+#            fallback but to fetch from WU every time, and every WU fetch
+#            over this SSH session hits the same 0x80070005 wall regardless
+#            of tool, privilege level, or service state.
+#          - Working theory: CBS/FOD acquisition depends on an interactive
+#            window station (WinSta0) that an SSH-spawned session may not
+#            be attached to, even when fully elevated.
+#          - Now runs Enable-WindowsOptionalFeature via a temporary
+#            Scheduled Task (SYSTEM, LogonType=Interactive, RunLevel=
+#            Highest) instead of directly in-session, so it attaches to
+#            the real console session's window station rather than SSH's.
+#          - Polls task state instead of a fixed sleep; verifies success
+#            against actual Get-WindowsOptionalFeature state afterward
+#            rather than trusting task output alone, since that has been
+#            unreliable in testing. Logs and cleans up regardless of outcome.
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "1.6"
+$ScriptVersion       = "1.7"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
-$DotNet35SetupUrl    = "https://files.edgeintegrated.net/dotNetFx35setup.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
 $LogDir = "C:\VSSCopyLogs\$(Get-Date -Format 'yyyy-MM-dd_HHmmss')"
 
@@ -88,35 +92,90 @@ function Test-NetFx3 {
 }
 
 function Install-NetFx3 {
-    Write-Host " [~] .NET Framework 3.5 not enabled. Downloading standalone installer..." -ForegroundColor Yellow
-    $installerPath = Join-Path $env:TEMP "dotNetFx35setup.exe"
+    Write-Host " [~] .NET Framework 3.5 not enabled. Attempting via SYSTEM-interactive scheduled task..." -ForegroundColor Yellow
+
+    $taskLogPath = Join-Path $env:TEMP "netfx3-task.log"
+    $taskScriptPath = Join-Path $env:TEMP "enable-netfx3-task.ps1"
+    $taskName = "CopyUserFolders_EnableNetFx3_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+
+    if (Test-Path $taskLogPath) { Remove-Item $taskLogPath -Force -ErrorAction SilentlyContinue }
+
+    # Task script writes clear bookends so we can tell "never ran" apart
+    # from "ran but produced no output".
+    @"
+'=== Task started: ' + (Get-Date) | Out-File -FilePath '$taskLogPath' -Encoding utf8
+try {
+    `$result = Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All -NoRestart -ErrorAction Stop
+    "RestartNeeded=`$(`$result.RestartNeeded)" | Out-File -FilePath '$taskLogPath' -Append -Encoding utf8
+    "SUCCESS" | Out-File -FilePath '$taskLogPath' -Append -Encoding utf8
+} catch {
+    "ERROR: `$(`$_.Exception.Message)" | Out-File -FilePath '$taskLogPath' -Append -Encoding utf8
+    "FAILED" | Out-File -FilePath '$taskLogPath' -Append -Encoding utf8
+}
+'=== Task finished: ' + (Get-Date) | Out-File -FilePath '$taskLogPath' -Append -Encoding utf8
+"@ | Set-Content -Path $taskScriptPath -Encoding ASCII
+
     try {
-        Invoke-WebRequest -Uri $DotNet35SetupUrl -OutFile $installerPath -UseBasicParsing
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$taskScriptPath`""
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType Interactive -RunLevel Highest
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
     } catch {
-        Write-Host " [!] Failed to download .NET 3.5 installer: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host " [!] Failed to create/start scheduled task: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 
-    Write-Host " [~] Installing .NET Framework 3.5 (silent)..." -ForegroundColor Yellow
-    $proc = Start-Process -FilePath $installerPath -ArgumentList '/q', '/norestart' -Wait -PassThru
-    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+    # Poll instead of a fixed sleep -- NetFx3 install can take anywhere
+    # from a few seconds to over a minute depending on the machine.
+    $maxWaitSeconds = 120
+    $elapsed = 0
+    $taskState = $null
+    while ($elapsed -lt $maxWaitSeconds) {
+        Start-Sleep -Seconds 3
+        $elapsed += 3
+        try {
+            $taskState = (Get-ScheduledTask -TaskName $taskName -ErrorAction Stop).State
+        } catch {
+            break
+        }
+        if ($taskState -ne 'Running') { break }
+    }
+    Start-Sleep -Seconds 2   # let any final file writes flush
 
-    switch ($proc.ExitCode) {
-        0 {
-            Write-Host " [+] .NET Framework 3.5 installed successfully." -ForegroundColor Green
-            return $true
+    $logContent = Get-Content $taskLogPath -ErrorAction SilentlyContinue
+
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item $taskScriptPath -Force -ErrorAction SilentlyContinue
+
+    if ($logContent) {
+        Write-Host " [i] Task log:" -ForegroundColor Gray
+        $logContent | ForEach-Object { Write-Host "     $_" -ForegroundColor Gray }
+    } else {
+        Write-Host " [!] Task produced no log output (last task state: $taskState) -- it may not have run." -ForegroundColor Red
+    }
+
+    # Trust the actual feature state over task output, since task logging
+    # has been unreliable in testing on this hardware.
+    try {
+        $feature = Get-WindowsOptionalFeature -Online -FeatureName NetFx3 -ErrorAction Stop
+    } catch {
+        Write-Host " [!] Could not verify feature state: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+
+    if ($feature.State -eq 'Enabled') {
+        Write-Host " [+] .NET Framework 3.5 confirmed enabled." -ForegroundColor Green
+        $rebootPending = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+        if ($rebootPending) {
+            Write-Host " [!] Windows reports a reboot is pending -- VSSCopy may still fail until you reboot." -ForegroundColor Red
         }
-        3010 {
-            Write-Host " [!] .NET Framework 3.5 installed, but a REBOOT is required before VSSCopy will work." -ForegroundColor Red
-            Write-Host "     Reboot the machine, then re-run this script." -ForegroundColor Red
-            return $false
-        }
-        default {
-            Write-Host " [!] .NET Framework 3.5 install failed (exit code $($proc.ExitCode))." -ForegroundColor Red
-            Write-Host "     If this matches the earlier 0x80070005/access-denied pattern, this installer" -ForegroundColor Red
-            Write-Host "     is likely just a WU-based wrapper rather than a bundled offline payload." -ForegroundColor Red
-            return $false
-        }
+        return $true
+    } else {
+        Write-Host " [!] .NET Framework 3.5 still not enabled (state: $($feature.State))." -ForegroundColor Red
+        return $false
     }
 }
 
