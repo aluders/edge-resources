@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 1.4
+# Version: 1.6
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -41,13 +41,28 @@
 #          - Falls back to calling dism.exe directly if the cmdlet fails,
 #            since that has succeeded in cases where the cmdlet did not.
 #          - dism.exe attempt logs to %TEMP%\netfx3-dism.log for diagnosis.
+#   v1.6 - Switched to standalone .NET 3.5 installer.
+#          - Every online path (Enable-WindowsOptionalFeature, dism.exe,
+#            with/without wuauserv running) consistently failed at the same
+#            internal CBS call (CFCAcquirerWrapper) fetching the FOD
+#            payload from Windows Update, for a root cause that resisted
+#            every diagnostic tried. Rather than continue guessing, or
+#            require an interactive offline sxs path every time, now uses
+#            a standalone hosted dotNetFx35setup.exe instead. If that
+#            installer bundles its own payload (common for repackaged
+#            NetFx3 installers) it bypasses CBS/WU entirely; if it's just
+#            a WU-based wrapper it will fail identically, which would at
+#            least confirm the online path itself is the dead end.
+#          - v1.4/v1.5's DISM/CBS/offline-sxs-prompt logic removed in favor
+#            of this simpler, non-interactive download+install.
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "1.4"
+$ScriptVersion       = "1.6"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
+$DotNet35SetupUrl    = "https://files.edgeintegrated.net/dotNetFx35setup.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
 $LogDir = "C:\VSSCopyLogs\$(Get-Date -Format 'yyyy-MM-dd_HHmmss')"
 
@@ -73,63 +88,33 @@ function Test-NetFx3 {
 }
 
 function Install-NetFx3 {
-    Write-Host " [~] .NET Framework 3.5 not enabled. Attempting to enable..." -ForegroundColor Yellow
-
-    # DISM/CBS operations depend on the Windows Modules Installer service.
-    # If it's disabled or can't start, Enable-WindowsOptionalFeature will
-    # fail with "Access is denied" even when running as Administrator.
+    Write-Host " [~] .NET Framework 3.5 not enabled. Downloading standalone installer..." -ForegroundColor Yellow
+    $installerPath = Join-Path $env:TEMP "dotNetFx35setup.exe"
     try {
-        $twi = Get-Service -Name TrustedInstaller -ErrorAction Stop
-        if ($twi.StartType -eq 'Disabled') {
-            Write-Host " [~] Windows Modules Installer service is disabled -- enabling it." -ForegroundColor Yellow
-            Set-Service -Name TrustedInstaller -StartupType Manual
-        }
-        if ($twi.Status -ne 'Running') {
-            Start-Service -Name TrustedInstaller -ErrorAction SilentlyContinue
-        }
+        Invoke-WebRequest -Uri $DotNet35SetupUrl -OutFile $installerPath -UseBasicParsing
     } catch {
-        Write-Host " [!] Could not query/start TrustedInstaller service: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host " [!] Failed to download .NET 3.5 installer: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
     }
 
-    # --- Attempt 1: PowerShell cmdlet ---
-    try {
-        $result = Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All -NoRestart -ErrorAction Stop
-        if ($result.RestartNeeded) {
-            Write-Host " [!] .NET Framework 3.5 enabled, but a REBOOT is required before VSSCopy will work." -ForegroundColor Red
-            Write-Host "     Reboot the machine, then re-run this script." -ForegroundColor Red
-            return $false
-        }
-        Write-Host " [+] .NET Framework 3.5 enabled successfully." -ForegroundColor Green
-        return $true
-    } catch {
-        Write-Host " [!] Enable-WindowsOptionalFeature failed: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host " [~] Falling back to dism.exe directly..." -ForegroundColor Yellow
-    }
-
-    # --- Attempt 2: dism.exe directly ---
-    # Some sessions (notably non-interactive SSH/remote PowerShell) fail the
-    # cmdlet with "Access is denied" but succeed via dism.exe.
-    $dismLog = Join-Path $env:TEMP "netfx3-dism.log"
-    $proc = Start-Process -FilePath "$env:WINDIR\System32\dism.exe" `
-        -ArgumentList '/online', '/enable-feature', '/featurename:NetFx3', '/All', '/NoRestart', "/LogPath:$dismLog" `
-        -Wait -PassThru -WindowStyle Hidden
+    Write-Host " [~] Installing .NET Framework 3.5 (silent)..." -ForegroundColor Yellow
+    $proc = Start-Process -FilePath $installerPath -ArgumentList '/q', '/norestart' -Wait -PassThru
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
     switch ($proc.ExitCode) {
         0 {
-            Write-Host " [+] .NET Framework 3.5 enabled successfully (via dism.exe)." -ForegroundColor Green
+            Write-Host " [+] .NET Framework 3.5 installed successfully." -ForegroundColor Green
             return $true
         }
         3010 {
-            Write-Host " [!] .NET Framework 3.5 enabled, but a REBOOT is required before VSSCopy will work." -ForegroundColor Red
+            Write-Host " [!] .NET Framework 3.5 installed, but a REBOOT is required before VSSCopy will work." -ForegroundColor Red
             Write-Host "     Reboot the machine, then re-run this script." -ForegroundColor Red
             return $false
         }
         default {
-            Write-Host " [!] dism.exe also failed (exit code $($proc.ExitCode))." -ForegroundColor Red
-            Write-Host "     Log: $dismLog" -ForegroundColor Gray
-            Write-Host "     Try running the script directly at the console (not over SSH) to rule out" -ForegroundColor Red
-            Write-Host "     session/token issues, or supply offline media:" -ForegroundColor Red
-            Write-Host "     dism /online /enable-feature /featurename:NetFx3 /All /Source:<sources\sxs> /LimitAccess" -ForegroundColor Red
+            Write-Host " [!] .NET Framework 3.5 install failed (exit code $($proc.ExitCode))." -ForegroundColor Red
+            Write-Host "     If this matches the earlier 0x80070005/access-denied pattern, this installer" -ForegroundColor Red
+            Write-Host "     is likely just a WU-based wrapper rather than a bundled offline payload." -ForegroundColor Red
             return $false
         }
     }
