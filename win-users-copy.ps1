@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 1.7
+# Version: 1.8
 # Usage: irm users.vcc.net | iex
 #
 # Copies Documents, Desktop, and Pictures for every user under
@@ -43,28 +43,32 @@
 #          - dism.exe attempt logs to %TEMP%\netfx3-dism.log for diagnosis.
 #   v1.6 - Switched to standalone .NET 3.5 installer (later confirmed to be
 #          a thin WU-based wrapper with no bundled payload -- see v1.7).
-#   v1.7 - SYSTEM-interactive scheduled task workaround.
-#          - Confirmed NetFx3 is in "DisabledWithPayloadRemoved" state on
-#            this hardware -- the local payload was purged, so CBS has no
-#            fallback but to fetch from WU every time, and every WU fetch
-#            over this SSH session hits the same 0x80070005 wall regardless
-#            of tool, privilege level, or service state.
-#          - Working theory: CBS/FOD acquisition depends on an interactive
-#            window station (WinSta0) that an SSH-spawned session may not
-#            be attached to, even when fully elevated.
-#          - Now runs Enable-WindowsOptionalFeature via a temporary
-#            Scheduled Task (SYSTEM, LogonType=Interactive, RunLevel=
-#            Highest) instead of directly in-session, so it attaches to
-#            the real console session's window station rather than SSH's.
-#          - Polls task state instead of a fixed sleep; verifies success
-#            against actual Get-WindowsOptionalFeature state afterward
-#            rather than trusting task output alone, since that has been
-#            unreliable in testing. Logs and cleans up regardless of outcome.
+#   v1.7 - SYSTEM-interactive scheduled task workaround (root cause found
+#          to be incomplete -- SYSTEM's "Interactive" logon type doesn't
+#          behave like a real user's; see v1.8).
+#   v1.8 - Root cause confirmed and fixed.
+#          - Manually running Enable-WindowsOptionalFeature directly in the
+#            real console/RDP session (as the actual logged-in user)
+#            succeeded immediately (Online: True, RestartNeeded: False),
+#            proving the operation itself was never the problem.
+#          - The v1.7 scheduled task ran as SYSTEM with LogonType=
+#            Interactive, but SYSTEM does not have a genuine interactive
+#            desktop the way a real logged-on user does -- it doesn't
+#            attach to WinSta0 the same way, which is why it silently
+#            stalled instead of completing.
+#          - Fix: the scheduled task principal now targets the actual
+#            console-logged-in user (detected dynamically via whoever owns
+#            explorer.exe) instead of SYSTEM, with LogonType=Interactive,
+#            RunLevel=Highest. This matches the manually-confirmed working
+#            case exactly.
+#          - Requires someone to be logged into the console/RDP session
+#            for this to work (same as the manual test). Fails with a
+#            clear message if no explorer.exe owner can be found.
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "1.7"
+$ScriptVersion       = "1.8"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
@@ -91,8 +95,28 @@ function Test-NetFx3 {
     }
 }
 
+function Get-ConsoleLoggedInUser {
+    # Whoever owns explorer.exe is a reliable signal for who's actually
+    # logged into the interactive console/RDP session, as opposed to
+    # whoever is connected via SSH.
+    try {
+        return (Get-Process -IncludeUserName -Name explorer -ErrorAction Stop |
+            Select-Object -First 1 -ExpandProperty UserName)
+    } catch {
+        return $null
+    }
+}
+
 function Install-NetFx3 {
-    Write-Host " [~] .NET Framework 3.5 not enabled. Attempting via SYSTEM-interactive scheduled task..." -ForegroundColor Yellow
+    Write-Host " [~] .NET Framework 3.5 not enabled. Attempting via console-user scheduled task..." -ForegroundColor Yellow
+
+    $consoleUser = Get-ConsoleLoggedInUser
+    if (-not $consoleUser) {
+        Write-Host " [!] Could not determine the logged-in console user (no explorer.exe process found)." -ForegroundColor Red
+        Write-Host "     Someone needs to be logged into the console/RDP session for this to work." -ForegroundColor Red
+        return $false
+    }
+    Write-Host " [i] Running as console user: $consoleUser" -ForegroundColor Gray
 
     $taskLogPath = Join-Path $env:TEMP "netfx3-task.log"
     $taskScriptPath = Join-Path $env:TEMP "enable-netfx3-task.ps1"
@@ -118,7 +142,10 @@ try {
     try {
         $action = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$taskScriptPath`""
-        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType Interactive -RunLevel Highest
+        # Key fix: run as the actual console-logged-in user, not SYSTEM.
+        # SYSTEM's "Interactive" logon type does not attach to a real
+        # WinSta0 the way a genuine user logon session does.
+        $principal = New-ScheduledTaskPrincipal -UserId $consoleUser -LogonType Interactive -RunLevel Highest
         $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
 
         Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Force -ErrorAction Stop | Out-Null
