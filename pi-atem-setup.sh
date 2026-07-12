@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="47"
+INSTALLER_VERSION="48"
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v47)
+# ATEM MONITOR AUTO-INSTALLER (v48)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -80,7 +80,7 @@ INSTALLER_VERSION="47"
 #   atemstatus   sudo systemctl status atem-monitor --no-pager -l
 #   atemlog      journalctl -u atem-monitor --no-pager
 #   atemrestart  sudo systemctl restart atem-monitor
-#   drivecheck   sudo smartctl -i -H /dev/sda
+#   drivestatus  sudo smartctl -i -H /dev/sda
 #
 # SYSTEM TOOLS INSTALLED
 # ------------------------------------------
@@ -198,6 +198,9 @@ INSTALLER_VERSION="47"
 #
 # CHANGELOG
 # ------------------------------------------
+# v48 - Email notification now says "Audio extracted" instead of
+#       "Audio saved". Renamed drivecheck alias to drivestatus.
+#
 # v47 - Added INSTALLER_VERSION constant at top of script. Service
 #       description and completion banner now derive from this single
 #       value so version only needs updating in one place.
@@ -973,7 +976,7 @@ if [ "${ENABLE_AUDIO_EXTRACT:-false}" = "true" ]; then
                           -acodec copy \
                           "$M4A_PATH" \
                           -y -loglevel error 2>&1; then
-                    email_log "   ✅ Audio saved: $(basename "$M4A_PATH")"
+                    email_log "   ✅ Audio extracted: $(basename "$M4A_PATH")"
                     AUDIO_FILES+=("$M4A_PATH")
                 else
                     email_log "   ❌ Audio extraction failed for $(basename "$MP4_PATH")"
@@ -1191,7 +1194,7 @@ BASHRC="$HOME_DIR/.bashrc"
 echo ">>> Setting up aliases..."
 
 # Remove old alias names from previous installs
-for OLD_ALIAS in checkatem logatem restartatem checkdrive ff atemcheck; do
+for OLD_ALIAS in checkatem logatem restartatem checkdrive ff atemcheck drivecheck; do
     sed -i "/^alias ${OLD_ALIAS}=/d" "$BASHRC"
 done
 
@@ -1200,7 +1203,7 @@ declare -A ATEM_ALIASES=(
     ["atemstatus"]="sudo systemctl status atem-monitor --no-pager -l"
     ["atemlog"]="journalctl -u atem-monitor --no-pager"
     ["atemrestart"]="sudo systemctl restart atem-monitor"
-    ["drivecheck"]="sudo smartctl -i -H /dev/sda"
+    ["drivestatus"]="sudo smartctl -i -H /dev/sda"
 )
 
 for ALIAS_NAME in "${!ATEM_ALIASES[@]}"; do
