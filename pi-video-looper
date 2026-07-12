@@ -36,6 +36,6 @@ nano ~/.bashrc
 
 alias mpvstatus='sudo systemctl status mpv --no-pager -l'
 alias mpvedit='sudo nano /etc/systemd/system/mpv.service'
-alias mpvreload='sudo systemctl daemon-reload && sudo systemctl restart mpv'
+alias mpvrestart='sudo systemctl daemon-reload && sudo systemctl restart mpv'
 
 source ~/.bashrc
