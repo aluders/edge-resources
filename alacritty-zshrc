@@ -17,6 +17,7 @@ alias flushdns='sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder'
 alias ls="eza --icons=always"
 alias l="eza -lah --icons=always --group-directories-first"
 alias batcopy='() { cat "$1" | pbcopy; bat "$1"; }'
+alias drivestatus='sudo smartctl -i -H /dev/disk0'
 
 # ---- Functions ----
 curl() {
