@@ -17,6 +17,5 @@ sudo apt install smartmontools
 nano ~/.bashrc
 
 alias checkdrive='sudo smartctl -i -H /dev/sda'
-alias ff='fastfetch'
 
 source ~/.bashrc
