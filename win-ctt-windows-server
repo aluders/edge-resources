@@ -5,3 +5,6 @@ Install-Script -Name winget-install -Force
 winget-install -Force
 
 winget install --id Microsoft.PowerShell --source winget
+
+run from elevated powershell 7+
+irm christitus.com/win | iex
