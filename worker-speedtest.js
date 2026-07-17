@@ -1,17 +1,73 @@
+// =============================================================================
+// Edge Integrated Speedtest -- Cloudflare Worker
+// =============================================================================
+// Serves the speed test page as a static response. All test logic runs
+// client-side in the browser against Cloudflare's public speed.cloudflare.com
+// edge endpoints -- this worker's only job is delivering the HTML/CSS/JS.
+//
+// CACHING
+//   Uses the Workers Cache API (caches.default) directly in code below --
+//   this is plain JS, works with a dashboard paste-and-deploy same as
+//   everything else. On a cache hit for a given Cloudflare data center, the
+//   cached response is served straight back and the code below the
+//   cache.match() never re-runs. This is a per-data-center cache. To force a
+//   fresh copy after editing the page, bump CACHE_BUSTER below; changing
+//   that value changes the cache key.
+//
+// CHANGELOG (page-internal version tracked separately in the VERSION const
+// inside the HTML below -- this is the worker/deploy-level history)
+//   v1.0  Initial multi-stream saturation test against speed.cloudflare.com
+//   v1.1  Needle-gauge UI, speedtest.net tick scale, upper-biased scoring,
+//         version tag, Workers Cache enabled
+//   v1.2  Score from EMA-smoothed series (top 90%) instead of raw samples
+//   v1.3  Median-of-3 despike filter before the EMA
+//   v1.4  Ookla methodology match: min-latency, pretest-sized chunks/
+//         streams, direction-specific scoring (download vs upload)
+//   v1.5  Mid-test stream escalation (adds streams if headroom detected
+//         during first half of test, matching Ookla's documented behavior)
+//   v1.6  Worker fetch failures now logged/surfaced instead of swallowed
+//   v1.7  Upload switched to XHR upload.onprogress for real-time crediting
+//   v1.8  Rolling 2.5s window for rate calc (upload.onprogress fires
+//         sparser than SAMPLE_MS on slow connections)
+//   v1.9  Proportional chunk sizing (~0.75s per chunk at the pretest-
+//         measured rate) to reduce buffer-bloat overcrediting
+//   v2.0  Rebuilt upload to match Cloudflare's own documented methodology:
+//         completion-timed fetch() + PerformanceResourceTiming + adaptive
+//         per-stream size escalation, replacing XHR/onprogress entirely
+//   v2.1  Top-justified page layout (better on mobile), favicon added
+//   v2.2  Corrected caching approach: switched to the Cache API
+//         (caches.default) directly in code, which works with a dashboard
+//         paste-and-deploy workflow.
+// =============================================================================
+
+const CACHE_BUSTER = 'v2.2'; // bump this (and only this) to force a fresh cached copy after edits
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/" || url.pathname === "/index.html") {
-      return new Response(HTML, {
-        headers: {
-          "content-type": "text/html;charset=UTF-8",
-          "cache-control": "public, max-age=3600, stale-while-revalidate=86400"
-        }
-      });
+    if (url.pathname !== "/" && url.pathname !== "/index.html") {
+      return new Response("Not found", { status: 404 });
     }
 
-    return new Response("Not found", { status: 404 });
+    const cache = caches.default;
+    const cacheKey = new Request(url.origin + url.pathname + '?cb=' + CACHE_BUSTER, request);
+
+    let response = await cache.match(cacheKey);
+    if (response) return response;
+
+    response = new Response(HTML, {
+      headers: {
+        "content-type": "text/html;charset=UTF-8",
+        "cache-control": "public, max-age=3600, stale-while-revalidate=86400"
+      }
+    });
+
+    // put() is fire-and-forget here on purpose -- we still return the
+    // response immediately either way, this just seeds the cache for the
+    // next visitor to this data center.
+    await cache.put(cacheKey, response.clone());
+    return response;
   }
 };
 
