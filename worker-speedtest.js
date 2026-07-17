@@ -4,43 +4,92 @@
 // Serves the speed test page as a static response. All test logic runs
 // client-side in the browser against Cloudflare's public speed.cloudflare.com
 // edge endpoints -- this worker's only job is delivering the HTML/CSS/JS.
+// The page itself only shows the current version number (in the header
+// text) -- full history lives here.
+//
+// CHANGELOG
+//   v1.0  Initial multi-stream saturation test against speed.cloudflare.com
+//   v1.1  Needle-gauge UI (replaces oscilloscope trace), speedtest.net tick
+//         scale, upper-biased scoring, version tag, Workers Cache enabled
+//   v1.2  Score from the EMA-smoothed series (top 90%) instead of raw
+//         samples -- matches what the needle actually shows
+//   v1.3  Median-of-3 despike filter before the EMA -- the speedtest.net
+//         tick scale compressed the 500-1000 Mbps segment, making the
+//         needle oversensitive to momentary burst artifacts right in the
+//         range a symmetric gigabit connection sits in
+//   v1.4  Matched Ookla's documented methodology: latency reports the
+//         minimum round trip (not median); a pretest probe decides stream
+//         count and chunk size per direction instead of fixed constants;
+//         scoring now splits by direction -- download drops top 10%/
+//         bottom 22% and averages the rest, upload averages the fastest
+//         half (Ookla scores upload more aggressively than download)
+//   v1.5  Mid-test stream escalation, matching Ookla's documented "add
+//         threads during the first half of the test if headroom is
+//         detected" behavior. Pretest now starts conservative (6 streams)
+//         instead of jumping straight to the ceiling (raised 8 -> 10),
+//         leaving room to actually discover extra headroom -- targets
+//         upload consistently reading lower than speedtest.net. Scoring
+//         window is now the exact steady-state phase (post-escalation),
+//         not a fixed percentage, since total test time is now variable.
+//   v1.6  Worker fetch failures were being silently swallowed -- a
+//         connection that failed on every single attempt would spin
+//         forever with zero visible errors and report 0.0 at the end.
+//         Now logs failures to console, shows a visible message after 5
+//         consecutive failures, checks res.ok (HTTP error codes don't
+//         reject fetch() on their own), and adds backoff between retries
+//         instead of a tight failure loop.
+//   v1.7  Real root cause of 0.0 upload on cellular found: fetch() has no
+//         upload-progress API, so bytes were only credited once an entire
+//         chunk finished -- on high-latency/slow-throughput links, a
+//         single chunk could outlast the whole test with nothing ever
+//         credited, despite the request eventually succeeding (hence no
+//         visible error either). Rewrote upload to use XMLHttpRequest's
+//         upload.onprogress for real incremental byte crediting, matching
+//         how download already worked via the streaming body reader.
+//         In-flight uploads are now aborted cleanly on stop instead of
+//         lingering until their own timeout.
+//   v1.8  Fixed dial decaying to zero on upload even with v1.7's fix:
+//         upload.onprogress fires sparser than SAMPLE_MS on slower
+//         connections, so single-tick deltas were reading real gaps
+//         between events as literal zero throughput. Rate is now computed
+//         over a rolling 2.5s window instead of just the immediately
+//         preceding tick, absorbing event burstiness while still
+//         redrawing the dial every SAMPLE_MS.
+//   v1.9  Fixed dial starting way too high (~100Mbps) then decaying toward
+//         the real number on slow uploads: upload.onprogress reports
+//         bytes handed to the local send buffer, not bytes actually
+//         delivered -- on connections with real buffering depth (common
+//         on cellular), a large chunk gets buffered near-instantly,
+//         reporting an inflated rate until the buffer saturates and
+//         throttles down to the true rate. Chunk size is now proportional
+//         to the pretest reading (~0.75s of transfer at that rate)
+//         instead of a few fixed tiers, so a genuine ~5Mbps connection no
+//         longer gets bucketed with a 40Mbps one and handed an 8MB chunk.
+//   v2.0  Rebuilt upload measurement to match Cloudflare's own documented
+//         methodology instead of guessing further: dropped XHR/onprogress
+//         (buffer-handoff based, not real delivery) in favor of
+//         completion-timed fetch() requests with PerformanceResourceTiming
+//         for precise duration, and per-stream adaptive escalation --
+//         start small, double the size whenever a request completes
+//         faster than MIN_REQUEST_DURATION_MS (too fast to be a
+//         trustworthy bandwidth sample), same as Cloudflare's "ramp-up
+//         with increasing file sizes per direction" approach. In-flight
+//         requests now cancel via AbortController on stop.
+//   v2.1  Top-justified page layout (better on mobile), favicon added
+// =============================================================================
 //
 // CACHING
 //   Uses the Workers Cache API (caches.default) directly in code below --
-//   this is plain JS, works with a dashboard paste-and-deploy same as
-//   everything else. On a cache hit for a given Cloudflare data center, the
-//   cached response is served straight back and the code below the
-//   cache.match() never re-runs. This is a per-data-center cache. To force a
-//   fresh copy after editing the page, bump CACHE_BUSTER below; changing
-//   that value changes the cache key.
-//
-// CHANGELOG (page-internal version tracked separately in the VERSION const
-// inside the HTML below -- this is the worker/deploy-level history)
-//   v1.0  Initial multi-stream saturation test against speed.cloudflare.com
-//   v1.1  Needle-gauge UI, speedtest.net tick scale, upper-biased scoring,
-//         version tag, Workers Cache enabled
-//   v1.2  Score from EMA-smoothed series (top 90%) instead of raw samples
-//   v1.3  Median-of-3 despike filter before the EMA
-//   v1.4  Ookla methodology match: min-latency, pretest-sized chunks/
-//         streams, direction-specific scoring (download vs upload)
-//   v1.5  Mid-test stream escalation (adds streams if headroom detected
-//         during first half of test, matching Ookla's documented behavior)
-//   v1.6  Worker fetch failures now logged/surfaced instead of swallowed
-//   v1.7  Upload switched to XHR upload.onprogress for real-time crediting
-//   v1.8  Rolling 2.5s window for rate calc (upload.onprogress fires
-//         sparser than SAMPLE_MS on slow connections)
-//   v1.9  Proportional chunk sizing (~0.75s per chunk at the pretest-
-//         measured rate) to reduce buffer-bloat overcrediting
-//   v2.0  Rebuilt upload to match Cloudflare's own documented methodology:
-//         completion-timed fetch() + PerformanceResourceTiming + adaptive
-//         per-stream size escalation, replacing XHR/onprogress entirely
-//   v2.1  Top-justified page layout (better on mobile), favicon added
-//   v2.2  Corrected caching approach: switched to the Cache API
-//         (caches.default) directly in code, which works with a dashboard
-//         paste-and-deploy workflow.
+//   plain JS, works with a dashboard paste-and-deploy. On a cache hit for a
+//   given Cloudflare data center, the cached response is served straight
+//   back and the code below cache.match() never re-runs. Per-data-center,
+//   not global. CACHE_BUSTER is kept in sync with the page VERSION below --
+//   bump both together when pasting in an update, or a data center could
+//   keep serving the prior version until the hour-long cache naturally
+//   expires.
 // =============================================================================
 
-const CACHE_BUSTER = 'v2.2'; // bump this (and only this) to force a fresh cached copy after edits
+const CACHE_BUSTER = 'v2.1';
 
 export default {
   async fetch(request) {
@@ -63,9 +112,6 @@ export default {
       }
     });
 
-    // put() is fire-and-forget here on purpose -- we still return the
-    // response immediately either way, this just seeds the cache for the
-    // next visitor to this data center.
     await cache.put(cacheKey, response.clone());
     return response;
   }
@@ -281,76 +327,8 @@ const HTML = `
 </div>
 
 <script>
-// Edge Integrated Speedtest -- changelog
-//   v1.0  Initial multi-stream saturation test against speed.cloudflare.com
-//   v1.1  Needle-gauge UI (replaces oscilloscope trace), speedtest.net tick
-//         scale, upper-biased scoring, version tag, Workers Cache enabled
-//   v1.2  Score from the EMA-smoothed series (top 90%) instead of raw
-//         samples -- matches what the needle actually shows
-//   v1.3  Median-of-3 despike filter before the EMA -- the speedtest.net
-//         tick scale compressed the 500-1000 Mbps segment, making the
-//         needle oversensitive to momentary burst artifacts right in the
-//         range a symmetric gigabit connection sits in
-//   v1.4  Matched Ookla's documented methodology: latency reports the
-//         minimum round trip (not median); a pretest probe decides stream
-//         count and chunk size per direction instead of fixed constants;
-//         scoring now splits by direction -- download drops top 10%/
-//         bottom 22% and averages the rest, upload averages the fastest
-//         half (Ookla scores upload more aggressively than download)
-//   v1.5  Mid-test stream escalation, matching Ookla's documented "add
-//         threads during the first half of the test if headroom is
-//         detected" behavior. Pretest now starts conservative (6 streams)
-//         instead of jumping straight to the ceiling (raised 8 -> 10),
-//         leaving room to actually discover extra headroom -- targets
-//         upload consistently reading lower than speedtest.net. Scoring
-//         window is now the exact steady-state phase (post-escalation),
-//         not a fixed percentage, since total test time is now variable.
-//   v1.6  Worker fetch failures were being silently swallowed -- a
-//         connection that failed on every single attempt would spin
-//         forever with zero visible errors and report 0.0 at the end.
-//         Now logs failures to console, shows a visible message after 5
-//         consecutive failures, checks res.ok (HTTP error codes don't
-//         reject fetch() on their own), and adds backoff between retries
-//         instead of a tight failure loop.
-//   v1.7  Real root cause of 0.0 upload on cellular found: fetch() has no
-//         upload-progress API, so bytes were only credited once an entire
-//         chunk finished -- on high-latency/slow-throughput links, a
-//         single chunk could outlast the whole test with nothing ever
-//         credited, despite the request eventually succeeding (hence no
-//         visible error either). Rewrote upload to use XMLHttpRequest's
-//         upload.onprogress for real incremental byte crediting, matching
-//         how download already worked via the streaming body reader.
-//         In-flight uploads are now aborted cleanly on stop instead of
-//         lingering until their own timeout.
-//   v1.8  Fixed dial decaying to zero on upload even with v1.7's fix:
-//         upload.onprogress fires sparser than SAMPLE_MS on slower
-//         connections, so single-tick deltas were reading real gaps
-//         between events as literal zero throughput. Rate is now computed
-//         over a rolling 2.5s window instead of just the immediately
-//         preceding tick, absorbing event burstiness while still
-//         redrawing the dial every SAMPLE_MS.
-//   v1.9  Fixed dial starting way too high (~100Mbps) then decaying toward
-//         the real number on slow uploads: upload.onprogress reports
-//         bytes handed to the local send buffer, not bytes actually
-//         delivered -- on connections with real buffering depth (common
-//         on cellular), a large chunk gets buffered near-instantly,
-//         reporting an inflated rate until the buffer saturates and
-//         throttles down to the true rate. Chunk size is now proportional
-//         to the pretest reading (~0.75s of transfer at that rate)
-//         instead of a few fixed tiers, so a genuine ~5Mbps connection no
-//         longer gets bucketed with a 40Mbps one and handed an 8MB chunk.
-//   v2.0  Rebuilt upload measurement to match Cloudflare's own documented
-//         methodology instead of guessing further: dropped XHR/onprogress
-//         (buffer-handoff based, not real delivery) in favor of
-//         completion-timed fetch() requests with PerformanceResourceTiming
-//         for precise duration, and per-stream adaptive escalation --
-//         start small, double the size whenever a request completes
-//         faster than MIN_REQUEST_DURATION_MS (too fast to be a
-//         trustworthy bandwidth sample), same as Cloudflare's "ramp-up
-//         with increasing file sizes per direction" approach. In-flight
-//         requests now cancel via AbortController on stop.
 (() => {
-  const VERSION = 'v2.0';
+  const VERSION = 'v2.1';
 
   const DOWN_URL = 'https://speed.cloudflare.com/__down';
   const UP_URL = 'https://speed.cloudflare.com/__up';
