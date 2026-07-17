@@ -1,0 +1,9 @@
+# Download the installer script from the PowerShell Gallery
+Install-Script -Name winget-install -Force
+
+# Run the script to install WinGet and its UI/C++ dependencies
+winget-install -Force
+
+winget install --id Microsoft.PowerShell --source winget
+
+choco install microsoft-windows-terminal
