@@ -1,3 +1,37 @@
+/********************************************************************
+  Public IP Details Worker  v1.2
+
+  Notes:
+    - Serves a self-contained page showing the visitor's IPv4/IPv6
+      address, ISP, and approximate location (via Cloudflare's
+      request.cf on the incoming request).
+    - CF-Connecting-IP plus request.cf.asOrganization/asn are used as
+      an immediate server-side fallback for IP + ISP, so the page
+      still shows real data even if the client-side ipinfo.io probes
+      fail (e.g. VPN/WireGuard tunnels with MTU or DNS-blackhole
+      issues that hang the in-browser fetch).
+    - Client-side JS then confirms/refreshes both values live via
+      ipinfo.io/json (v4) and v6.ipinfo.io/json (v6), and only
+      overwrites the edge fallback once a probe actually succeeds.
+    - No external dependencies beyond the ipinfo.io free JSON
+      endpoints (rate-limited on the free tier - add ?token=... to
+      the two fetch URLs below if this ever needs a higher ceiling).
+
+  Changelog:
+    v1.2 - Added ISP name under each IP card (Cloudflare asOrganization
+           /asn server-side, ipinfo.io org field client-side)
+         - Replaced raw ISO timestamp with a readable, timezone-aware
+           "Captured ..." line; raw ISO kept as a small subtitle
+    v1.1 - Added CF-Connecting-IP server-side fallback so the page
+           still shows a real IP if the client-side ipinfo.io probe
+           fails or times out
+         - Click-to-copy now binds immediately for edge-rendered
+           values instead of waiting on the client probe
+    v1.0 - Initial release: client-side dual-stack IP detection via
+           ipinfo.io, Cloudflare-derived location info (country/
+           region/city/timezone), click-to-copy IP boxes
+********************************************************************/
+
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
