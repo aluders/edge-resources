@@ -6,6 +6,12 @@
 
     VERSION HISTORY
     ----------------
+    2.1.0 - 2026-07-19 - Self-cleans leftover policy from earlier versions
+        - Any machine already tested with v1.x has a stale
+          HKLM/HKCU\SOFTWARE\Policies\Google\Chrome key sitting around from
+          before the registry approach was dropped - still shows "managed by
+          your organization" for no actual effect. This version removes it
+          (or just our specific values, if the key holds anything else)
     2.0.0 - 2026-07-19 - Dropped registry policy (doesn't work on unmanaged PCs)
         - chrome://policy confirmed DefaultSearchProviderEnabled and friends
           come back "Error, Ignored - This policy is blocked" on a normal
@@ -80,7 +86,7 @@ param(
                                   # (recommended - client firewalls that allow chrome.vcc.net often block sqlite.org)
 )
 
-$ScriptVersion = "2.0.0"
+$ScriptVersion = "2.1.0"
 
 function Write-Sep  { Write-Host ("-" * 60) -ForegroundColor DarkGray }
 function Write-Ok    ($msg) { Write-Host "[+] $msg" -ForegroundColor Green }
@@ -114,7 +120,40 @@ if ($IsElevated) {
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 2. Close Chrome so profile files aren't locked
+# 2. Remove any leftover policy from pre-2.0.0 runs of this script. Those
+#    versions wrote DefaultSearchProvider* to HKLM/HKCU - Chrome ignores the
+#    values on an unmanaged machine, but the key's presence alone is what
+#    triggers the "managed by your organization" banner for no actual effect.
+# ---------------------------------------------------------------------------
+$LegacyPolicyValues = @(
+    "DefaultSearchProviderEnabled", "DefaultSearchProviderName", "DefaultSearchProviderKeyword",
+    "DefaultSearchProviderSearchURL", "DefaultSearchProviderSuggestURL", "DefaultSearchProviderIconURL",
+    "DefaultSearchProviderNewTabURL", "DefaultSearchProviderEncodings"
+)
+
+foreach ($hive in @("HKLM:\SOFTWARE\Policies\Google\Chrome", "HKCU:\SOFTWARE\Policies\Google\Chrome")) {
+    if (-not (Test-Path $hive)) { continue }
+    try {
+        foreach ($name in $LegacyPolicyValues) {
+            Remove-ItemProperty -Path $hive -Name $name -ErrorAction SilentlyContinue
+        }
+        $key = Get-Item $hive
+        if ($key.ValueCount -eq 0 -and $key.SubKeyCount -eq 0) {
+            Remove-Item $hive -Force
+            Write-Ok "Removed leftover policy key from an earlier run: $hive"
+        } else {
+            Write-Info "Cleared our values from $hive (other unrelated policy values remain, left in place)"
+        }
+    }
+    catch {
+        Write-Warn2 "Couldn't clean $hive - may need elevation to remove the HKLM copy: $($_.Exception.Message)"
+    }
+}
+
+Write-Sep
+
+# ---------------------------------------------------------------------------
+# 3. Close Chrome so profile files aren't locked
 # ---------------------------------------------------------------------------
 $ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
 
@@ -140,7 +179,7 @@ if ($ChromeProcs) {
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 3. Fetch sqlite3.exe (cached in %TEMP% after first run)
+# 4. Fetch sqlite3.exe (cached in %TEMP% after first run)
 # ---------------------------------------------------------------------------
 function Get-Sqlite3Exe {
     $toolDir = Join-Path $env:TEMP "vcc-sqlite3"
@@ -183,7 +222,7 @@ function Get-Sqlite3Exe {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Set Google as default and remove the rest, per profile
+# 5. Set Google as default and remove the rest, per profile
 #    - "keywords" table: same table Settings > Search Engines > Remove
 #      edits, so autofill/addresses/cards (separate tables, same file) are
 #      never touched
