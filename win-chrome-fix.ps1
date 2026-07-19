@@ -7,6 +7,28 @@
 
     VERSION HISTORY
     ----------------
+    4.6.0 - 2026-07-19 - Real table structure confirmed; scoping bug fixed
+        - Dump output confirmed the table structure: rows are DataItems
+          under a Table, each with an editIconButton and a "More actions
+          for <name>" button. Whichever engine is currently default shows
+          "(Default)" appended right in its name - there's no separate
+          dropdown, so that ComboBox-hunting code is gone, replaced with
+          checking for that suffix directly
+        - Real bug caught from the dump, unrelated to any guessing: the
+          page has a SECOND table further down for "Site search" shortcuts
+          (Bookmarks, Gemini, History, Tabs, etc.) that also has "More
+          actions" buttons matching the same pattern. The removal loop
+          wasn't scoped to just the search-engines table, so it would have
+          gone after those too - fixed regardless of the labels question,
+          since those aren't search engines and should never be touched
+        - The diagnostic dump was also opening Google's own menu to show
+          contents, but Chrome disables that button while a row is the
+          active default (can't remove your own default) - it just threw
+          an error and showed nothing useful. Fixed to open a non-Google
+          row instead, so the next dump should finally reveal the real
+          "Remove" menu item text
+        - Still don't know how to click "make default" if Google isn't
+          already it - only a detect-and-report state for now
     4.5.0 - 2026-07-19 - Deeper dump that also opens a menu to show real contents
         - Real dump output confirmed two things: the omnibox match was
           already correct, and this Chrome version has NO separate
@@ -162,7 +184,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.5.0"
+$ScriptVersion = "4.6.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -373,23 +395,30 @@ if ($DumpUITree) {
     Write-Sep
 
     # A static dump can't show what's inside a menu that isn't open yet, so
-    # open the first "More actions" menu found and dump again - this is the
-    # only way to see the real "Remove"/"Make default"/etc labels
+    # open a non-Google row's menu and dump again - Google's own "More
+    # actions" button is disabled while it's the active default, so it has
+    # to be a different row to actually see a working menu's contents
     $btnCond = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::Button)
-    $firstMenuBtn = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
-        Where-Object { $_.Current.Name -match "More actions" } | Select-Object -First 1
+    $menuBtn = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+        Where-Object { $_.Current.Name -match "More actions" -and $_.Current.Name -notmatch "Google" } |
+        Select-Object -First 1
 
-    if ($firstMenuBtn) {
-        Write-Info "Opening the menu for '$($firstMenuBtn.Current.Name)' to reveal its real contents..."
-        $firstMenuBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-        Start-Sleep -Milliseconds 600
-        Write-Sep
-        Show-UITree -Element $RootElement
-        Write-Sep
+    if ($menuBtn) {
+        Write-Info "Opening the menu for '$($menuBtn.Current.Name)' to reveal its real contents..."
+        try {
+            $menuBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            Start-Sleep -Milliseconds 600
+            Write-Sep
+            Show-UITree -Element $RootElement
+            Write-Sep
+        }
+        catch {
+            Write-Warn2 "Couldn't open that menu either: $($_.Exception.Message)"
+        }
     } else {
-        Write-Warn2 "No 'More actions' button found to open - the table row structure may need a closer look"
+        Write-Warn2 "No non-Google 'More actions' button found to open"
     }
 
     Write-Ok "Dump complete. Share this output back so the click targeting can be corrected if needed."
@@ -397,43 +426,41 @@ if ($DumpUITree) {
 }
 
 # ---------------------------------------------------------------------------
-# 4b. Real run: set Google as default, then remove every other entry - the
-#     same two actions a person would take on this page.
+# 4b. Real run: confirm Google is default, then remove every other entry
+#     from the search engines table specifically (there's a second,
+#     unrelated "Site search" table further down the page - Bookmarks,
+#     Gemini, History, etc. - that must NOT be touched).
 # ---------------------------------------------------------------------------
 function Invoke-UIA($Element) {
     $Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 }
 
-# --- Set the default via the "Search engine used in the address bar" dropdown ---
-try {
-    $comboCond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::ComboBox)
-    $combo = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $comboCond) |
-        Where-Object { $_.Current.Name -match "address bar" } | Select-Object -First 1
+# The search engines table is the first Table on the page - the Site search
+# table further down shares the same generic AutomationId, so position
+# (first vs. second) is what distinguishes them, not id.
+$tableCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Table)
+$SearchEngineTable = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $tableCond)
 
-    if ($combo) {
-        $combo.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
-        Start-Sleep -Milliseconds 500
-
-        $itemCond = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::ListItem)
-        $googleItem = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $itemCond) |
-            Where-Object { $_.Current.Name -match "^Google" } | Select-Object -First 1
-
-        if ($googleItem) {
-            $googleItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
-            Write-Ok "Set Google as the default search engine"
-        } else {
-            Write-Warn2 "Opened the default-engine dropdown but couldn't find a 'Google' option in it"
-        }
-    } else {
-        Write-Warn2 "Couldn't find the 'search engine used in the address bar' dropdown - run with -DumpUITree to see why"
-    }
+if (-not $SearchEngineTable) {
+    Write-Err2 "Couldn't find the search engines table - stopping. Run with -DumpUITree to see why"
+    return
 }
-catch {
-    Write-Warn2 "Setting the default failed: $($_.Exception.Message)"
+
+# --- Confirm Google is the default. Chrome marks whichever row is current
+#     default with a "(Default)" suffix right in its name - there's no
+#     separate dropdown for this in this version of the settings page. ---
+$nameCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "name-column")
+$rowNames = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond)
+$googleIsDefault = $rowNames | Where-Object { $_.Current.Name -match "Google" -and $_.Current.Name -match "\(Default\)" }
+
+if ($googleIsDefault) {
+    Write-Ok "Google is already the default search engine"
+} else {
+    Write-Warn2 "Google isn't currently marked as default, and this version doesn't yet know how to set it -"
+    Write-Warn2 "run with -DumpUITree, open a non-Google row's menu, and share the output so that can be added"
 }
 
 Write-Sep
@@ -447,7 +474,7 @@ for ($i = 0; $i -lt 30; $i++) {
         $btnCond = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::Button)
-        $menuButtons = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+        $menuButtons = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
             Where-Object { $_.Current.Name -match "More actions" }
 
         $target = $menuButtons | Where-Object { $_.Current.Name -notmatch "Google" } | Select-Object -First 1
