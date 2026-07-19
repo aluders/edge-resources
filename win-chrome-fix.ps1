@@ -6,6 +6,25 @@
 
     VERSION HISTORY
     ----------------
+    2.3.0 - 2026-07-19 - Try winget before the pinned URL
+        - If winget is available, sqlite3 now comes from the community-
+          maintained SQLite.SQLite package instead - winget's manifest
+          tracks the current release, so we're no longer the ones
+          responsible for keeping a version-pinned URL up to date
+        - Its manifest still points at sqlite.org under the hood though, so
+          this doesn't help if sqlite.org itself is genuinely blocked -
+          -SqliteZipUrl (self-hosted mirror) is still the real fix for that
+        - Falls back to the pinned URL automatically if winget is missing
+          or doesn't produce a usable sqlite3.exe
+    2.2.0 - 2026-07-19 - sqlite3 fetch: pinned URL instead of scraped manifest
+        - Confirmed on a real test machine: sqlite.org was reachable, but the
+          regex parsing its download manifest still failed to find the
+          sqlite-tools-win-x64 entry - likely Invoke-WebRequest not decoding
+          the response the same way a browser does. Rather than keep
+          debugging a scraper blind, switched to a pinned, known-good
+          download URL. It'll go stale whenever sqlite.org ships a new
+          version (one-line fix when that happens) - more predictable than
+          a parser that can silently break
     2.1.0 - 2026-07-19 - Self-cleans leftover policy from earlier versions
         - Any machine already tested with v1.x has a stale
           HKLM/HKCU\SOFTWARE\Policies\Google\Chrome key sitting around from
@@ -60,10 +79,11 @@
     -----
     - Run elevated to fix every local profile on the machine. Without
       elevation it's scoped to the current user's profile only.
-    - One external dependency: sqlite3.exe is downloaded from sqlite.org the
-      first time this runs on a machine (cached in %TEMP% after that). Pass
-      -SqliteZipUrl to point at a self-hosted mirror if a client network
-      blocks sqlite.org but allows chrome.vcc.net.
+    - One external dependency: sqlite3.exe comes from winget if available,
+      otherwise a pinned sqlite.org release URL (cached in %TEMP% either
+      way after the first run). Pass -SqliteZipUrl to skip both and use a
+      self-hosted mirror instead - recommended for client networks, and the
+      only fix if sqlite.org itself is ever genuinely blocked.
     - No enforcement/lock - this fixes the current state but can't prevent
       a hijacker (malware, PUP, rogue extension) from changing it again
       later. See the 2.0.0 changelog note above for why, and what a real
@@ -86,7 +106,7 @@ param(
                                   # (recommended - client firewalls that allow chrome.vcc.net often block sqlite.org)
 )
 
-$ScriptVersion = "2.1.0"
+$ScriptVersion = "2.3.0"
 
 function Write-Sep  { Write-Host ("-" * 60) -ForegroundColor DarkGray }
 function Write-Ok    ($msg) { Write-Host "[+] $msg" -ForegroundColor Green }
@@ -187,21 +207,53 @@ function Get-Sqlite3Exe {
     if (Test-Path $exePath) { return $exePath }
 
     New-Item -Path $toolDir -ItemType Directory -Force | Out-Null
+
+    # --- Try winget first: SQLite.SQLite is a community-maintained portable
+    #     package that always resolves to whatever's current, so winget
+    #     carries the burden of tracking sqlite.org's release URL, not us.
+    #     Note: its manifest still points at sqlite.org under the hood, so
+    #     this doesn't help if sqlite.org itself is genuinely blocked - only
+    #     -SqliteZipUrl (a self-hosted mirror) gets around that. ---
+    if (-not $SqliteZipUrl -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Info "Installing sqlite3 via winget..."
+        try {
+            winget install --id SQLite.SQLite --exact --silent `
+                --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+        } catch { }
+
+        $wingetRoots = @(
+            "$env:LOCALAPPDATA\Microsoft\WinGet\Packages",
+            "$env:ProgramFiles\WinGet\Packages"
+        ) | Where-Object { Test-Path $_ }
+
+        $found = $null
+        foreach ($root in $wingetRoots) {
+            $found = Get-ChildItem $root -Recurse -Filter "sqlite3.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { break }
+        }
+
+        if ($found) {
+            Copy-Item $found.FullName $exePath -Force
+            Write-Ok "sqlite3 CLI ready (via winget)"
+            return $exePath
+        }
+        Write-Warn2 "winget didn't produce a usable sqlite3.exe - falling back to direct download"
+    }
+
+    # --- Fallback: pinned sqlite.org release, or a self-hosted mirror ---
     $zipPath = Join-Path $toolDir "sqlite-tools.zip"
 
+    # Pinned to a known-good release rather than scraped from sqlite.org's
+    # download manifest - that parsing was unreliable in practice (Invoke-
+    # WebRequest doesn't always decode the response the way a browser does).
+    # This URL will go stale whenever sqlite.org ships a new version; update
+    # it then, or better: host your own copy and always pass -SqliteZipUrl.
+    $PinnedUrl = "https://sqlite.org/2026/sqlite-tools-win-x64-3530300.zip"
+    $downloadUrl = if ($SqliteZipUrl) { $SqliteZipUrl } else { $PinnedUrl }
+
     try {
-        if ($SqliteZipUrl) {
-            Write-Info "Fetching sqlite3 CLI from mirror: $SqliteZipUrl"
-            Invoke-WebRequest -Uri $SqliteZipUrl -OutFile $zipPath -UseBasicParsing
-        }
-        else {
-            Write-Info "Fetching sqlite3 CLI from sqlite.org (one-time - cached in %TEMP%)..."
-            $manifest = Invoke-WebRequest -Uri "https://sqlite.org/download.html" -UseBasicParsing
-            if ($manifest.Content -notmatch '(?m)^PRODUCT,\d+,(?<url>\S*sqlite-tools-win-x64-\d+\.zip),\d+,[0-9a-f]{64}\s*$') {
-                throw "Could not locate sqlite-tools-win-x64 entry in sqlite.org's download manifest"
-            }
-            Invoke-WebRequest -Uri "https://sqlite.org/$($Matches['url'])" -OutFile $zipPath -UseBasicParsing
-        }
+        Write-Info "Fetching sqlite3 CLI from $downloadUrl ..."
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
 
         Expand-Archive -Path $zipPath -DestinationPath $toolDir -Force
         $found = Get-ChildItem $toolDir -Recurse -Filter "sqlite3.exe" | Select-Object -First 1
@@ -215,7 +267,8 @@ function Get-Sqlite3Exe {
     catch {
         Write-Warn2 "Could not fetch sqlite3 CLI: $($_.Exception.Message)"
         if (-not $SqliteZipUrl) {
-            Write-Warn2 "If this network blocks sqlite.org, host the zip yourself and pass -SqliteZipUrl"
+            Write-Warn2 "The pinned sqlite.org URL may be stale (check sqlite.org/download.html for the current one)"
+            Write-Warn2 "or host the zip yourself and pass -SqliteZipUrl to stop depending on sqlite.org entirely"
         }
         return $null
     }
