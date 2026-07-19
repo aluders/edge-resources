@@ -7,6 +7,23 @@
 
     VERSION HISTORY
     ----------------
+    4.10.0 - 2026-07-19 - Closes Chrome at the end of a successful run
+        - So relaunching shows an obviously clean result (Google set,
+          others gone) rather than leaving it sitting on the settings
+          page. Only happens after everything succeeds - none of the
+          early error/stop paths trigger this, since closing Chrome after
+          a failed attempt would just be extra disruption for no benefit.
+    4.9.0 - 2026-07-19 - No longer closes Chrome first
+        - Settings are profile-wide, not tied to a specific window, so it
+          never actually mattered whether the automation acted on a fresh
+          window or a pre-existing one - both reach the identical result.
+          The earlier "close first" reasoning (avoiding a race where an
+          already-open window gets grabbed before a new one appears) was
+          solving a problem that doesn't matter once tab disruption is an
+          accepted trade-off: now it just uses whatever Chrome window is
+          already there, and only launches a new one if Chrome isn't
+          running at all. Simpler, and doesn't interrupt Chrome at all if
+          it's already open.
     4.8.0 - 2026-07-19 - Handle the delete confirmation dialog
         - Confirmed on a real test machine: clicking "Delete" in the row
           menu doesn't delete anything by itself - it opens a "Delete
@@ -174,10 +191,10 @@
       here instead of helping like it did in older versions.
     - Must run in an active, logged-in desktop session - UI Automation has
       nothing to click if there's no visible desktop.
-    - Closes Chrome if it's running before launching fresh (see 4.2.0 above
-      for why) - existing tabs are recovered by Chrome's own session
-      restore on next launch if that's enabled, but worth knowing before
-      running this against someone's active browsing session.
+    - Uses whatever Chrome window is already open if there is one - doesn't
+      close or interrupt it (see 4.9.0 above). If a window's open, its
+      active tab gets navigated to the settings page rather than opening
+      a separate new tab - a minor courtesy trade-off, not a functional one.
     - Doesn't touch Web Data, Preferences, or the registry at all - the only
       thing this version does is drive Chrome's own Settings page.
     - No persistent lock/enforcement, same as always without enrolling in
@@ -202,7 +219,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.8.0"
+$ScriptVersion = "4.10.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -279,37 +296,11 @@ foreach ($hive in @("HKLM:\SOFTWARE\Policies\Google\Chrome", "HKCU:\SOFTWARE\Pol
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 3. Close Chrome if it's running, then launch fresh to the search engines
-#    settings page. This isn't about file locking (nothing here touches
-#    files) - it's that passing a URL to an already-running chrome.exe is
-#    unreliable on Windows and commonly gets dropped, landing on a blank
-#    new window instead of the requested page. Closing first and launching
-#    fresh is the reliable way to get the URL actually honored.
-# ---------------------------------------------------------------------------
-$ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
-if ($ChromeProcs) {
-    Write-Info "Closing Chrome so the settings page opens reliably..."
-    # Graceful close first - a hard kill marks the profile as an unclean
-    # exit, which can make Chrome prioritize restoring the previous
-    # session over cleanly opening the URL we're about to request.
-    $ChromeProcs | ForEach-Object { $_.CloseMainWindow() | Out-Null }
-    $waited = 0
-    while ((Get-Process -Name "chrome" -ErrorAction SilentlyContinue) -and $waited -lt 8) {
-        Start-Sleep -Milliseconds 500
-        $waited += 0.5
-    }
-    # Anything still alive after a graceful attempt gets force-killed
-    Get-Process -Name "chrome" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
-    Write-Ok "Chrome closed"
-}
-
-Write-Sep
-
-# ---------------------------------------------------------------------------
-# 4. Launch a plain Chrome window (no URL argument - see 4.4.0 below for why),
-#    then type the settings URL into the address bar ourselves, the same way
-#    typing it by hand works.
+# 3. Find or launch a Chrome window. Settings are profile-wide, not per-
+#    window, so it doesn't matter whether this is a pre-existing window or
+#    a freshly-launched one - either gets us to the same place. If Chrome's
+#    already running, just use whatever window is there; only launch a new
+#    one if Chrome isn't running at all.
 # ---------------------------------------------------------------------------
 $chromeExe = @(
     "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
@@ -322,15 +313,21 @@ if (-not $chromeExe) {
     return
 }
 
-Write-Info "Launching Chrome..."
-Start-Process -FilePath $chromeExe -ArgumentList "--new-window"
+$ChromeWindow = Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 
-$ChromeWindow = $null
-$sw = [Diagnostics.Stopwatch]::StartNew()
-while ($sw.Elapsed.TotalSeconds -lt 20 -and -not $ChromeWindow) {
-    Start-Sleep -Milliseconds 500
-    $ChromeWindow = Get-Process chrome -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+if ($ChromeWindow) {
+    Write-Ok "Chrome is already running - using the existing window"
+}
+else {
+    Write-Info "Launching Chrome..."
+    Start-Process -FilePath $chromeExe
+
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt 20 -and -not $ChromeWindow) {
+        Start-Sleep -Milliseconds 500
+        $ChromeWindow = Get-Process chrome -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    }
 }
 
 if (-not $ChromeWindow) {
@@ -578,4 +575,27 @@ if ($removed -eq 0) {
 
 Write-Sep
 Write-Ok "Done. chrome://settings/search should now show Google as the only option"
+Write-Sep
+
+# ---------------------------------------------------------------------------
+# 5. Close Chrome so the result is easy to verify - relaunching shows a
+#    clean result instead of leaving it sitting on the settings page.
+#    Only reached after a successful run - none of the early-exit error
+#    paths above touch this, since closing Chrome after a failed attempt
+#    would just add disruption on top of not having fixed anything.
+# ---------------------------------------------------------------------------
+Write-Info "Closing Chrome so you can relaunch and confirm..."
+$ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
+if ($ChromeProcs) {
+    $ChromeProcs | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+    $waited = 0
+    while ((Get-Process -Name "chrome" -ErrorAction SilentlyContinue) -and $waited -lt 8) {
+        Start-Sleep -Milliseconds 500
+        $waited += 0.5
+    }
+    Get-Process -Name "chrome" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Write-Ok "Chrome closed - relaunch it to confirm"
+} else {
+    Write-Info "Chrome was already closed"
+}
 Write-Sep
