@@ -7,6 +7,17 @@
 
     VERSION HISTORY
     ----------------
+    4.7.0 - 2026-07-19 - Real menu contents confirmed: "Make default" / "Delete"
+        - Dump finally opened a working (non-Google, enabled) row's menu
+          and showed its actual contents: two MenuItems with AutomationId
+          "makeDefault" (text "Make default") and "delete" (text "Delete").
+          Not "Remove" - that guess from 4.0.0 onward was simply wrong,
+          which is exactly why the removal loop kept finding nothing.
+        - Wired in both for real, matching on AutomationId rather than
+          visible text (more stable if Chrome ever rewords the label):
+          if Google isn't already default, opens its row's menu and clicks
+          "makeDefault" before moving on to removing everything else via
+          "delete" on each remaining row
     4.6.0 - 2026-07-19 - Real table structure confirmed; scoping bug fixed
         - Dump output confirmed the table structure: rows are DataItems
           under a Table, each with an editIconButton and a "More actions
@@ -184,7 +195,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.6.0"
+$ScriptVersion = "4.7.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -426,10 +437,10 @@ if ($DumpUITree) {
 }
 
 # ---------------------------------------------------------------------------
-# 4b. Real run: confirm Google is default, then remove every other entry
-#     from the search engines table specifically (there's a second,
-#     unrelated "Site search" table further down the page - Bookmarks,
-#     Gemini, History, etc. - that must NOT be touched).
+# 4b. Real run: make Google default if it isn't already, then remove every
+#     other entry from the search engines table specifically (there's a
+#     second, unrelated "Site search" table further down the page -
+#     Bookmarks, Gemini, History, etc. - that must NOT be touched).
 # ---------------------------------------------------------------------------
 function Invoke-UIA($Element) {
     $Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
@@ -448,9 +459,9 @@ if (-not $SearchEngineTable) {
     return
 }
 
-# --- Confirm Google is the default. Chrome marks whichever row is current
-#     default with a "(Default)" suffix right in its name - there's no
-#     separate dropdown for this in this version of the settings page. ---
+# --- Confirm Google is the default, and set it if not. Chrome marks
+#     whichever row is current default with a "(Default)" suffix right in
+#     its name - there's no separate dropdown for this in this version. ---
 $nameCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "name-column")
 $rowNames = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond)
@@ -458,9 +469,40 @@ $googleIsDefault = $rowNames | Where-Object { $_.Current.Name -match "Google" -a
 
 if ($googleIsDefault) {
     Write-Ok "Google is already the default search engine"
-} else {
-    Write-Warn2 "Google isn't currently marked as default, and this version doesn't yet know how to set it -"
-    Write-Warn2 "run with -DumpUITree, open a non-Google row's menu, and share the output so that can be added"
+}
+else {
+    try {
+        $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Button)
+        $googleMenuBtn = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+            Where-Object { $_.Current.Name -match "More actions" -and $_.Current.Name -match "Google" } | Select-Object -First 1
+
+        if (-not $googleMenuBtn) {
+            Write-Warn2 "Couldn't find Google's row in the list at all"
+        }
+        else {
+            Invoke-UIA $googleMenuBtn
+            Start-Sleep -Milliseconds 500
+
+            $menuItemCond = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::MenuItem)
+            $makeDefaultItem = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
+                Where-Object { $_.Current.AutomationId -eq "makeDefault" } | Select-Object -First 1
+
+            if ($makeDefaultItem) {
+                Invoke-UIA $makeDefaultItem
+                Start-Sleep -Milliseconds 500
+                Write-Ok "Set Google as the default search engine"
+            } else {
+                Write-Warn2 "Opened Google's menu but found no 'Make default' option - run with -DumpUITree to check"
+            }
+        }
+    }
+    catch {
+        Write-Warn2 "Setting the default failed: $($_.Exception.Message)"
+    }
 }
 
 Write-Sep
@@ -487,15 +529,15 @@ for ($i = 0; $i -lt 30; $i++) {
         $menuItemCond = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::MenuItem)
-        $removeItem = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
-            Where-Object { $_.Current.Name -match "Remove" } | Select-Object -First 1
+        $deleteItem = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
+            Where-Object { $_.Current.AutomationId -eq "delete" } | Select-Object -First 1
 
-        if (-not $removeItem) {
-            Write-Warn2 "Opened the menu for '$targetLabel' but found no 'Remove' option - stopping. Run with -DumpUITree to check labels"
+        if (-not $deleteItem) {
+            Write-Warn2 "Opened the menu for '$targetLabel' but found no 'Delete' option - stopping. Run with -DumpUITree to check"
             break
         }
 
-        Invoke-UIA $removeItem
+        Invoke-UIA $deleteItem
         Start-Sleep -Milliseconds 500
         Write-Ok "Removed: $targetLabel"
         $removed++
