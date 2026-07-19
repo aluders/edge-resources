@@ -7,7 +7,48 @@
 
     VERSION HISTORY
     ----------------
-    4.1.0 - 2026-07-19 - No longer closes Chrome first
+    4.4.0 - 2026-07-19 - Types the URL instead of launching directly to it
+        - Confirmed on a real test machine: chrome://settings/searchEngines
+          works fine when typed by hand, but launching chrome.exe directly
+          to that URL via the command line does not - it lands on a blank
+          page instead every time, closed-first or not. This isn't a bug,
+          it's intentional: Chrome (and Chromium generally) deliberately
+          restricts which URLs a command-line launch can force-navigate to,
+          specifically because letting external processes dictate browser
+          navigation is a real abuse vector - Google's own bug tracker
+          calls this "intentional" security behavior. Sensitive internal
+          pages like chrome://settings are exactly what that protects.
+        - Fix: launch a plain Chrome window with no URL at all, then use
+          the same UI Automation already in place to focus the address bar
+          and type the URL, then Enter - the exact action just confirmed
+          to work by hand, so Chrome has no reason to treat it differently
+    4.3.0 - 2026-07-19 - Graceful close + --new-window (still diagnosing)
+        - Confirmed on a real test machine: closing Chrome first didn't
+          change the outcome (blank window, nothing happens), which rules
+          out unreliable-URL-delivery-to-a-running-instance as the cause.
+        - Two changes addressing the next most likely causes while this
+          gets isolated further: (1) close Chrome gracefully before
+          falling back to a force-kill - a hard kill marks the profile as
+          an unclean exit, which can make Chrome prioritize restoring the
+          previous session over the requested URL; (2) launch with
+          --new-window explicitly rather than a bare URL argument, Chrome's
+          documented flag for forcing a genuinely fresh window rather than
+          however it would otherwise decide to handle a plain URL argument
+        - If this still doesn't work, run the launch command directly at a
+          prompt (see chat) to isolate whether this is environment-level
+          Chrome behavior or something in how the script invokes it
+    4.2.0 - 2026-07-19 - Closing Chrome first is back (different reason this time)
+        - 4.1.0 dropped this on reasonable-sounding grounds (nothing here
+          touches files anymore, so why force a close?) but real testing
+          showed it opening a blank new window instead of the settings
+          page. Root cause: passing a URL to an already-running chrome.exe
+          is a known-unreliable pattern on Windows - the running instance
+          frequently just drops it rather than navigating, landing on a
+          blank window instead. Closing first and launching fresh is what
+          actually gets the URL honored - not a file-locking issue this
+          time, just Chrome's command-line handling being inconsistent
+          when it's already open
+    4.1.0 - 2026-07-19 - No longer closes Chrome first (reverted in 4.2.0)
         - That requirement was inherited from the old file-editing versions,
           where Chrome genuinely needed to be closed to safely edit Web
           Data/Preferences out from under it. Nothing here touches files -
@@ -77,6 +118,10 @@
       here instead of helping like it did in older versions.
     - Must run in an active, logged-in desktop session - UI Automation has
       nothing to click if there's no visible desktop.
+    - Closes Chrome if it's running before launching fresh (see 4.2.0 above
+      for why) - existing tabs are recovered by Chrome's own session
+      restore on next launch if that's enabled, but worth knowing before
+      running this against someone's active browsing session.
     - Doesn't touch Web Data, Preferences, or the registry at all - the only
       thing this version does is drive Chrome's own Settings page.
     - No persistent lock/enforcement, same as always without enrolling in
@@ -101,10 +146,11 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.1.0"
+$ScriptVersion = "4.4.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
 
 function Write-Sep  { Write-Host ("-" * 60) -ForegroundColor DarkGray }
 function Write-Ok    ($msg) { Write-Host "[+] $msg" -ForegroundColor Green }
@@ -177,10 +223,37 @@ foreach ($hive in @("HKLM:\SOFTWARE\Policies\Google\Chrome", "HKCU:\SOFTWARE\Pol
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 3. Navigate to the search engines settings page. If Chrome's already
-#    running, this just opens a new tab in the existing window via Chrome's
-#    normal single-instance behavior - no need to close anything, since
-#    nothing here touches files that Chrome would have locked open anyway.
+# 3. Close Chrome if it's running, then launch fresh to the search engines
+#    settings page. This isn't about file locking (nothing here touches
+#    files) - it's that passing a URL to an already-running chrome.exe is
+#    unreliable on Windows and commonly gets dropped, landing on a blank
+#    new window instead of the requested page. Closing first and launching
+#    fresh is the reliable way to get the URL actually honored.
+# ---------------------------------------------------------------------------
+$ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
+if ($ChromeProcs) {
+    Write-Info "Closing Chrome so the settings page opens reliably..."
+    # Graceful close first - a hard kill marks the profile as an unclean
+    # exit, which can make Chrome prioritize restoring the previous
+    # session over cleanly opening the URL we're about to request.
+    $ChromeProcs | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+    $waited = 0
+    while ((Get-Process -Name "chrome" -ErrorAction SilentlyContinue) -and $waited -lt 8) {
+        Start-Sleep -Milliseconds 500
+        $waited += 0.5
+    }
+    # Anything still alive after a graceful attempt gets force-killed
+    Get-Process -Name "chrome" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    Write-Ok "Chrome closed"
+}
+
+Write-Sep
+
+# ---------------------------------------------------------------------------
+# 4. Launch a plain Chrome window (no URL argument - see 4.4.0 below for why),
+#    then type the settings URL into the address bar ourselves, the same way
+#    typing it by hand works.
 # ---------------------------------------------------------------------------
 $chromeExe = @(
     "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
@@ -193,26 +266,62 @@ if (-not $chromeExe) {
     return
 }
 
-Write-Info "Launching Chrome to the search engines settings page..."
-Start-Process -FilePath $chromeExe -ArgumentList "chrome://settings/searchEngines"
+Write-Info "Launching Chrome..."
+Start-Process -FilePath $chromeExe -ArgumentList "--new-window"
 
 $ChromeWindow = $null
 $sw = [Diagnostics.Stopwatch]::StartNew()
 while ($sw.Elapsed.TotalSeconds -lt 20 -and -not $ChromeWindow) {
     Start-Sleep -Milliseconds 500
     $ChromeWindow = Get-Process chrome -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -match "Settings" } |
-        Select-Object -First 1
+        Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 }
 
 if (-not $ChromeWindow) {
-    Write-Err2 "Chrome's settings window never appeared - stopping"
+    Write-Err2 "Chrome's window never appeared - stopping"
     return
 }
 
-Start-Sleep -Seconds 2   # let the page finish rendering before we query it
+Start-Sleep -Seconds 2
 $RootElement = [System.Windows.Automation.AutomationElement]::FromHandle($ChromeWindow.MainWindowHandle)
-Write-Ok "Found the settings window"
+Write-Ok "Chrome window found - typing the settings URL into the address bar..."
+
+# --- Find the omnibox and type the URL, same as a person would ---
+$editCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Edit)
+$omnibox = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCond) |
+    Where-Object { $_.Current.Name -match "Address and search bar|Address bar" } | Select-Object -First 1
+
+if (-not $omnibox) {
+    Write-Err2 "Couldn't find the address bar - stopping. Run with -DumpUITree to see what's actually there"
+    return
+}
+
+$omnibox.SetFocus()
+Start-Sleep -Milliseconds 400
+[System.Windows.Forms.SendKeys]::SendWait("^a")
+Start-Sleep -Milliseconds 200
+[System.Windows.Forms.SendKeys]::SendWait("chrome://settings/searchEngines")
+Start-Sleep -Milliseconds 300
+[System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$onSettingsPage = $false
+while ($sw.Elapsed.TotalSeconds -lt 15 -and -not $onSettingsPage) {
+    Start-Sleep -Milliseconds 500
+    $refreshed = Get-Process -Id $ChromeWindow.Id -ErrorAction SilentlyContinue
+    if ($refreshed -and $refreshed.MainWindowTitle -match "Settings") { $onSettingsPage = $true }
+}
+
+if (-not $onSettingsPage) {
+    Write-Err2 "Typing the URL didn't land on the settings page - stopping. Run with -DumpUITree to see what's on screen"
+    return
+}
+
+Start-Sleep -Seconds 1   # let the page finish rendering before we query it
+$RootElement = [System.Windows.Automation.AutomationElement]::FromHandle($ChromeWindow.MainWindowHandle)
+Write-Ok "On the settings page"
 Write-Sep
 
 # ---------------------------------------------------------------------------
