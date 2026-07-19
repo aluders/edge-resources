@@ -1,125 +1,103 @@
 <#
     Chrome Default Search Engine Repair Tool
     =========================================
-    Resets Chrome's search engine list back to a clean/default state and
-    lists installed extensions per profile so you can spot what's actually
-    causing a hijack.
+    Sets Google as the default search engine and removes the others by
+    driving Chrome's own Settings UI through Windows UI Automation - the
+    same accessibility API screen readers use. Not file edits.
 
     VERSION HISTORY
     ----------------
+    4.0.1 - 2026-07-19 - Elevation now warns instead of being framed as good
+        - The old "run elevated for full reach" messaging was carried over
+          from the file-editing versions and is actively wrong here:
+          elevation can make Windows block the automation's clicks
+          entirely (UIPI - a higher-integrity process can't send synthetic
+          input to a lower one), and Chrome usually won't even run elevated
+          in the first place. This should be run from a normal PowerShell
+          window, not an Administrator one - now warns clearly if it's not
+    4.0.0 - 2026-07-19 - Switched to UI Automation (drives the real Settings UI)
+        - Every file-editing approach so far (registry policy, surgical SQL,
+          full Web Data wipe, Preferences edits) ran into the same wall:
+          Chrome is specifically designed to distrust changes that don't
+          come from a real person using its own UI. Confirmed on a real
+          test machine that even a clean full wipe still didn't stick.
+        - This version stops fighting that and works with it instead:
+          launches Chrome straight to chrome://settings/searchEngines and
+          uses System.Windows.Automation (built into .NET, no download
+          needed) to click through it exactly like a person would - select
+          Google in the "search engine used in the address bar" dropdown,
+          then Remove each other entry one at a time. Because it's genuine
+          OS-level input through Chrome's real UI, Chrome trusts it fully -
+          no signature problem, no sync conflict, nothing to revert.
+        - Bonus: never touches Web Data at all anymore, so there's no more
+          autofill/cards trade-off - full circle back to the original ask
+        - Caveat, in the interest of honesty: I can't inspect Chrome's live
+          accessibility tree from here, so the exact element names/labels
+          this targets are my best expectation, not a tested certainty.
+          Run with -DumpUITree first if the normal run doesn't fully work -
+          it prints every element it can see on the settings page instead
+          of clicking anything, which is the fastest way to correct the
+          targeting if Chrome's actual labels differ
+        - Requires an active, unlocked desktop session - this is not a
+          silent/unattended background fix like the file-based versions
+          were. Also requires Chrome to actually be closed and relaunched,
+          since it needs a window it fully controls
     3.2.0 - 2026-07-19 - No more .bak file for Web Data
-        - Just deletes it outright now instead of copying it aside first -
-          Chrome rebuilds it fresh regardless, so the backup was never going
-          to be restored and was just clutter in the profile folder
     3.1.0 - 2026-07-19 - Stopped touching Secure Preferences (was forcing reauth)
         - Confirmed on a real test machine: clearing keys from Secure
           Preferences was forcing Chrome to require re-verifying sign-in.
           Cause: Secure Preferences is signed as a whole via a "super_mac"
-          covering the entire protected tree, not just individual fields -
-          removing anything from it invalidates that aggregate signature,
-          and Chrome's response to the whole file failing integrity checks
-          includes treating cached sign-in/session state as untrustworthy
-        - Since editing that file never survived to actually fix the
-          default search engine anyway (see 3.0.0), there was no upside to
-          weigh against that - script no longer writes to Secure
-          Preferences at all, only reads it (to list extensions)
-        - Preferences (the non-protected file) is still best-effort cleared,
-          since it doesn't carry this whole-file signature risk
+          covering the entire protected tree, not just individual fields
     3.0.0 - 2026-07-19 - Back to full Web Data wipe; drop sqlite entirely
-        - Confirmed on a real test machine (sync off, so that's ruled out
-          too): the surgical "DELETE FROM keywords" + Preferences cleanup
-          from 1.1.0-2.3.0 didn't stick. Root cause, confirmed via research
-          into real hijacker malware behavior: Chrome protects
-          default_search_provider with an HMAC signature ("MAC") stored
-          alongside it in Secure Preferences - not the plain Preferences
-          file we were editing - and reverts any value whose signature
-          doesn't check out on the next launch. Reproducing a valid
-          signature means extracting a seed from Chrome's own compiled
-          resources.pak and replicating its exact hashing logic - that's
-          what actual malware-cleanup tools (RogueKiller etc.) do, it's
-          fragile across Chrome updates, and it's uncomfortably close to
-          reimplementing the same trick hijacker malware uses. Not doing
-          that here.
-        - So: back to just deleting "Web Data" outright (like 1.0.0 did),
-          which sidesteps the problem rather than fighting it - the
-          keywords table isn't MAC-protected, so Chrome just rebuilds it
-          fresh on next launch. Same autofill/cards trade-off as 1.0.0.
-          No more sqlite3/winget dependency needed at all for this - simpler
-        - Also clears default_search_provider_data from BOTH Preferences and
-          Secure Preferences where present - can't guarantee the signature
-          issue away, but doesn't hurt to try, and works fine for accounts
-          that don't have a validly-signed override yet
-        - NEW: lists each profile's installed/enabled extensions after the
-          cleanup runs. If this keeps recurring across machines (as
-          described), an active extension or program reasserting the
-          hijack on every launch is a more likely culprit than a one-time
-          corrupted settings file - no file-level fix survives that
-        - Reality check: even this may only fully fix the visible list, not
-          necessarily which engine is used as the actual default, if a
-          signed override or an active process is still in play. See the
-          extensions list and the NOTES section below for next steps if so.
-    2.3.0 - 2026-07-19 - Try winget before the pinned URL
-    2.2.0 - 2026-07-19 - sqlite3 fetch: pinned URL instead of scraped manifest
-    2.1.0 - 2026-07-19 - Self-cleans leftover policy from earlier versions
-        - Any machine already tested with v1.x has a stale
-          HKLM/HKCU\SOFTWARE\Policies\Google\Chrome key sitting around from
-          before the registry approach was dropped - still shows "managed by
-          your organization" for no actual effect. This version removes it
-          (or just our specific values, if the key holds anything else)
+        - Root cause found via research into real hijacker malware behavior:
+          Chrome protects default_search_provider with an HMAC signature
+          ("MAC") in Secure Preferences and reverts any value whose
+          signature doesn't check out - not something worth reproducing
+          ourselves (see 4.0.0 above for the actual fix)
     2.0.0 - 2026-07-19 - Dropped registry policy (doesn't work on unmanaged PCs)
         - chrome://policy confirmed DefaultSearchProviderEnabled and friends
           come back "Error, Ignored - This policy is blocked" on a normal
-          Windows PC. Google only honors this policy on machines that are AD
-          domain-joined, Entra ID-joined, or enrolled in Chrome Enterprise
-          Core - it's intentionally blocked everywhere else because this
-          exact registry trick is what hijacker malware has used for years.
-        - Trade-off worth knowing: without a policy lock, there's nothing
-          stopping a hijacker from flipping it again later. The only way
-          around that is enrolling the browser in (free) Chrome Enterprise
-          Core under a Workspace/Cloud Identity org and pushing the policy
-          from the Admin Console - a bigger setup than a one-shot remote
-          fix, not attempted here
-    1.1.0 - 2026-07-19 - (superseded by 3.0.0) surgical Web Data cleanup
-    1.0.0 - 2026-07-19 - Initial release
-        - Wrote Chrome DefaultSearchProvider* policy keys (later found to be
-          ignored on unmanaged machines - see 2.0.0)
-        - Backs up then deletes "Web Data" per profile (see 3.0.0 - this
-          approach is back after 1.1.0-2.3.0 tried a gentler alternative
-          that turned out not to survive Chrome's own tamper protection)
+          Windows PC - only honored on AD/Entra-joined or Chrome Enterprise
+          Core-enrolled devices, intentionally, for the same reason 4.0.0
+          exists: this exact registry trick is what hijacker malware uses
+    1.0.0 - 2026-07-19 - Initial release (registry policy + Web Data wipe)
 
     NOTES
     -----
-    - Run elevated to fix every local profile on the machine. Without
-      elevation it's scoped to the current user's profile only.
-    - Deleting "Web Data" also clears Chrome's autofill cache (saved
-      addresses/cards) for that profile. Passwords are untouched (separate
-      "Login Data" file). No backup is kept - it's always rebuilt fresh by
-      Chrome anyway, so there's nothing worth restoring.
-    - Secure Preferences is only ever read (for the extensions list), never
-      written to - see 3.1.0 below for why.
-    - No enforcement/lock, and no guarantee on the *default* engine
-      specifically - see the 3.0.0 changelog entry above. If Google doesn't
-      stick as default after this runs, check the extensions list this
-      script prints, and check installed programs / Task Scheduler / startup
-      apps for anything unfamiliar - that's the more likely fix at that
-      point, not another round of file edits.
+    - Run this from a normal PowerShell window, NOT "Run as Administrator" -
+      see the 4.0.1 changelog entry above for why elevation actively hurts
+      here instead of helping like it did in older versions.
+    - Must run in an active, logged-in desktop session - UI Automation has
+      nothing to click if there's no visible desktop.
+    - Doesn't touch Web Data, Preferences, or the registry at all - the only
+      thing this version does is drive Chrome's own Settings page.
+    - No persistent lock/enforcement, same as always without enrolling in
+      Chrome Enterprise Core - see the 2.0.0 changelog note for that option.
+    - If this keeps recurring on the same machine even after a clean run,
+      that points to an active hijacker (extension or background program)
+      re-asserting itself, not a one-time corrupted setting - worth checking
+      chrome://extensions and installed programs/Task Scheduler at that point.
 
     USAGE
     -----
     Normal remote run:
         irm chrome.vcc.net | iex
 
-    Passing switches through irm | iex:
-        & ([ScriptBlock]::Create((irm chrome.vcc.net))) -Force
+    Diagnostic dump instead of clicking anything (use this first if the
+    normal run doesn't fully work):
+        & ([ScriptBlock]::Create((irm chrome.vcc.net))) -DumpUITree
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$SkipWebDataReset,   # skip the actual fix - only closes Chrome, changes nothing (mainly for testing)
-    [switch]$Force               # skip the close-Chrome confirmation
+    [switch]$DumpUITree,   # don't click anything - just print every element the automation can see, for calibration
+    [switch]$Force          # skip the close-Chrome confirmation
 )
 
-$ScriptVersion = "3.2.0"
+$ScriptVersion = "4.0.1"
+
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
 
 function Write-Sep  { Write-Host ("-" * 60) -ForegroundColor DarkGray }
 function Write-Ok    ($msg) { Write-Host "[+] $msg" -ForegroundColor Green }
@@ -138,16 +116,22 @@ Write-Host "Chrome Default Search Repair  v$ScriptVersion" -ForegroundColor Whit
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 1. Elevation check (determines whether we can reach every profile on the
-#    machine, or just the current user's)
+# 1. Elevation check. Unlike the old file-editing versions, this one should
+#    NOT run elevated: Windows blocks a higher-integrity (Administrator)
+#    process from sending synthetic input to a lower-integrity window
+#    (UIPI, a real security boundary) - and Chrome usually refuses to run
+#    elevated in the first place. Run this from a normal PowerShell window.
+#    Also worth knowing: UI Automation can only ever reach the one Chrome
+#    window in the current interactive desktop session - elevation never
+#    extended that reach anyway, unlike the old registry/file approach did.
 # ---------------------------------------------------------------------------
 $IsElevated = Test-IsAdmin
 
 if ($IsElevated) {
-    Write-Ok "Running elevated - fixing every local profile on this machine"
+    Write-Warn2 "Running elevated - this can block the automation from clicking anything in Chrome (UIPI)."
+    Write-Warn2 "If clicks don't land below, close this and re-run from a normal (non-elevated) PowerShell window."
 } else {
-    Write-Warn2 "Not elevated - scoped to the current user's profile only"
-    Write-Warn2 "Re-run as Administrator to fix every profile on this machine"
+    Write-Ok "Running as a normal user - correct for UI Automation"
 }
 
 Write-Sep
@@ -186,25 +170,24 @@ foreach ($hive in @("HKLM:\SOFTWARE\Policies\Google\Chrome", "HKCU:\SOFTWARE\Pol
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 3. Close Chrome so profile files aren't locked
+# 3. Close Chrome, then relaunch it straight to the search engines settings
+#    page - automation needs a window it fully controls from a clean start.
 # ---------------------------------------------------------------------------
 $ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
 
 if ($ChromeProcs) {
     if (-not $Force) {
-        Write-Warn2 "Chrome is currently running and needs to be closed to clean profile data."
+        Write-Warn2 "Chrome needs to close so this can relaunch it to the settings page."
         $answer = Read-Host "Close Chrome now? (Y/N)"
         if ($answer -notmatch '^[Yy]') {
-            Write-Warn2 "Skipping profile cleanup - nothing was changed. Close Chrome and re-run to actually fix anything."
-            $SkipWebDataReset = $true
+            Write-Warn2 "Can't continue without closing Chrome. Stopping here - nothing was changed."
+            return
         }
     }
-    if (-not $SkipWebDataReset) {
-        Write-Info "Closing Chrome..."
-        $ChromeProcs | Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-        Write-Ok "Chrome closed"
-    }
+    Write-Info "Closing Chrome..."
+    $ChromeProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    Write-Ok "Chrome closed"
 } else {
     Write-Info "Chrome is not currently running"
 }
@@ -212,114 +195,163 @@ if ($ChromeProcs) {
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 4. Reset each profile: delete Web Data (Chrome rebuilds it clean on next
-#    launch), clear any cached default_search_provider_data from Preferences,
-#    then list installed extensions (from Secure Preferences, read-only).
+# 4. Launch Chrome to the search engines settings page and grab its window
 # ---------------------------------------------------------------------------
-if (-not $SkipWebDataReset) {
+$chromeExe = @(
+    "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+    "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-    if ($IsElevated) {
-        $UserRoots = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue |
-            Where-Object { Test-Path (Join-Path $_.FullName "AppData\Local\Google\Chrome\User Data") }
-    } else {
-        $UserRoots = @([pscustomobject]@{ FullName = (Split-Path $env:LOCALAPPDATA -Parent | Split-Path -Parent) })
-    }
+if (-not $chromeExe) {
+    Write-Err2 "Couldn't find chrome.exe in any of the usual install locations - stopping"
+    return
+}
 
-    $TotalCleaned = 0
+Write-Info "Launching Chrome to the search engines settings page..."
+Start-Process -FilePath $chromeExe -ArgumentList "chrome://settings/searchEngines"
 
-    foreach ($user in $UserRoots) {
-        $ChromeDataPath = Join-Path $user.FullName "AppData\Local\Google\Chrome\User Data"
-        if (-not (Test-Path $ChromeDataPath)) { continue }
+$ChromeWindow = $null
+$sw = [Diagnostics.Stopwatch]::StartNew()
+while ($sw.Elapsed.TotalSeconds -lt 20 -and -not $ChromeWindow) {
+    Start-Sleep -Milliseconds 500
+    $ChromeWindow = Get-Process chrome -ErrorAction SilentlyContinue |
+        Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -match "Settings" } |
+        Select-Object -First 1
+}
 
-        $Profiles = Get-ChildItem $ChromeDataPath -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" }
+if (-not $ChromeWindow) {
+    Write-Err2 "Chrome's settings window never appeared - stopping"
+    return
+}
 
-        foreach ($profile in $Profiles) {
-            $WebDataFile = Join-Path $profile.FullName "Web Data"
-            $label       = "$($user.FullName | Split-Path -Leaf)\$($profile.Name)"
+Start-Sleep -Seconds 2   # let the page finish rendering before we query it
+$RootElement = [System.Windows.Automation.AutomationElement]::FromHandle($ChromeWindow.MainWindowHandle)
+Write-Ok "Found the settings window"
+Write-Sep
 
-            # --- Web Data: delete outright so Chrome rebuilds it clean. Not
-            #     HMAC-protected like Preferences is, so this one actually
-            #     sticks. Also wipes autofill/cards for this profile (not
-            #     passwords - separate file) - that's the trade-off for
-            #     something that reliably takes effect. ---
-            if (Test-Path $WebDataFile) {
-                try {
-                    Remove-Item $WebDataFile -Force -ErrorAction Stop
-                    foreach ($ext in @("-journal", "-wal", "-shm")) {
-                        $sidecar = "$WebDataFile$ext"
-                        if (Test-Path $sidecar) { Remove-Item $sidecar -Force -ErrorAction SilentlyContinue }
-                    }
-
-                    Write-Ok "Reset search engine list: $label"
-                    $TotalCleaned++
-                }
-                catch {
-                    Write-Warn2 "Could not reset Web Data for $label`: $($_.Exception.Message)"
-                }
+# ---------------------------------------------------------------------------
+# 5a. -DumpUITree: print everything the automation can see instead of
+#     clicking anything. Use this if the real run below doesn't fully work -
+#     it shows exactly what labels/structure Chrome is actually using.
+# ---------------------------------------------------------------------------
+if ($DumpUITree) {
+    function Show-UITree {
+        param($Element, $Depth = 0, $MaxDepth = 10)
+        if ($Depth -gt $MaxDepth) { return }
+        try {
+            $name = $Element.Current.Name
+            $type = $Element.Current.ControlType.ProgrammaticName -replace "ControlType\.", ""
+            $autoId = $Element.Current.AutomationId
+            if ($name -or $autoId) {
+                $label = if ($autoId) { "$name  [id=$autoId]" } else { $name }
+                Write-Host ("  " * $Depth + "[$type] $label") -ForegroundColor DarkGray
             }
+        } catch { }
 
-            # --- Preferences: best-effort clear of the cached default. Not
-            #     touching Secure Preferences anymore - see NOTES up top:
-            #     editing it invalidates its whole-file signature (super_mac),
-            #     not just the fields touched, which can force Chrome to
-            #     treat cached sign-in state as untrusted and require
-            #     re-verification. All downside, no upside - it never
-            #     actually survived to fix the default anyway. ---
-            $prefPath = Join-Path $profile.FullName "Preferences"
-            if (Test-Path $prefPath) {
-                try {
-                    $json = Get-Content $prefPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                    $changed = $false
-                    foreach ($key in @("default_search_provider_data", "search_provider_overrides")) {
-                        if ($json.PSObject.Properties.Name -contains $key) {
-                            $json.PSObject.Properties.Remove($key)
-                            $changed = $true
-                        }
-                    }
-                    if ($changed) {
-                        $json | ConvertTo-Json -Depth 100 -Compress | Set-Content $prefPath -Encoding UTF8 -Force
-                    }
-                }
-                catch {
-                    Write-Warn2 "Could not check Preferences for $label (file busy or in use)"
-                }
-            }
-
-            # --- List installed extensions so you can eyeball anything
-            #     unfamiliar - the more likely culprit if this keeps coming
-            #     back, per the NOTES section up top. Reads Secure
-            #     Preferences here (read-only, never written to). ---
-            $secPrefPath = Join-Path $profile.FullName "Secure Preferences"
-            $srcPath = if (Test-Path $secPrefPath) { $secPrefPath } else { $prefPath }
-            if (Test-Path $srcPath) {
-                try {
-                    $prefJson = Get-Content $srcPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                    $extSettings = $prefJson.extensions.settings
-                    if ($extSettings) {
-                        $extList = $extSettings.PSObject.Properties | ForEach-Object {
-                            $name = $_.Value.manifest.name
-                            $state = $_.Value.state
-                            if ($name -and $state -eq 1) { "$name ($($_.Name))" }
-                        }
-                        if ($extList) {
-                            Write-Info "Enabled extensions in $label`:"
-                            $extList | ForEach-Object { Write-Host "      - $_" -ForegroundColor DarkGray }
-                        }
-                    }
-                }
-                catch { }
-            }
+        $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $child = $walker.GetFirstChild($Element)
+        while ($child) {
+            Show-UITree -Element $child -Depth ($Depth + 1) -MaxDepth $MaxDepth
+            try { $child = $walker.GetNextSibling($child) } catch { break }
         }
     }
 
-    if ($TotalCleaned -eq 0) {
-        Write-Info "No profiles needed cleaning (already clean, or Chrome never opened for these profiles)"
+    Write-Info "Dumping the settings page's UI tree (nothing will be clicked)..."
+    Write-Sep
+    Show-UITree -Element $RootElement
+    Write-Sep
+    Write-Ok "Dump complete. Share this output back so the click targeting can be corrected if needed."
+    return
+}
+
+# ---------------------------------------------------------------------------
+# 5b. Real run: set Google as default, then remove every other entry - the
+#     same two actions a person would take on this page.
+# ---------------------------------------------------------------------------
+function Invoke-UIA($Element) {
+    $Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+}
+
+# --- Set the default via the "Search engine used in the address bar" dropdown ---
+try {
+    $comboCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::ComboBox)
+    $combo = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $comboCond) |
+        Where-Object { $_.Current.Name -match "address bar" } | Select-Object -First 1
+
+    if ($combo) {
+        $combo.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+        Start-Sleep -Milliseconds 500
+
+        $itemCond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::ListItem)
+        $googleItem = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $itemCond) |
+            Where-Object { $_.Current.Name -match "^Google" } | Select-Object -First 1
+
+        if ($googleItem) {
+            $googleItem.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+            Write-Ok "Set Google as the default search engine"
+        } else {
+            Write-Warn2 "Opened the default-engine dropdown but couldn't find a 'Google' option in it"
+        }
+    } else {
+        Write-Warn2 "Couldn't find the 'search engine used in the address bar' dropdown - run with -DumpUITree to see why"
     }
+}
+catch {
+    Write-Warn2 "Setting the default failed: $($_.Exception.Message)"
 }
 
 Write-Sep
-Write-Ok "Done. Relaunch Chrome and check chrome://settings/search"
-Write-Warn2 "If Google still doesn't stick as default, check the extensions listed above and installed programs -"
-Write-Warn2 "an active hijacker is more likely than a stale file at this point. See NOTES at the top of this script."
+
+# --- Remove every other entry, one at a time (list re-renders after each
+#     removal, so elements get re-queried fresh each loop rather than
+#     cached, which would go stale as soon as the DOM changes) ---
+$removed = 0
+for ($i = 0; $i -lt 30; $i++) {
+    try {
+        $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Button)
+        $menuButtons = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+            Where-Object { $_.Current.Name -match "More actions" }
+
+        $target = $menuButtons | Where-Object { $_.Current.Name -notmatch "Google" } | Select-Object -First 1
+        if (-not $target) { break }   # nothing non-Google left
+
+        $targetLabel = $target.Current.Name -replace "More actions,?\s*(for)?\s*", ""
+        Invoke-UIA $target
+        Start-Sleep -Milliseconds 400
+
+        $menuItemCond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::MenuItem)
+        $removeItem = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
+            Where-Object { $_.Current.Name -match "Remove" } | Select-Object -First 1
+
+        if (-not $removeItem) {
+            Write-Warn2 "Opened the menu for '$targetLabel' but found no 'Remove' option - stopping. Run with -DumpUITree to check labels"
+            break
+        }
+
+        Invoke-UIA $removeItem
+        Start-Sleep -Milliseconds 500
+        Write-Ok "Removed: $targetLabel"
+        $removed++
+    }
+    catch {
+        Write-Warn2 "Stopped removing entries: $($_.Exception.Message)"
+        break
+    }
+}
+
+if ($removed -eq 0) {
+    Write-Info "No other search engines needed removing"
+}
+
+Write-Sep
+Write-Ok "Done. chrome://settings/search should now show Google as the only option"
 Write-Sep
