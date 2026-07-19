@@ -7,6 +7,24 @@
 
     VERSION HISTORY
     ----------------
+    3.2.0 - 2026-07-19 - No more .bak file for Web Data
+        - Just deletes it outright now instead of copying it aside first -
+          Chrome rebuilds it fresh regardless, so the backup was never going
+          to be restored and was just clutter in the profile folder
+    3.1.0 - 2026-07-19 - Stopped touching Secure Preferences (was forcing reauth)
+        - Confirmed on a real test machine: clearing keys from Secure
+          Preferences was forcing Chrome to require re-verifying sign-in.
+          Cause: Secure Preferences is signed as a whole via a "super_mac"
+          covering the entire protected tree, not just individual fields -
+          removing anything from it invalidates that aggregate signature,
+          and Chrome's response to the whole file failing integrity checks
+          includes treating cached sign-in/session state as untrustworthy
+        - Since editing that file never survived to actually fix the
+          default search engine anyway (see 3.0.0), there was no upside to
+          weigh against that - script no longer writes to Secure
+          Preferences at all, only reads it (to list extensions)
+        - Preferences (the non-protected file) is still best-effort cleared,
+          since it doesn't carry this whole-file signature risk
     3.0.0 - 2026-07-19 - Back to full Web Data wipe; drop sqlite entirely
         - Confirmed on a real test machine (sync off, so that's ruled out
           too): the surgical "DELETE FROM keywords" + Preferences cleanup
@@ -75,7 +93,10 @@
       elevation it's scoped to the current user's profile only.
     - Deleting "Web Data" also clears Chrome's autofill cache (saved
       addresses/cards) for that profile. Passwords are untouched (separate
-      "Login Data" file). A timestamped backup is kept next to the original.
+      "Login Data" file). No backup is kept - it's always rebuilt fresh by
+      Chrome anyway, so there's nothing worth restoring.
+    - Secure Preferences is only ever read (for the extensions list), never
+      written to - see 3.1.0 below for why.
     - No enforcement/lock, and no guarantee on the *default* engine
       specifically - see the 3.0.0 changelog entry above. If Google doesn't
       stick as default after this runs, check the extensions list this
@@ -98,7 +119,7 @@ param(
     [switch]$Force               # skip the close-Chrome confirmation
 )
 
-$ScriptVersion = "3.0.0"
+$ScriptVersion = "3.2.0"
 
 function Write-Sep  { Write-Host ("-" * 60) -ForegroundColor DarkGray }
 function Write-Ok    ($msg) { Write-Host "[+] $msg" -ForegroundColor Green }
@@ -192,8 +213,8 @@ Write-Sep
 
 # ---------------------------------------------------------------------------
 # 4. Reset each profile: delete Web Data (Chrome rebuilds it clean on next
-#    launch), clear any cached default_search_provider_data from Preferences
-#    and Secure Preferences, then list installed extensions for review.
+#    launch), clear any cached default_search_provider_data from Preferences,
+#    then list installed extensions (from Secure Preferences, read-only).
 # ---------------------------------------------------------------------------
 if (-not $SkipWebDataReset) {
 
@@ -217,24 +238,20 @@ if (-not $SkipWebDataReset) {
             $WebDataFile = Join-Path $profile.FullName "Web Data"
             $label       = "$($user.FullName | Split-Path -Leaf)\$($profile.Name)"
 
-            # --- Web Data: back up, then delete outright so Chrome rebuilds
-            #     it clean. Not HMAC-protected like Preferences is, so this
-            #     one actually sticks. Also wipes autofill/cards for this
-            #     profile (not passwords - separate file) - that's the
-            #     trade-off for something that reliably takes effect. ---
+            # --- Web Data: delete outright so Chrome rebuilds it clean. Not
+            #     HMAC-protected like Preferences is, so this one actually
+            #     sticks. Also wipes autofill/cards for this profile (not
+            #     passwords - separate file) - that's the trade-off for
+            #     something that reliably takes effect. ---
             if (Test-Path $WebDataFile) {
                 try {
-                    $stamp  = Get-Date -Format "yyyyMMdd-HHmmss"
-                    $backup = "$WebDataFile.$stamp.bak"
-                    Copy-Item $WebDataFile $backup -Force
-
-                    Remove-Item $WebDataFile -Force -ErrorAction SilentlyContinue
+                    Remove-Item $WebDataFile -Force -ErrorAction Stop
                     foreach ($ext in @("-journal", "-wal", "-shm")) {
                         $sidecar = "$WebDataFile$ext"
                         if (Test-Path $sidecar) { Remove-Item $sidecar -Force -ErrorAction SilentlyContinue }
                     }
 
-                    Write-Ok "Reset search engine list: $label (backup: $(Split-Path $backup -Leaf))"
+                    Write-Ok "Reset search engine list: $label"
                     $TotalCleaned++
                 }
                 catch {
@@ -242,12 +259,15 @@ if (-not $SkipWebDataReset) {
                 }
             }
 
-            # --- Preferences / Secure Preferences: best-effort clear of the
-            #     cached default. May not survive Chrome's signature check if
-            #     a hijacker signed its own override - see NOTES up top. ---
-            foreach ($prefFileName in @("Preferences", "Secure Preferences")) {
-                $prefPath = Join-Path $profile.FullName $prefFileName
-                if (-not (Test-Path $prefPath)) { continue }
+            # --- Preferences: best-effort clear of the cached default. Not
+            #     touching Secure Preferences anymore - see NOTES up top:
+            #     editing it invalidates its whole-file signature (super_mac),
+            #     not just the fields touched, which can force Chrome to
+            #     treat cached sign-in state as untrusted and require
+            #     re-verification. All downside, no upside - it never
+            #     actually survived to fix the default anyway. ---
+            $prefPath = Join-Path $profile.FullName "Preferences"
+            if (Test-Path $prefPath) {
                 try {
                     $json = Get-Content $prefPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
                     $changed = $false
@@ -262,15 +282,16 @@ if (-not $SkipWebDataReset) {
                     }
                 }
                 catch {
-                    Write-Warn2 "Could not check $prefFileName for $label (file busy or in use)"
+                    Write-Warn2 "Could not check Preferences for $label (file busy or in use)"
                 }
             }
 
             # --- List installed extensions so you can eyeball anything
             #     unfamiliar - the more likely culprit if this keeps coming
-            #     back, per the NOTES section up top. ---
+            #     back, per the NOTES section up top. Reads Secure
+            #     Preferences here (read-only, never written to). ---
             $secPrefPath = Join-Path $profile.FullName "Secure Preferences"
-            $srcPath = if (Test-Path $secPrefPath) { $secPrefPath } else { Join-Path $profile.FullName "Preferences" }
+            $srcPath = if (Test-Path $secPrefPath) { $secPrefPath } else { $prefPath }
             if (Test-Path $srcPath) {
                 try {
                     $prefJson = Get-Content $srcPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
