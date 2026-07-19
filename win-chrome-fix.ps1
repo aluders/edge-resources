@@ -7,6 +7,14 @@
 
     VERSION HISTORY
     ----------------
+    4.1.0 - 2026-07-19 - No longer closes Chrome first
+        - That requirement was inherited from the old file-editing versions,
+          where Chrome genuinely needed to be closed to safely edit Web
+          Data/Preferences out from under it. Nothing here touches files -
+          launching Chrome with a URL when it's already running just opens
+          a new tab in the existing window via Chrome's normal single-
+          instance behavior, so there was nothing to force-close for.
+          Also dropped the now-unused -Force param.
     4.0.1 - 2026-07-19 - Elevation now warns instead of being framed as good
         - The old "run elevated for full reach" messaging was carried over
           from the file-editing versions and is actively wrong here:
@@ -90,11 +98,10 @@
 
 [CmdletBinding()]
 param(
-    [switch]$DumpUITree,   # don't click anything - just print every element the automation can see, for calibration
-    [switch]$Force          # skip the close-Chrome confirmation
+    [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.0.1"
+$ScriptVersion = "4.1.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -170,32 +177,10 @@ foreach ($hive in @("HKLM:\SOFTWARE\Policies\Google\Chrome", "HKCU:\SOFTWARE\Pol
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 3. Close Chrome, then relaunch it straight to the search engines settings
-#    page - automation needs a window it fully controls from a clean start.
-# ---------------------------------------------------------------------------
-$ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
-
-if ($ChromeProcs) {
-    if (-not $Force) {
-        Write-Warn2 "Chrome needs to close so this can relaunch it to the settings page."
-        $answer = Read-Host "Close Chrome now? (Y/N)"
-        if ($answer -notmatch '^[Yy]') {
-            Write-Warn2 "Can't continue without closing Chrome. Stopping here - nothing was changed."
-            return
-        }
-    }
-    Write-Info "Closing Chrome..."
-    $ChromeProcs | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-    Write-Ok "Chrome closed"
-} else {
-    Write-Info "Chrome is not currently running"
-}
-
-Write-Sep
-
-# ---------------------------------------------------------------------------
-# 4. Launch Chrome to the search engines settings page and grab its window
+# 3. Navigate to the search engines settings page. If Chrome's already
+#    running, this just opens a new tab in the existing window via Chrome's
+#    normal single-instance behavior - no need to close anything, since
+#    nothing here touches files that Chrome would have locked open anyway.
 # ---------------------------------------------------------------------------
 $chromeExe = @(
     "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
@@ -231,7 +216,7 @@ Write-Ok "Found the settings window"
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 5a. -DumpUITree: print everything the automation can see instead of
+# 4a. -DumpUITree: print everything the automation can see instead of
 #     clicking anything. Use this if the real run below doesn't fully work -
 #     it shows exactly what labels/structure Chrome is actually using.
 # ---------------------------------------------------------------------------
@@ -266,7 +251,7 @@ if ($DumpUITree) {
 }
 
 # ---------------------------------------------------------------------------
-# 5b. Real run: set Google as default, then remove every other entry - the
+# 4b. Real run: set Google as default, then remove every other entry - the
 #     same two actions a person would take on this page.
 # ---------------------------------------------------------------------------
 function Invoke-UIA($Element) {
