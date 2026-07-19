@@ -7,6 +7,13 @@
 
     VERSION HISTORY
     ----------------
+    4.8.0 - 2026-07-19 - Handle the delete confirmation dialog
+        - Confirmed on a real test machine: clicking "Delete" in the row
+          menu doesn't delete anything by itself - it opens a "Delete
+          search engine / Are you sure?" confirmation dialog, which needs
+          its own "Delete" button clicked too. That's why entries weren't
+          actually being removed even though the menu item click succeeded.
+          Now clicks both.
     4.7.0 - 2026-07-19 - Real menu contents confirmed: "Make default" / "Delete"
         - Dump finally opened a working (non-Google, enabled) row's menu
           and showed its actual contents: two MenuItems with AutomationId
@@ -195,7 +202,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.7.0"
+$ScriptVersion = "4.8.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -538,6 +545,23 @@ for ($i = 0; $i -lt 30; $i++) {
         }
 
         Invoke-UIA $deleteItem
+        Start-Sleep -Milliseconds 500
+
+        # "Delete" on the menu just opens a confirmation dialog - it doesn't
+        # remove anything by itself. Need to click that dialog's own
+        # "Delete" button too.
+        $confirmBtnCond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Button)
+        $confirmDelete = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $confirmBtnCond) |
+            Where-Object { $_.Current.Name -eq "Delete" } | Select-Object -First 1
+
+        if (-not $confirmDelete) {
+            Write-Warn2 "Clicked Delete but couldn't find the confirmation dialog's Delete button - stopping. Run with -DumpUITree to check"
+            break
+        }
+
+        Invoke-UIA $confirmDelete
         Start-Sleep -Milliseconds 500
         Write-Ok "Removed: $targetLabel"
         $removed++
