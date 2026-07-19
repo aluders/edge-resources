@@ -7,6 +7,22 @@
 
     VERSION HISTORY
     ----------------
+    4.5.0 - 2026-07-19 - Deeper dump that also opens a menu to show real contents
+        - Real dump output confirmed two things: the omnibox match was
+          already correct, and this Chrome version has NO separate
+          "default search engine" dropdown at all - the page text points
+          at the same table listing all engines, meaning setting the
+          default is a per-row action (likely inside the same "More
+          actions" menu), not a combobox. That logic in 4b needs replacing
+          once the real menu item labels are known.
+        - The table rows and menu items didn't show up in the dump - not
+          because they're not there (the real run found "Microsoft Bing"
+          fine via FindAll, which isn't depth-limited), but because the
+          dump's own recursion had a MaxDepth of 10, too shallow for
+          Chrome's deeply-nested Polymer/Shadow DOM structure. Removed
+          that cap. Also now opens the first "More actions" menu it finds
+          and dumps again, since a static dump can't show contents of a
+          menu that was never opened
     4.4.0 - 2026-07-19 - Types the URL instead of launching directly to it
         - Confirmed on a real test machine: chrome://settings/searchEngines
           works fine when typed by hand, but launching chrome.exe directly
@@ -146,7 +162,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.4.0"
+$ScriptVersion = "4.5.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -331,7 +347,7 @@ Write-Sep
 # ---------------------------------------------------------------------------
 if ($DumpUITree) {
     function Show-UITree {
-        param($Element, $Depth = 0, $MaxDepth = 10)
+        param($Element, $Depth = 0, $MaxDepth = 40)
         if ($Depth -gt $MaxDepth) { return }
         try {
             $name = $Element.Current.Name
@@ -351,10 +367,31 @@ if ($DumpUITree) {
         }
     }
 
-    Write-Info "Dumping the settings page's UI tree (nothing will be clicked)..."
+    Write-Info "Dumping the settings page's UI tree (nothing will be clicked yet)..."
     Write-Sep
     Show-UITree -Element $RootElement
     Write-Sep
+
+    # A static dump can't show what's inside a menu that isn't open yet, so
+    # open the first "More actions" menu found and dump again - this is the
+    # only way to see the real "Remove"/"Make default"/etc labels
+    $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Button)
+    $firstMenuBtn = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+        Where-Object { $_.Current.Name -match "More actions" } | Select-Object -First 1
+
+    if ($firstMenuBtn) {
+        Write-Info "Opening the menu for '$($firstMenuBtn.Current.Name)' to reveal its real contents..."
+        $firstMenuBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        Start-Sleep -Milliseconds 600
+        Write-Sep
+        Show-UITree -Element $RootElement
+        Write-Sep
+    } else {
+        Write-Warn2 "No 'More actions' button found to open - the table row structure may need a closer look"
+    }
+
     Write-Ok "Dump complete. Share this output back so the click targeting can be corrected if needed."
     return
 }
