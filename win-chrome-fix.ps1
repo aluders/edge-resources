@@ -7,6 +7,15 @@
 
     VERSION HISTORY
     ----------------
+    4.12.0 - 2026-07-19 - Removed the legacy registry cleanup entirely
+        - That step only ever existed to remediate damage from the old
+          v1.x-2.x registry-policy versions of this script. Any machine
+          getting this script for the first time now never had that key
+          written in the first place, so it was dead code going forward.
+          If a machine somewhere still has that stale HKLM/HKCU\SOFTWARE\
+          Policies\Google\Chrome key from early testing, it'll need a
+          one-off manual cleanup instead - this script no longer touches
+          the registry in any way.
     4.11.0 - 2026-07-19 - Poll for UI to appear instead of guessing a delay
         - A third test machine navigated to the settings page fine but
           then never seemed to click anything in the search engines
@@ -233,7 +242,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.11.0"
+$ScriptVersion = "4.12.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -291,40 +300,7 @@ if ($IsElevated) {
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 2. Remove any leftover policy from pre-2.0.0 runs of this script. Those
-#    versions wrote DefaultSearchProvider* to HKLM/HKCU - Chrome ignores the
-#    values on an unmanaged machine, but the key's presence alone is what
-#    triggers the "managed by your organization" banner for no actual effect.
-# ---------------------------------------------------------------------------
-$LegacyPolicyValues = @(
-    "DefaultSearchProviderEnabled", "DefaultSearchProviderName", "DefaultSearchProviderKeyword",
-    "DefaultSearchProviderSearchURL", "DefaultSearchProviderSuggestURL", "DefaultSearchProviderIconURL",
-    "DefaultSearchProviderNewTabURL", "DefaultSearchProviderEncodings"
-)
-
-foreach ($hive in @("HKLM:\SOFTWARE\Policies\Google\Chrome", "HKCU:\SOFTWARE\Policies\Google\Chrome")) {
-    if (-not (Test-Path $hive)) { continue }
-    try {
-        foreach ($name in $LegacyPolicyValues) {
-            Remove-ItemProperty -Path $hive -Name $name -ErrorAction SilentlyContinue
-        }
-        $key = Get-Item $hive
-        if ($key.ValueCount -eq 0 -and $key.SubKeyCount -eq 0) {
-            Remove-Item $hive -Force
-            Write-Ok "Removed leftover policy key from an earlier run: $hive"
-        } else {
-            Write-Info "Cleared our values from $hive (other unrelated policy values remain, left in place)"
-        }
-    }
-    catch {
-        Write-Warn2 "Couldn't clean $hive - may need elevation to remove the HKLM copy: $($_.Exception.Message)"
-    }
-}
-
-Write-Sep
-
-# ---------------------------------------------------------------------------
-# 3. Find or launch a Chrome window. Settings are profile-wide, not per-
+# 2. Find or launch a Chrome window. Settings are profile-wide, not per-
 #    window, so it doesn't matter whether this is a pre-existing window or
 #    a freshly-launched one - either gets us to the same place. If Chrome's
 #    already running, just use whatever window is there; only launch a new
@@ -406,7 +382,7 @@ Write-Ok "On the settings page"
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 4a. -DumpUITree: print everything the automation can see instead of
+# 3a. -DumpUITree: print everything the automation can see instead of
 #     clicking anything. Use this if the real run below doesn't fully work -
 #     it shows exactly what labels/structure Chrome is actually using.
 # ---------------------------------------------------------------------------
@@ -477,7 +453,7 @@ if ($DumpUITree) {
 }
 
 # ---------------------------------------------------------------------------
-# 4b. Real run: make Google default if it isn't already, then remove every
+# 3b. Real run: make Google default if it isn't already, then remove every
 #     other entry from the search engines table specifically (there's a
 #     second, unrelated "Site search" table further down the page -
 #     Bookmarks, Gemini, History, etc. - that must NOT be touched).
@@ -622,7 +598,7 @@ Write-Ok "Done. chrome://settings/search should now show Google as the only opti
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 5. Close Chrome so the result is easy to verify - relaunching shows a
+# 4. Close Chrome so the result is easy to verify - relaunching shows a
 #    clean result instead of leaving it sitting on the settings page.
 #    Only reached after a successful run - none of the early-exit error
 #    paths above touch this, since closing Chrome after a failed attempt
