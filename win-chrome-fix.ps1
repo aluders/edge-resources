@@ -7,6 +7,20 @@
 
     VERSION HISTORY
     ----------------
+    4.11.0 - 2026-07-19 - Poll for UI to appear instead of guessing a delay
+        - A third test machine navigated to the settings page fine but
+          then never seemed to click anything in the search engines
+          section - structurally identical to two machines that worked,
+          just slower hardware. Root cause: every click-then-search step
+          used a fixed short sleep (400-600ms) before looking for what
+          should appear next. Fine on a fast machine, but if the menu or
+          confirmation dialog hadn't finished rendering yet on a slower
+          one, the search just came up empty and the loop gave up.
+        - Replaced every fixed sleep between a click and the next search
+          with actual polling (checks every 200ms, up to 6 seconds) for
+          the target element to exist - a fast machine finds it almost
+          immediately and loses nothing, a slow one just gets the grace
+          period it actually needs instead of an arbitrary guess
     4.10.0 - 2026-07-19 - Closes Chrome at the end of a successful run
         - So relaunching shows an obviously clean result (Google set,
           others gone) rather than leaving it sitting on the settings
@@ -219,7 +233,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.10.0"
+$ScriptVersion = "4.11.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -235,6 +249,20 @@ function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     $p  = New-Object Security.Principal.WindowsPrincipal($id)
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Polls for something to appear rather than guessing a fixed delay - a
+# slower machine just takes a few more 200ms polls instead of a search
+# coming up empty because it ran before a menu/dialog finished rendering.
+function Wait-ForElement {
+    param([scriptblock]$Finder, [int]$TimeoutMs = 6000)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+        $result = & $Finder
+        if ($result) { return $result }
+        Start-Sleep -Milliseconds 200
+    }
+    return $null
 }
 
 Write-Sep
@@ -424,7 +452,15 @@ if ($DumpUITree) {
         Write-Info "Opening the menu for '$($menuBtn.Current.Name)' to reveal its real contents..."
         try {
             $menuBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            Start-Sleep -Milliseconds 600
+            $menuItemCond = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::MenuItem)
+            $appeared = Wait-ForElement -Finder {
+                $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond)
+            }
+            if (-not $appeared) {
+                Write-Warn2 "Menu didn't seem to open (or opened with no items) - dumping current state anyway"
+            }
             Write-Sep
             Show-UITree -Element $RootElement
             Write-Sep
@@ -453,10 +489,15 @@ function Invoke-UIA($Element) {
 # The search engines table is the first Table on the page - the Site search
 # table further down shares the same generic AutomationId, so position
 # (first vs. second) is what distinguishes them, not id.
+# The search engines table is the first Table on the page - the Site search
+# table further down shares the same generic AutomationId, so position
+# (first vs. second) is what distinguishes them, not id.
 $tableCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Table)
-$SearchEngineTable = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $tableCond)
+$SearchEngineTable = Wait-ForElement -Finder {
+    $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $tableCond)
+}
 
 if (-not $SearchEngineTable) {
     Write-Err2 "Couldn't find the search engines table - stopping. Run with -DumpUITree to see why"
@@ -487,17 +528,18 @@ else {
         }
         else {
             Invoke-UIA $googleMenuBtn
-            Start-Sleep -Milliseconds 500
 
             $menuItemCond = New-Object System.Windows.Automation.PropertyCondition(
                 [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
                 [System.Windows.Automation.ControlType]::MenuItem)
-            $makeDefaultItem = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
-                Where-Object { $_.Current.AutomationId -eq "makeDefault" } | Select-Object -First 1
+            $makeDefaultItem = Wait-ForElement -Finder {
+                $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
+                    Where-Object { $_.Current.AutomationId -eq "makeDefault" } | Select-Object -First 1
+            }
 
             if ($makeDefaultItem) {
                 Invoke-UIA $makeDefaultItem
-                Start-Sleep -Milliseconds 500
+                Start-Sleep -Milliseconds 300
                 Write-Ok "Set Google as the default search engine"
             } else {
                 Write-Warn2 "Opened Google's menu but found no 'Make default' option - run with -DumpUITree to check"
@@ -528,13 +570,14 @@ for ($i = 0; $i -lt 30; $i++) {
 
         $targetLabel = $target.Current.Name -replace "More actions,?\s*(for)?\s*", ""
         Invoke-UIA $target
-        Start-Sleep -Milliseconds 400
 
         $menuItemCond = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::MenuItem)
-        $deleteItem = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
-            Where-Object { $_.Current.AutomationId -eq "delete" } | Select-Object -First 1
+        $deleteItem = Wait-ForElement -Finder {
+            $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
+                Where-Object { $_.Current.AutomationId -eq "delete" } | Select-Object -First 1
+        }
 
         if (-not $deleteItem) {
             Write-Warn2 "Opened the menu for '$targetLabel' but found no 'Delete' option - stopping. Run with -DumpUITree to check"
@@ -542,7 +585,6 @@ for ($i = 0; $i -lt 30; $i++) {
         }
 
         Invoke-UIA $deleteItem
-        Start-Sleep -Milliseconds 500
 
         # "Delete" on the menu just opens a confirmation dialog - it doesn't
         # remove anything by itself. Need to click that dialog's own
@@ -550,8 +592,10 @@ for ($i = 0; $i -lt 30; $i++) {
         $confirmBtnCond = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::Button)
-        $confirmDelete = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $confirmBtnCond) |
-            Where-Object { $_.Current.Name -eq "Delete" } | Select-Object -First 1
+        $confirmDelete = Wait-ForElement -Finder {
+            $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $confirmBtnCond) |
+                Where-Object { $_.Current.Name -eq "Delete" } | Select-Object -First 1
+        }
 
         if (-not $confirmDelete) {
             Write-Warn2 "Clicked Delete but couldn't find the confirmation dialog's Delete button - stopping. Run with -DumpUITree to check"
@@ -559,7 +603,7 @@ for ($i = 0; $i -lt 30; $i++) {
         }
 
         Invoke-UIA $confirmDelete
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 300
         Write-Ok "Removed: $targetLabel"
         $removed++
     }
