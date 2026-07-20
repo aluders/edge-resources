@@ -7,6 +7,19 @@
 
     VERSION HISTORY
     ----------------
+    4.17.0 - 2026-07-19 - Fixed a confirmed AutomationId change; testing the Add flow
+        - Real dump confirmed the new layout's menu items use different
+          AutomationIds - "deleteOption"/"makeDefaultOption" instead of
+          "delete"/"makeDefault". Both the removal loop and the make-
+          default step now accept either, so the same script keeps
+          working whether a given machine has the old or new layout.
+        - Still unconfirmed: how to trigger the Add dialog on the new
+          layout - "addSearchEngine" doesn't exist there. The "Your site
+          shortcuts" button's own accessible name ends with "...Click to
+          open Add Site Search dialog", so -DumpUITree now tests clicking
+          that same element a second time (after it's already expanded)
+          to see if that's actually the trigger, rather than guessing at
+          a separate element that may not exist
     4.16.0 - 2026-07-19 - Fixed dump ordering for the new layout
         - Real dump from the machine on Chrome's new layout confirmed the
           good news: once revealed, the table structure underneath "Your
@@ -313,7 +326,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.16.0"
+$ScriptVersion = "4.17.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -511,6 +524,17 @@ if ($DumpUITree) {
             } else {
                 $shortcutsEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
             }
+            Start-Sleep -Milliseconds 800
+            Write-Sep
+            Show-UITree -Element $RootElement
+            Write-Sep
+
+            # No separate "Add" button found on the newer layout - this
+            # element's accessible name literally ends with "Click to open
+            # Add Site Search dialog", so testing whether clicking it AGAIN
+            # (now that it's already expanded) behaves differently
+            Write-Info "No separate Add button confirmed yet - testing a second click on the same element..."
+            $shortcutsEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
             Start-Sleep -Milliseconds 800
             Write-Sep
             Show-UITree -Element $RootElement
@@ -761,7 +785,7 @@ else {
                 [System.Windows.Automation.ControlType]::MenuItem)
             $makeDefaultItem = Wait-ForElement -Finder {
                 $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
-                    Where-Object { $_.Current.AutomationId -eq "makeDefault" } | Select-Object -First 1
+                    Where-Object { $_.Current.AutomationId -in @("makeDefault", "makeDefaultOption") } | Select-Object -First 1
             }
 
             if ($makeDefaultItem) {
@@ -803,7 +827,7 @@ for ($i = 0; $i -lt 30; $i++) {
             [System.Windows.Automation.ControlType]::MenuItem)
         $deleteItem = Wait-ForElement -Finder {
             $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
-                Where-Object { $_.Current.AutomationId -eq "delete" } | Select-Object -First 1
+                Where-Object { $_.Current.AutomationId -in @("delete", "deleteOption") } | Select-Object -First 1
         }
 
         if (-not $deleteItem) {
