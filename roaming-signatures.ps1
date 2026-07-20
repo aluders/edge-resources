@@ -1,4 +1,50 @@
+# ==============================================================================
+# Disable-OutlookRoamingSignatures.ps1
 # Usage: irm signatures.vcc.net | iex
+# ==============================================================================
+# BACKGROUND
+#   Google Workspace Sync for Microsoft Outlook (GWSMO) emulates an Exchange/
+#   MAPI account. Outlook's roaming signature feature stores signatures in a
+#   hidden Exchange folder via EWS/REST — GWSMO does not fully implement this,
+#   causing signatures to fail to persist or be overwritten on each launch.
+#
+#   This script disables roaming signature sync via registry, forcing Outlook
+#   to use locally-stored signatures instead, which GWSMO handles correctly.
+#
+# AFFECTED KEYS
+#   DisableRoamingSignatures (DWORD=1)
+#     -> HKCU:\Software\Microsoft\Office\<ver>\Outlook\Setup
+#     -> The canonical fix. Disables cloud-based signature sync entirely.
+#
+#   DisableRoamingSignaturesTemporaryToggle (DWORD=1)
+#     -> HKCU:\Software\Microsoft\Office\<ver>\Common\Roaming
+#     -> Secondary toggle. Suppresses the temporary re-enable behavior
+#        Outlook uses during certain profile transitions.
+#
+# WHEN THIS IS NEEDED
+#   - GWSMO configured in full MAPI/Exchange emulation mode
+#   - Roaming signatures enabled org-wide (Intune/GPO) without GWSMO exception
+#   - Mixed profiles with both M365 and GWSMO accounts
+#
+# WHEN THIS IS NOT NEEDED
+#   - GWSMO in IMAP/SMTP mode (no Exchange emulation, no conflict)
+#   - Roaming already disabled at tenant level
+#   - Client has migrated away from GWSMO to native M365 or New Outlook
+#
+# NOTES
+#   - Office version is detected dynamically from the registry rather than
+#     hardcoded to 16.0, so this works on older Office installs if encountered.
+#   - Each registry value is only written to its correct canonical path.
+#   - Outlook is restarted automatically if running at time of execution.
+#
+# VERSION HISTORY
+#   1.0 - Initial release. Hardcoded 16.0, carpet-bombed all values to all
+#         paths including HKCU:\Software\Microsoft\Office (too broad).
+#   1.1 - Scoped each value to its correct registry path only.
+#         Removed overly broad HKCU:\Software\Microsoft\Office target.
+#   1.2 - Dynamic Office version detection via registry scan instead of
+#         hardcoded 16.0. Added note when Outlook is not running.
+# ==============================================================================
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " KILLING OUTLOOK ROAMING SIGNATURES " -ForegroundColor Black -BackgroundColor Cyan
@@ -19,7 +65,7 @@ Write-Host " [i] Found Office version(s): $($officeVersions -join ', ')" -Foregr
 # Only the keys that actually matter for GWSMO signature retention
 # Value -> relative path under HKCU:\Software\Microsoft\Office\<version>\
 $targetKeys = @(
-    @{ Value = "DisableRoamingSignatures";        SubPath = "Outlook\Setup" },
+    @{ Value = "DisableRoamingSignatures";                SubPath = "Outlook\Setup"  },
     @{ Value = "DisableRoamingSignaturesTemporaryToggle"; SubPath = "Common\Roaming" }
 )
 
