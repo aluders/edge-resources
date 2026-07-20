@@ -1,34 +1,57 @@
 #Requires -RunAsAdministrator
-<#
-.SYNOPSIS
-    Checks and repairs Windows Firewall rules for QuickBooks Database Server Manager 2024.
 
-.DESCRIPTION
-    Performs the following checks and auto-repairs:
+# Repair-QBFirewall.ps1 — QuickBooks 2024 Firewall & Service Repair
+# Deploy: irm https://scripts.vcc.net/Repair-QBFirewall.ps1 | iex
+#
+# NOTES
+#
+# Developed during a troubleshooting session where QBDSM was persistently
+# reporting "Windows firewall is blocking QuickBooks / Network Diagnostics:
+# Failed" despite QB functioning correctly at the network level.
+#
+# Key findings:
+#
+#   1. QB 2024 installs its DB service as 'QuickBooksDB34', not 'QBDBMgrN24'.
+#      The internal numbering (DB34) differs from the product year (2024).
+#
+#   2. QBDBMgrN.exe runs from the 8.3 short path (C:\PROGRA~1\Intuit\QUICKB~1\)
+#      rather than the long path. Firewall rules pointing to the long path
+#      silently don't match the running process. Path must be resolved from
+#      the live process, not hardcoded.
+#
+#   3. QB listens on port 50097 (stored in .ND files as ServerPort). The
+#      standard QB port list (8019, 56728, 55378-55382) is incomplete without it.
+#
+#   4. Stale .ND files from old QB versions (QB_data_engine_20, ServerMode=2,
+#      UNC paths) were present alongside current ones and confused the scan.
+#
+#   5. QuickBooksDB34 startup type was Manual — wouldn't survive a reboot.
+#
+#   6. The QBDSM "Windows firewall blocking" warning is a cosmetic false positive
+#      on Windows Server. QBDSM's checker queries the Windows Security Center API
+#      which behaves differently on Server vs Workstation. If the Section 8 TCP
+#      checks pass and workstations can open company files, QB is working fine.
+#
+#   7. ESET Server Security was present but not the cause — disabling it entirely
+#      made no difference to the QBDSM warning.
+#
+# VERSION HISTORY
+#
+#   v1.0  2026-06-15  Initial release. Windows Firewall exe + port rules for QB 2024.
+#                     Auto-apply mode. Key settings configurable at top of script.
+#
+#   v1.1  2026-06-15  Fixed service name QBDBMgrN24 → QuickBooksDB34. Added
+#                     QBCFMonitorService check via reusable Ensure-QBService.
+#
+#   v1.2  2026-06-15  Process-first exe path resolution to fix 8.3 vs long path
+#                     mismatch. Added runtime port listener verification (Sec 5).
+#                     Added port 50097.
+#
+#   v1.3  2026-06-15  Removed ESET section. Added .ND file validation (Sec 7)
+#                     and live TCP connectivity health checks (Sec 8).
+#                     Added notes/changelog header.
 
-    1. Resolves QB executable paths from the live running process (avoids 8.3 vs long
-       path mismatches that cause firewall rules to silently not match).
-    2. Ensures all required Windows Firewall exe rules exist and point to the correct path.
-    3. Ensures all required TCP port rules exist (8019, 50097, 56728, 55378-55382).
-    4. Ensures QuickBooksDB34 is set to Automatic startup and is running.
-    5. Ensures QBCFMonitorService is set to Automatic startup and is running.
-    6. Verifies that QB processes are actually listening on the expected ports.
-    7. Checks Windows Firewall profile state.
-    8. Validates .ND file configuration for all company files.
-    9. Tests live TCP connectivity to QB ports to confirm end-to-end health.
-
-.NOTES
-    Must be run as Administrator.
-    Targets QuickBooks 2024 / QuickBooksDB34 / QBCFMonitorService.
-    QB Desktop 2024 installs its DB service as 'QuickBooksDB34', not 'QBDBMgrN24'.
-    The QBDSM 'Windows firewall blocking' warning may be a cosmetic false positive on
-    Windows Server — if TCP connectivity checks pass, QB is functioning correctly.
-
-.EXAMPLE
-    .\Repair-QBFirewall.ps1
-#>
-
-# ── CONFIGURATION ────────────────────────────────────────────────────────────
+# CONFIGURATION
 
 $QB_VERSION    = "2024"
 $QB_DB_SERVICE = "QuickBooksDB34"
@@ -66,8 +89,7 @@ $QB_CF_EXECUTABLES = @(
     "QBCFMonitorService.exe"
 )
 
-# ── HELPERS ──────────────────────────────────────────────────────────────────
-
+# HELPERS
 $pass  = "[  OK  ]"
 $fail  = "[ FAIL ]"
 $fixed = "[ FIXED]"
@@ -90,9 +112,7 @@ function Write-Status {
 
 $results = @{ Checked = 0; AlreadyOK = 0; Fixed = 0; Failed = 0; Warnings = 0 }
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SECTION 1 — Resolve Executable Paths
-# ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Resolving QuickBooks $QB_VERSION Executable Paths"
 
@@ -162,9 +182,7 @@ $total = $QB_EXECUTABLES.Count + $QB_CF_EXECUTABLES.Count
 Write-Host ""
 Write-Host "  Located $($resolvedExePaths.Count) of $total executables." -ForegroundColor Gray
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SECTION 2 — Firewall: Executable Rules
-# ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Checking Firewall Rules — Executables"
 
@@ -222,9 +240,7 @@ foreach ($kvp in $resolvedExePaths.GetEnumerator()) {
     Ensure-ExeFirewallRule -ExeName $kvp.Key -ExePath $kvp.Value -Direction "Outbound"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SECTION 3 — Firewall: Port Rules
-# ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Checking Firewall Rules — TCP Ports"
 
@@ -264,9 +280,7 @@ foreach ($port in $QB_PORTS) {
     Ensure-PortFirewallRule -Port $port -Direction "Outbound"
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SECTION 4 — QB Service Checks
-# ─────────────────────────────────────────────────────────────────────────────
 
 function Ensure-QBService {
     param(
@@ -324,9 +338,7 @@ Ensure-QBService -ServiceName $QB_CF_SERVICE `
                  -FriendlyName "QuickBooks CF Monitor Service" `
                  -RequiredStartType "Automatic"
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SECTION 5 — Runtime Port Listener Verification
-# ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Verifying QB Runtime Port Listeners"
 
@@ -356,9 +368,7 @@ foreach ($kvp in $expectedListeners.GetEnumerator()) {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SECTION 6 — Windows Firewall Profile State
-# ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Windows Firewall Profile State"
 
@@ -371,9 +381,7 @@ foreach ($profile in (Get-NetFirewallProfile)) {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SECTION 7 — Company File .ND Validation
-# ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Company File .ND Validation"
 
@@ -410,9 +418,7 @@ if (-not (Test-Path $QB_COMPANY_FOLDER)) {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SECTION 8 — Live TCP Connectivity Health Check
-# ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Live TCP Connectivity Health Check"
 
@@ -446,9 +452,7 @@ if ($qbwFiles) {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
 # SUMMARY
-# ─────────────────────────────────────────────────────────────────────────────
 
 Write-Header "Summary"
 
