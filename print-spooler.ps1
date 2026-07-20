@@ -1,5 +1,5 @@
 # ============================================================================
-# Repair-Spooler.ps1
+# Clear Print Spooler Script
 # ----------------------------------------------------------------------------
 # Stops the Print Spooler service, clears stuck print jobs from the spool
 # folder, and restarts the service.
