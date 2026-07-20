@@ -1,5 +1,18 @@
-# elevated powershell
-# irm qb-reset.vcc.net | iex
+# Reset-QBEntitlement.ps1 — QuickBooks Entitlement Data Reset
+# Deploy: irm qb-reset.vcc.net | iex
+#
+# NOTES
+#
+# Deletes EntitlementDataStore.ecml, which forces QuickBooks to re-register
+# on next launch. Use this when QB prompts for activation unexpectedly, throws
+# entitlement errors, or gets stuck in a licensing loop after a repair/reinstall.
+#
+# The file is searched across V5, V6, and V8 of the Intuit Entitlement Client
+# folder. QB recreates it automatically on next launch.
+#
+# VERSION HISTORY
+#
+#   v1.0  2026-06-15  Initial release.
 
 # 1. Check for Administrator privileges
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -9,18 +22,15 @@ if (-not $isAdmin) {
     Write-Host "Please close this window, right-click PowerShell, select 'Run as Administrator', and run the command again." -ForegroundColor Yellow
     return
 }
-
 # Header
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "   QuickBooks Entitlement Reset Script" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
-
 # 2. Locate EntitlementDataStore.ecml
 $basePath = "C:\ProgramData\Intuit\Entitlement Client"
 $versions = @("V8", "V6", "V5")
 $targetFile = $null
-
 Write-Host "Searching for EntitlementDataStore.ecml..." -NoNewline
 foreach ($ver in $versions) {
     $candidate = Join-Path $basePath "$ver\EntitlementDataStore.ecml"
@@ -29,7 +39,6 @@ foreach ($ver in $versions) {
         break
     }
 }
-
 if ($targetFile) {
     Write-Host " [FOUND]" -ForegroundColor Green
     Write-Host "  Path: $targetFile" -ForegroundColor DarkGray
@@ -44,7 +53,6 @@ if ($targetFile) {
     Write-Host "============================================" -ForegroundColor Cyan
     return
 }
-
 # 3. Delete the file
 Write-Host "Deleting EntitlementDataStore.ecml..." -NoNewline
 try {
@@ -56,7 +64,6 @@ catch {
     Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
     return
 }
-
 # Footer
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
