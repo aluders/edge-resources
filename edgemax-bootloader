@@ -1,10 +1,10 @@
-edgerouter
+# edgerouter
 
 show system boot-image
 add system boot-image 
 reboot
 
-edgeswitch
+# edgeswitch
 
 enable
 show version bootloader
