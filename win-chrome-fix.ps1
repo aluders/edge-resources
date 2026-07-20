@@ -7,6 +7,19 @@
 
     VERSION HISTORY
     ----------------
+    4.18.0 - 2026-07-19 - Dump no longer hides unlabeled buttons
+        - The second-click test from 4.17.0 was disproven immediately: it
+          threw "Unsupported Pattern" - once already expanded, that
+          element apparently drops Invoke support entirely. Removed.
+        - Real cause found instead: confirmed there IS a visible Add
+          button on the new layout, it just wasn't in the dump output.
+          Show-UITree only ever printed elements with a Name or
+          AutomationId - an icon-only button has neither, so it was
+          fully clickable and completely invisible to every dump so far.
+          Now prints any interactive control type (Button, MenuItem,
+          ComboBox, Edit, CheckBox, RadioButton) even unlabeled, tagged
+          "(unlabeled)" with its on-screen coordinates, so nothing
+          clickable can hide from the dump again
     4.17.0 - 2026-07-19 - Fixed a confirmed AutomationId change; testing the Add flow
         - Real dump confirmed the new layout's menu items use different
           AutomationIds - "deleteOption"/"makeDefaultOption" instead of
@@ -326,7 +339,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.17.0"
+$ScriptVersion = "4.18.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -487,9 +500,20 @@ if ($DumpUITree) {
             $name = $Element.Current.Name
             $type = $Element.Current.ControlType.ProgrammaticName -replace "ControlType\.", ""
             $autoId = $Element.Current.AutomationId
-            if ($name -or $autoId) {
-                $label = if ($autoId) { "$name  [id=$autoId]" } else { $name }
-                Write-Host ("  " * $Depth + "[$type] $label") -ForegroundColor DarkGray
+            # Interactive controls print even with no Name/AutomationId - an
+            # icon-only button is still clickable, and hiding it just because
+            # it lacks a label is exactly how a real "Add" button went missing
+            # from earlier dumps despite clearly being visible on screen
+            $isInteractive = $type -in @("Button", "MenuItem", "ComboBox", "Edit", "CheckBox", "RadioButton")
+            if ($name -or $autoId -or $isInteractive) {
+                $rect = $Element.Current.BoundingRectangle
+                $rectStr = if ($rect.Width -gt 0) { " @($([int]$rect.X),$([int]$rect.Y) $([int]$rect.Width)x$([int]$rect.Height))" } else { "" }
+                $label = if ($name -or $autoId) {
+                    if ($autoId) { "$name  [id=$autoId]" } else { $name }
+                } else {
+                    "(unlabeled)"
+                }
+                Write-Host ("  " * $Depth + "[$type] $label$rectStr") -ForegroundColor DarkGray
             }
         } catch { }
 
@@ -524,17 +548,6 @@ if ($DumpUITree) {
             } else {
                 $shortcutsEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
             }
-            Start-Sleep -Milliseconds 800
-            Write-Sep
-            Show-UITree -Element $RootElement
-            Write-Sep
-
-            # No separate "Add" button found on the newer layout - this
-            # element's accessible name literally ends with "Click to open
-            # Add Site Search dialog", so testing whether clicking it AGAIN
-            # (now that it's already expanded) behaves differently
-            Write-Info "No separate Add button confirmed yet - testing a second click on the same element..."
-            $shortcutsEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
             Start-Sleep -Milliseconds 800
             Write-Sep
             Show-UITree -Element $RootElement
