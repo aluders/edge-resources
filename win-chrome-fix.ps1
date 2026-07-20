@@ -7,6 +7,50 @@
 
     VERSION HISTORY
     ----------------
+    4.22.0 - 2026-07-19 - Wired in the Shift+Tab fix for the Add button
+        - Confirmed by hand: after expanding "Your site shortcuts",
+          Shift+Tab lands focus on the Add button even though it's
+          genuinely unreachable via any accessibility tree-walk (shadow
+          root Chrome doesn't expose, confirmed via DevTools). Wired that
+          exact sequence into the real run as the newer-layout fallback:
+          try the direct "addSearchEngine" button first (older layout),
+          and if that's not found, focus the shortcuts row, Shift+Tab,
+          Enter. Both paths fall through into the same existing dialog-
+          filling logic once the dialog is open, since that part was
+          never the problem - only the trigger was unreachable.
+    4.21.0 - 2026-07-19 - Added a reverse (Shift+Tab) test alongside forward
+        - Same idea as the forward tab-order test, just the other
+          direction (+{TAB} in SendKeys syntax = Shift+Tab), re-focused
+          from the same known starting point rather than continuing from
+          wherever the forward test left off - keeps both results
+          independently readable in one dump run instead of needing a
+          separate pass to test the reverse direction
+    4.20.0 - 2026-07-19 - Testing keyboard Tab as a mouse-click-free option
+        - DevTools confirmed the root cause conclusively: the Add button
+          is a <cr-button id="addSearchEngine"> inside a shadow root that
+          Chrome never exposes to Windows accessibility at all - not a
+          filtering setting, the object genuinely isn't there on that
+          side, which is why no TreeWalker mode was ever going to find it.
+        - Before falling back to real mouse-coordinate clicking (the
+          standard technique for exactly this kind of gap, just visibly
+          moves the cursor), testing a cleaner option: that same DevTools
+          output showed tabindex="0" on the button, meaning keyboard focus
+          traversal - a separate system from the accessibility tree - may
+          still reach it even though tree-walking can't. -DumpUITree now
+          Tabs from the shortcuts row and reports what's actually focused
+          after each press (via AutomationElement.FocusedElement, a
+          different query path than the tree walks used elsewhere) so we
+          can see the real tab order before committing to either approach
+    4.19.0 - 2026-07-19 - Raw-view check for a control-view-filtered Add button
+        - Confirmed the Add button is visible immediately on screen, no
+          hover needed - rules out a hover-only reveal. With unlabeled
+          buttons now showing (4.18.0) and still nothing found, the next
+          most likely explanation is TreeWalker.ControlViewWalker itself -
+          used for every walk so far - filtering the element out before
+          it's ever visited, not just before it's printed. Added an
+          unfiltered RawViewWalker pass scoped to just the "Your site
+          shortcuts" row (not the whole page, to avoid excessive noise)
+          to test that directly.
     4.18.0 - 2026-07-19 - Dump no longer hides unlabeled buttons
         - The second-click test from 4.17.0 was disproven immediately: it
           threw "Unsupported Pattern" - once already expanded, that
@@ -339,7 +383,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.18.0"
+$ScriptVersion = "4.22.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -560,6 +604,94 @@ if ($DumpUITree) {
         Write-Info "No 'site shortcuts' element found - this machine may still be on the older layout"
     }
 
+    # DevTools confirmed the Add button is inside a shadow root Chrome
+    # never exposes to Windows accessibility at all - no tree-walk mode
+    # was ever going to find it, since the object genuinely isn't there
+    # on that side. But it IS tabindex="0" per that same DevTools output,
+    # meaning keyboard focus traversal (a separate system from the
+    # accessibility tree) might still reach it. Test safely: Tab a few
+    # times and check what's actually focused after each press, without
+    # activating anything yet.
+    if ($shortcutsEl) {
+        try {
+            $shortcutsEl.SetFocus()
+            Start-Sleep -Milliseconds 300
+            Write-Info "Tabbing forward from '$($shortcutsEl.Current.Name)' to see what's actually keyboard-reachable..."
+            for ($t = 1; $t -le 5; $t++) {
+                [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+                Start-Sleep -Milliseconds 300
+                $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+                $fName = try { $focused.Current.Name } catch { "" }
+                $fId = try { $focused.Current.AutomationId } catch { "" }
+                $fType = try { $focused.Current.ControlType.ProgrammaticName -replace "ControlType\.", "" } catch { "?" }
+                Write-Host "      Tab $t -> [$fType] $fName  [id=$fId]" -ForegroundColor DarkGray
+            }
+        }
+        catch {
+            Write-Warn2 "Forward tab test failed: $($_.Exception.Message)"
+        }
+
+        # Same test in reverse (Shift+Tab), re-focused from the same known
+        # starting point rather than continuing from wherever forward
+        # tabbing ended up - keeps the two results independently readable
+        try {
+            $shortcutsEl.SetFocus()
+            Start-Sleep -Milliseconds 300
+            Write-Info "Tabbing backward (Shift+Tab) from '$($shortcutsEl.Current.Name)'..."
+            for ($t = 1; $t -le 5; $t++) {
+                [System.Windows.Forms.SendKeys]::SendWait("+{TAB}")
+                Start-Sleep -Milliseconds 300
+                $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+                $fName = try { $focused.Current.Name } catch { "" }
+                $fId = try { $focused.Current.AutomationId } catch { "" }
+                $fType = try { $focused.Current.ControlType.ProgrammaticName -replace "ControlType\.", "" } catch { "?" }
+                Write-Host "      Shift+Tab $t -> [$fType] $fName  [id=$fId]" -ForegroundColor DarkGray
+            }
+        }
+        catch {
+            Write-Warn2 "Reverse tab test failed: $($_.Exception.Message)"
+        }
+    }
+
+    # If there's a visible Add button we're still not finding, the most
+    # likely explanation left is that TreeWalker.ControlViewWalker (used
+    # everywhere above) is filtering it out entirely - that walker skips
+    # anything Windows doesn't consider a "real control", which can hide
+    # an element regardless of labeling. RawViewWalker doesn't filter at
+    # all, so check specifically within the shortcuts row (not the whole
+    # page, to keep this from being overwhelming).
+    $activeRowCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "activeShortcutsRow")
+    $activeRow = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $activeRowCond)
+
+    if ($activeRow) {
+        Write-Info "Doing an unfiltered walk of the 'Your site shortcuts' row (control-view filtering bypassed)..."
+        function Show-RawTree {
+            param($Element, $Depth = 0, $MaxDepth = 15)
+            if ($Depth -gt $MaxDepth) { return }
+            try {
+                $name = $Element.Current.Name
+                $type = $Element.Current.ControlType.ProgrammaticName -replace "ControlType\.", ""
+                $autoId = $Element.Current.AutomationId
+                $rect = $Element.Current.BoundingRectangle
+                $rectStr = if ($rect.Width -gt 0) { " @($([int]$rect.X),$([int]$rect.Y) $([int]$rect.Width)x$([int]$rect.Height))" } else { "" }
+                $label = if ($name -or $autoId) { if ($autoId) { "$name  [id=$autoId]" } else { $name } } else { "(unlabeled)" }
+                Write-Host ("  " * $Depth + "[$type] $label$rectStr") -ForegroundColor DarkGray
+            } catch { }
+            $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+            $child = $walker.GetFirstChild($Element)
+            while ($child) {
+                Show-RawTree -Element $child -Depth ($Depth + 1) -MaxDepth $MaxDepth
+                try { $child = $walker.GetNextSibling($child) } catch { break }
+            }
+        }
+        Write-Sep
+        Show-RawTree -Element $activeRow
+        Write-Sep
+    } else {
+        Write-Warn2 "Couldn't re-find the 'activeShortcutsRow' group for the raw-view check"
+    }
+
     # A static dump can't show what's inside a menu that isn't open yet, so
     # open a non-default row's menu and dump again - whichever row is
     # currently marked "(Default)" has its "More actions" button disabled
@@ -701,12 +833,34 @@ if (-not $googleExists) {
             [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "addSearchEngine")
         $addBtn = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $addBtnCond)
 
-        if (-not $addBtn) {
-            Write-Warn2 "Couldn't find the Add button - run with -DumpUITree to check"
+        if ($addBtn) {
+            # Older layout: a normal, directly reachable button
+            Invoke-UIA $addBtn
         }
         else {
-            Invoke-UIA $addBtn
+            # Newer layout: DevTools confirmed the Add button lives inside
+            # a shadow root Chrome never exposes to Windows accessibility
+            # at all - no tree-walk can find or click it directly. Keyboard
+            # focus traversal reaches it anyway (confirmed by hand first):
+            # focus the "Your site shortcuts" row, Shift+Tab lands on the
+            # Add button, Enter activates it.
+            $shortcutsEl = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition) |
+                Where-Object { $_.Current.Name -match "^Your site shortcuts" } | Select-Object -First 1
 
+            if (-not $shortcutsEl) {
+                Write-Warn2 "Couldn't find the Add button on either layout - run with -DumpUITree to check"
+            }
+            else {
+                $shortcutsEl.SetFocus()
+                Start-Sleep -Milliseconds 300
+                [System.Windows.Forms.SendKeys]::SendWait("+{TAB}")
+                Start-Sleep -Milliseconds 300
+                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+            }
+        }
+
+        if ($addBtn -or $shortcutsEl) {
             # All three fields share the same AutomationId ("input"), so
             # they have to be matched by their actual Name text instead
             $editCond = New-Object System.Windows.Automation.PropertyCondition(
