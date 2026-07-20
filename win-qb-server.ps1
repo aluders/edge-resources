@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+# Requires -RunAsAdministrator
 
 # Repair-QBFirewall.ps1 — QuickBooks 2024 Firewall & Service Repair
 # Deploy: irm https://scripts.vcc.net/Repair-QBFirewall.ps1 | iex
