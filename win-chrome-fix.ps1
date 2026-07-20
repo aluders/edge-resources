@@ -1,49 +1,26 @@
 <#
-    Chrome Default Search Engine Repair Tool
-    =========================================
+    Chrome Default Search Engine Repair Tool  v2.0
+    =================================================
     Sets Google as the default search engine and removes the others by
     driving Chrome's own Settings UI through Windows UI Automation - the
     same accessibility API screen readers use. Not file edits.
 
-    HOW WE GOT HERE (v1.x, abandoned)
-    ----------------------------------
-    Three earlier approaches were tried and abandoned before landing on
-    this one:
-    1. Registry policy (DefaultSearchProvider* keys) - Chrome only honors
-       this on AD/Entra-joined or Chrome Enterprise Core-enrolled devices.
-       Blocked by design everywhere else, since it's the same registry
-       trick hijacker malware uses.
-    2. Editing Web Data / Preferences directly - Chrome signs sensitive
-       settings (like the default search engine) with an HMAC and reverts
-       anything that doesn't carry a valid signature. External file edits
-       can't produce a valid one without reverse-engineering Chrome's
-       internal seed - not worth building, since that's genuinely what
-       hijacker-cleanup malware does.
-    3. UI Automation against only the classic settings layout - worked,
-       until Chrome shipped a redesign of chrome://settings/search mid-
-       development that moved and partially hid the same controls.
-
-    The one thing Chrome inherently trusts is real interaction with its
-    own UI, so the current approach drives the actual Settings page via
-    Windows UI Automation - genuine OS-level input Chrome can't tell apart
-    from a person clicking - which sidesteps the tamper protections above
-    entirely rather than fighting them.
-
     VERSION HISTORY
     ----------------
     2.0 - 2026-07-19 - Current: UI Automation, both Chrome layouts
-        Drives the real Settings page instead of editing files (see above
-        for why). Handles Google being fully removed - not just non-
-        default - by re-adding it through the "Add Site Search" dialog.
-        Supports both the classic settings/searchEngines layout and the
-        newer settings/search layout where the list is hidden behind a
-        "Your site shortcuts" row. That newer layout's Add button isn't
-        exposed to accessibility at all (confirmed via DevTools - it's
-        inside a shadow root Chrome doesn't expose to Windows), so it's
-        reached via Shift+Tab instead of a direct click - the one part of
-        this that isn't a normal accessibility-driven action.
+        Drives the real Settings page instead of editing files (see "HOW
+        WE GOT HERE" below for why). Handles Google being fully removed -
+        not just non-default - by re-adding it through the "Add Site
+        Search" dialog. Supports both the classic settings/searchEngines
+        layout and the newer settings/search layout where the list is
+        hidden behind a "Your site shortcuts" row. That newer layout's
+        Add button isn't exposed to accessibility at all (confirmed via
+        DevTools - it's inside a shadow root Chrome doesn't expose to
+        Windows), so it's reached via Shift+Tab instead of a direct click
+        - the one part of this that isn't a normal accessibility-driven
+        action.
     1.x - 2026-07-19 - Registry policy, then file edits, then UI Automation
-        against the classic layout only. See "HOW WE GOT HERE" above.
+        against the classic layout only. See "HOW WE GOT HERE" below.
 
     NOTES
     -----
@@ -74,6 +51,30 @@
     Diagnostic dump instead of clicking anything (use this first if the
     normal run doesn't fully work):
         & ([ScriptBlock]::Create((irm chrome.vcc.net))) -DumpUITree
+
+    HOW WE GOT HERE (v1.x, abandoned)
+    ----------------------------------
+    Three earlier approaches were tried and abandoned before landing on
+    this one:
+    1. Registry policy (DefaultSearchProvider* keys) - Chrome only honors
+       this on AD/Entra-joined or Chrome Enterprise Core-enrolled devices.
+       Blocked by design everywhere else, since it's the same registry
+       trick hijacker malware uses.
+    2. Editing Web Data / Preferences directly - Chrome signs sensitive
+       settings (like the default search engine) with an HMAC and reverts
+       anything that doesn't carry a valid signature. External file edits
+       can't produce a valid one without reverse-engineering Chrome's
+       internal seed - not worth building, since that's genuinely what
+       hijacker-cleanup malware does.
+    3. UI Automation against only the classic settings layout - worked,
+       until Chrome shipped a redesign of chrome://settings/search mid-
+       development that moved and partially hid the same controls.
+
+    The one thing Chrome inherently trusts is real interaction with its
+    own UI, so the current approach drives the actual Settings page via
+    Windows UI Automation - genuine OS-level input Chrome can't tell apart
+    from a person clicking - which sidesteps the tamper protections above
+    entirely rather than fighting them.
 #>
 
 [CmdletBinding()]
