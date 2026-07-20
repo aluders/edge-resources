@@ -5,364 +5,62 @@
     driving Chrome's own Settings UI through Windows UI Automation - the
     same accessibility API screen readers use. Not file edits.
 
+    HOW WE GOT HERE (v1.x, abandoned)
+    ----------------------------------
+    Three earlier approaches were tried and abandoned before landing on
+    this one:
+    1. Registry policy (DefaultSearchProvider* keys) - Chrome only honors
+       this on AD/Entra-joined or Chrome Enterprise Core-enrolled devices.
+       Blocked by design everywhere else, since it's the same registry
+       trick hijacker malware uses.
+    2. Editing Web Data / Preferences directly - Chrome signs sensitive
+       settings (like the default search engine) with an HMAC and reverts
+       anything that doesn't carry a valid signature. External file edits
+       can't produce a valid one without reverse-engineering Chrome's
+       internal seed - not worth building, since that's genuinely what
+       hijacker-cleanup malware does.
+    3. UI Automation against only the classic settings layout - worked,
+       until Chrome shipped a redesign of chrome://settings/search mid-
+       development that moved and partially hid the same controls.
+
+    The one thing Chrome inherently trusts is real interaction with its
+    own UI, so the current approach drives the actual Settings page via
+    Windows UI Automation - genuine OS-level input Chrome can't tell apart
+    from a person clicking - which sidesteps the tamper protections above
+    entirely rather than fighting them.
+
     VERSION HISTORY
     ----------------
-    4.22.0 - 2026-07-19 - Wired in the Shift+Tab fix for the Add button
-        - Confirmed by hand: after expanding "Your site shortcuts",
-          Shift+Tab lands focus on the Add button even though it's
-          genuinely unreachable via any accessibility tree-walk (shadow
-          root Chrome doesn't expose, confirmed via DevTools). Wired that
-          exact sequence into the real run as the newer-layout fallback:
-          try the direct "addSearchEngine" button first (older layout),
-          and if that's not found, focus the shortcuts row, Shift+Tab,
-          Enter. Both paths fall through into the same existing dialog-
-          filling logic once the dialog is open, since that part was
-          never the problem - only the trigger was unreachable.
-    4.21.0 - 2026-07-19 - Added a reverse (Shift+Tab) test alongside forward
-        - Same idea as the forward tab-order test, just the other
-          direction (+{TAB} in SendKeys syntax = Shift+Tab), re-focused
-          from the same known starting point rather than continuing from
-          wherever the forward test left off - keeps both results
-          independently readable in one dump run instead of needing a
-          separate pass to test the reverse direction
-    4.20.0 - 2026-07-19 - Testing keyboard Tab as a mouse-click-free option
-        - DevTools confirmed the root cause conclusively: the Add button
-          is a <cr-button id="addSearchEngine"> inside a shadow root that
-          Chrome never exposes to Windows accessibility at all - not a
-          filtering setting, the object genuinely isn't there on that
-          side, which is why no TreeWalker mode was ever going to find it.
-        - Before falling back to real mouse-coordinate clicking (the
-          standard technique for exactly this kind of gap, just visibly
-          moves the cursor), testing a cleaner option: that same DevTools
-          output showed tabindex="0" on the button, meaning keyboard focus
-          traversal - a separate system from the accessibility tree - may
-          still reach it even though tree-walking can't. -DumpUITree now
-          Tabs from the shortcuts row and reports what's actually focused
-          after each press (via AutomationElement.FocusedElement, a
-          different query path than the tree walks used elsewhere) so we
-          can see the real tab order before committing to either approach
-    4.19.0 - 2026-07-19 - Raw-view check for a control-view-filtered Add button
-        - Confirmed the Add button is visible immediately on screen, no
-          hover needed - rules out a hover-only reveal. With unlabeled
-          buttons now showing (4.18.0) and still nothing found, the next
-          most likely explanation is TreeWalker.ControlViewWalker itself -
-          used for every walk so far - filtering the element out before
-          it's ever visited, not just before it's printed. Added an
-          unfiltered RawViewWalker pass scoped to just the "Your site
-          shortcuts" row (not the whole page, to avoid excessive noise)
-          to test that directly.
-    4.18.0 - 2026-07-19 - Dump no longer hides unlabeled buttons
-        - The second-click test from 4.17.0 was disproven immediately: it
-          threw "Unsupported Pattern" - once already expanded, that
-          element apparently drops Invoke support entirely. Removed.
-        - Real cause found instead: confirmed there IS a visible Add
-          button on the new layout, it just wasn't in the dump output.
-          Show-UITree only ever printed elements with a Name or
-          AutomationId - an icon-only button has neither, so it was
-          fully clickable and completely invisible to every dump so far.
-          Now prints any interactive control type (Button, MenuItem,
-          ComboBox, Edit, CheckBox, RadioButton) even unlabeled, tagged
-          "(unlabeled)" with its on-screen coordinates, so nothing
-          clickable can hide from the dump again
-    4.17.0 - 2026-07-19 - Fixed a confirmed AutomationId change; testing the Add flow
-        - Real dump confirmed the new layout's menu items use different
-          AutomationIds - "deleteOption"/"makeDefaultOption" instead of
-          "delete"/"makeDefault". Both the removal loop and the make-
-          default step now accept either, so the same script keeps
-          working whether a given machine has the old or new layout.
-        - Still unconfirmed: how to trigger the Add dialog on the new
-          layout - "addSearchEngine" doesn't exist there. The "Your site
-          shortcuts" button's own accessible name ends with "...Click to
-          open Add Site Search dialog", so -DumpUITree now tests clicking
-          that same element a second time (after it's already expanded)
-          to see if that's actually the trigger, rather than guessing at
-          a separate element that may not exist
-    4.16.0 - 2026-07-19 - Fixed dump ordering for the new layout
-        - Real dump from the machine on Chrome's new layout confirmed the
-          good news: once revealed, the table structure underneath "Your
-          site shortcuts" is byte-for-byte identical to the old layout
-          (same DataItem rows, same "More actions for X" buttons) - Chrome
-          only moved the entry point, it didn't redesign the component.
-        - But the dump captured that too late to prove it: -DumpUITree was
-          trying to open the "More actions" menu and the Add dialog
-          BEFORE trying to reveal the site-shortcuts table, so both came
-          up empty on the new layout simply because nothing was visible
-          yet to click. Reordered so the reveal happens first - old
-          layout is unaffected since that step is a no-op when there's
-          nothing named "site shortcuts" to find.
-    4.15.0 - 2026-07-19 - Best-effort support for Chrome's newer settings layout
-        - Reported on a real machine: a recent Chrome update now redirects
-          chrome://settings/searchEngines to chrome://settings/search, and
-          the engine list is hidden behind a "Your site shortcuts" dropdown
-          instead of shown directly. Rather than guess at its exact control
-          type/structure blind (expensive lesson from the Delete/Remove
-          mix-up earlier), both -DumpUITree and the real run now search
-          for anything named "site shortcuts" and try opening it (Expand
-          if it supports that pattern, Invoke otherwise) before giving up
-          if the table isn't immediately visible - old layout keeps working
-          exactly as before, since this only kicks in when the direct
-          table lookup comes up empty first.
-        - Still need a real dump of what's actually inside that dropdown
-          once opened to confirm the rest of the automation (rows, menus,
-          Add dialog) still uses the same structure on the new layout -
-          this only gets us to the point of finding the table, not proof
-          everything downstream still matches
-    4.14.0 - 2026-07-19 - Handles Google being fully removed, not just non-default
-        - Real dump captured the "Add Site Search" dialog: three Edit
-          fields (Name/Shortcut/URL) that all share the same AutomationId
-          ("input"), so they're matched by their actual Name text instead
-          - "Name", "Shortcut", "URL with %s in place of query"
-        - Real trap caught before it caused a silent bug: the URL itself
-          contains a literal "%", which SendKeys treats as a modifier key
-          (Alt) rather than a character - typed unescaped, it would have
-          silently mangled the URL instead of typing it. Added a
-          Send-LiteralKeys helper that escapes SendKeys' reserved
-          characters before typing anything.
-        - Logic is now the full three-way branch: Google exists and is
-          default → do nothing; exists but isn't default → click "Make
-          default"; doesn't exist at all → add it via the dialog above,
-          then fall through to the same "make default" step. Removal of
-          everything else runs after, same as before.
-        - Since a newly-added entry's landing table (Search engines vs.
-          Site search) isn't confirmed, the "find Google to make default"
-          search was broadened from just the search-engines table to the
-          whole page - the removal loop stays correctly scoped to just the
-          search-engines table, since that part was never in question
-    4.13.0 - 2026-07-19 - Dump captures the Add dialog; fixed a real removal bug
-        - New scenario reported: Google can end up completely removed from
-          the list, not just non-default, and it's added back via "Add"
-          under the unrelated-looking "Site search" section (confirmed by
-          the actual manual steps that fixed it previously) - not yet
-          automated, still gathering real field data for that.
-        - -DumpUITree previously couldn't capture that dialog's contents:
-          it always re-navigates to the base settings URL first, which
-          closes any dialog left open beforehand. Now it opens the Add
-          dialog itself (and the "More actions" menu) as part of the dump,
-          then closes each back out with Escape, so nothing needs to be
-          pre-staged by hand.
-        - Real bug (not diagnostic-only) caught along the way: a dump on a
-          machine where Bing had become default after Google was removed
-          showed the menu-opening code only excluded rows named "Google",
-          not whichever row currently holds "(Default)" - that row's
-          button is disabled, so hitting it would throw and abort. Fixed
-          in both the diagnostic and the actual removal loop, since the
-          same bug would have stopped the real run from removing Yahoo/
-          DuckDuckGo/Yandex too, not just failed on the default row
-    4.12.0 - 2026-07-19 - Removed the legacy registry cleanup entirely
-        - That step only ever existed to remediate damage from the old
-          v1.x-2.x registry-policy versions of this script. Any machine
-          getting this script for the first time now never had that key
-          written in the first place, so it was dead code going forward.
-          If a machine somewhere still has that stale HKLM/HKCU\SOFTWARE\
-          Policies\Google\Chrome key from early testing, it'll need a
-          one-off manual cleanup instead - this script no longer touches
-          the registry in any way.
-    4.11.0 - 2026-07-19 - Poll for UI to appear instead of guessing a delay
-        - A third test machine navigated to the settings page fine but
-          then never seemed to click anything in the search engines
-          section - structurally identical to two machines that worked,
-          just slower hardware. Root cause: every click-then-search step
-          used a fixed short sleep (400-600ms) before looking for what
-          should appear next. Fine on a fast machine, but if the menu or
-          confirmation dialog hadn't finished rendering yet on a slower
-          one, the search just came up empty and the loop gave up.
-        - Replaced every fixed sleep between a click and the next search
-          with actual polling (checks every 200ms, up to 6 seconds) for
-          the target element to exist - a fast machine finds it almost
-          immediately and loses nothing, a slow one just gets the grace
-          period it actually needs instead of an arbitrary guess
-    4.10.0 - 2026-07-19 - Closes Chrome at the end of a successful run
-        - So relaunching shows an obviously clean result (Google set,
-          others gone) rather than leaving it sitting on the settings
-          page. Only happens after everything succeeds - none of the
-          early error/stop paths trigger this, since closing Chrome after
-          a failed attempt would just be extra disruption for no benefit.
-    4.9.0 - 2026-07-19 - No longer closes Chrome first
-        - Settings are profile-wide, not tied to a specific window, so it
-          never actually mattered whether the automation acted on a fresh
-          window or a pre-existing one - both reach the identical result.
-          The earlier "close first" reasoning (avoiding a race where an
-          already-open window gets grabbed before a new one appears) was
-          solving a problem that doesn't matter once tab disruption is an
-          accepted trade-off: now it just uses whatever Chrome window is
-          already there, and only launches a new one if Chrome isn't
-          running at all. Simpler, and doesn't interrupt Chrome at all if
-          it's already open.
-    4.8.0 - 2026-07-19 - Handle the delete confirmation dialog
-        - Confirmed on a real test machine: clicking "Delete" in the row
-          menu doesn't delete anything by itself - it opens a "Delete
-          search engine / Are you sure?" confirmation dialog, which needs
-          its own "Delete" button clicked too. That's why entries weren't
-          actually being removed even though the menu item click succeeded.
-          Now clicks both.
-    4.7.0 - 2026-07-19 - Real menu contents confirmed: "Make default" / "Delete"
-        - Dump finally opened a working (non-Google, enabled) row's menu
-          and showed its actual contents: two MenuItems with AutomationId
-          "makeDefault" (text "Make default") and "delete" (text "Delete").
-          Not "Remove" - that guess from 4.0.0 onward was simply wrong,
-          which is exactly why the removal loop kept finding nothing.
-        - Wired in both for real, matching on AutomationId rather than
-          visible text (more stable if Chrome ever rewords the label):
-          if Google isn't already default, opens its row's menu and clicks
-          "makeDefault" before moving on to removing everything else via
-          "delete" on each remaining row
-    4.6.0 - 2026-07-19 - Real table structure confirmed; scoping bug fixed
-        - Dump output confirmed the table structure: rows are DataItems
-          under a Table, each with an editIconButton and a "More actions
-          for <name>" button. Whichever engine is currently default shows
-          "(Default)" appended right in its name - there's no separate
-          dropdown, so that ComboBox-hunting code is gone, replaced with
-          checking for that suffix directly
-        - Real bug caught from the dump, unrelated to any guessing: the
-          page has a SECOND table further down for "Site search" shortcuts
-          (Bookmarks, Gemini, History, Tabs, etc.) that also has "More
-          actions" buttons matching the same pattern. The removal loop
-          wasn't scoped to just the search-engines table, so it would have
-          gone after those too - fixed regardless of the labels question,
-          since those aren't search engines and should never be touched
-        - The diagnostic dump was also opening Google's own menu to show
-          contents, but Chrome disables that button while a row is the
-          active default (can't remove your own default) - it just threw
-          an error and showed nothing useful. Fixed to open a non-Google
-          row instead, so the next dump should finally reveal the real
-          "Remove" menu item text
-        - Still don't know how to click "make default" if Google isn't
-          already it - only a detect-and-report state for now
-    4.5.0 - 2026-07-19 - Deeper dump that also opens a menu to show real contents
-        - Real dump output confirmed two things: the omnibox match was
-          already correct, and this Chrome version has NO separate
-          "default search engine" dropdown at all - the page text points
-          at the same table listing all engines, meaning setting the
-          default is a per-row action (likely inside the same "More
-          actions" menu), not a combobox. That logic in 4b needs replacing
-          once the real menu item labels are known.
-        - The table rows and menu items didn't show up in the dump - not
-          because they're not there (the real run found "Microsoft Bing"
-          fine via FindAll, which isn't depth-limited), but because the
-          dump's own recursion had a MaxDepth of 10, too shallow for
-          Chrome's deeply-nested Polymer/Shadow DOM structure. Removed
-          that cap. Also now opens the first "More actions" menu it finds
-          and dumps again, since a static dump can't show contents of a
-          menu that was never opened
-    4.4.0 - 2026-07-19 - Types the URL instead of launching directly to it
-        - Confirmed on a real test machine: chrome://settings/searchEngines
-          works fine when typed by hand, but launching chrome.exe directly
-          to that URL via the command line does not - it lands on a blank
-          page instead every time, closed-first or not. This isn't a bug,
-          it's intentional: Chrome (and Chromium generally) deliberately
-          restricts which URLs a command-line launch can force-navigate to,
-          specifically because letting external processes dictate browser
-          navigation is a real abuse vector - Google's own bug tracker
-          calls this "intentional" security behavior. Sensitive internal
-          pages like chrome://settings are exactly what that protects.
-        - Fix: launch a plain Chrome window with no URL at all, then use
-          the same UI Automation already in place to focus the address bar
-          and type the URL, then Enter - the exact action just confirmed
-          to work by hand, so Chrome has no reason to treat it differently
-    4.3.0 - 2026-07-19 - Graceful close + --new-window (still diagnosing)
-        - Confirmed on a real test machine: closing Chrome first didn't
-          change the outcome (blank window, nothing happens), which rules
-          out unreliable-URL-delivery-to-a-running-instance as the cause.
-        - Two changes addressing the next most likely causes while this
-          gets isolated further: (1) close Chrome gracefully before
-          falling back to a force-kill - a hard kill marks the profile as
-          an unclean exit, which can make Chrome prioritize restoring the
-          previous session over the requested URL; (2) launch with
-          --new-window explicitly rather than a bare URL argument, Chrome's
-          documented flag for forcing a genuinely fresh window rather than
-          however it would otherwise decide to handle a plain URL argument
-        - If this still doesn't work, run the launch command directly at a
-          prompt (see chat) to isolate whether this is environment-level
-          Chrome behavior or something in how the script invokes it
-    4.2.0 - 2026-07-19 - Closing Chrome first is back (different reason this time)
-        - 4.1.0 dropped this on reasonable-sounding grounds (nothing here
-          touches files anymore, so why force a close?) but real testing
-          showed it opening a blank new window instead of the settings
-          page. Root cause: passing a URL to an already-running chrome.exe
-          is a known-unreliable pattern on Windows - the running instance
-          frequently just drops it rather than navigating, landing on a
-          blank window instead. Closing first and launching fresh is what
-          actually gets the URL honored - not a file-locking issue this
-          time, just Chrome's command-line handling being inconsistent
-          when it's already open
-    4.1.0 - 2026-07-19 - No longer closes Chrome first (reverted in 4.2.0)
-        - That requirement was inherited from the old file-editing versions,
-          where Chrome genuinely needed to be closed to safely edit Web
-          Data/Preferences out from under it. Nothing here touches files -
-          launching Chrome with a URL when it's already running just opens
-          a new tab in the existing window via Chrome's normal single-
-          instance behavior, so there was nothing to force-close for.
-          Also dropped the now-unused -Force param.
-    4.0.1 - 2026-07-19 - Elevation now warns instead of being framed as good
-        - The old "run elevated for full reach" messaging was carried over
-          from the file-editing versions and is actively wrong here:
-          elevation can make Windows block the automation's clicks
-          entirely (UIPI - a higher-integrity process can't send synthetic
-          input to a lower one), and Chrome usually won't even run elevated
-          in the first place. This should be run from a normal PowerShell
-          window, not an Administrator one - now warns clearly if it's not
-    4.0.0 - 2026-07-19 - Switched to UI Automation (drives the real Settings UI)
-        - Every file-editing approach so far (registry policy, surgical SQL,
-          full Web Data wipe, Preferences edits) ran into the same wall:
-          Chrome is specifically designed to distrust changes that don't
-          come from a real person using its own UI. Confirmed on a real
-          test machine that even a clean full wipe still didn't stick.
-        - This version stops fighting that and works with it instead:
-          launches Chrome straight to chrome://settings/searchEngines and
-          uses System.Windows.Automation (built into .NET, no download
-          needed) to click through it exactly like a person would - select
-          Google in the "search engine used in the address bar" dropdown,
-          then Remove each other entry one at a time. Because it's genuine
-          OS-level input through Chrome's real UI, Chrome trusts it fully -
-          no signature problem, no sync conflict, nothing to revert.
-        - Bonus: never touches Web Data at all anymore, so there's no more
-          autofill/cards trade-off - full circle back to the original ask
-        - Caveat, in the interest of honesty: I can't inspect Chrome's live
-          accessibility tree from here, so the exact element names/labels
-          this targets are my best expectation, not a tested certainty.
-          Run with -DumpUITree first if the normal run doesn't fully work -
-          it prints every element it can see on the settings page instead
-          of clicking anything, which is the fastest way to correct the
-          targeting if Chrome's actual labels differ
-        - Requires an active, unlocked desktop session - this is not a
-          silent/unattended background fix like the file-based versions
-          were. Also requires Chrome to actually be closed and relaunched,
-          since it needs a window it fully controls
-    3.2.0 - 2026-07-19 - No more .bak file for Web Data
-    3.1.0 - 2026-07-19 - Stopped touching Secure Preferences (was forcing reauth)
-        - Confirmed on a real test machine: clearing keys from Secure
-          Preferences was forcing Chrome to require re-verifying sign-in.
-          Cause: Secure Preferences is signed as a whole via a "super_mac"
-          covering the entire protected tree, not just individual fields
-    3.0.0 - 2026-07-19 - Back to full Web Data wipe; drop sqlite entirely
-        - Root cause found via research into real hijacker malware behavior:
-          Chrome protects default_search_provider with an HMAC signature
-          ("MAC") in Secure Preferences and reverts any value whose
-          signature doesn't check out - not something worth reproducing
-          ourselves (see 4.0.0 above for the actual fix)
-    2.0.0 - 2026-07-19 - Dropped registry policy (doesn't work on unmanaged PCs)
-        - chrome://policy confirmed DefaultSearchProviderEnabled and friends
-          come back "Error, Ignored - This policy is blocked" on a normal
-          Windows PC - only honored on AD/Entra-joined or Chrome Enterprise
-          Core-enrolled devices, intentionally, for the same reason 4.0.0
-          exists: this exact registry trick is what hijacker malware uses
-    1.0.0 - 2026-07-19 - Initial release (registry policy + Web Data wipe)
+    2.0 - 2026-07-19 - Current: UI Automation, both Chrome layouts
+        Drives the real Settings page instead of editing files (see above
+        for why). Handles Google being fully removed - not just non-
+        default - by re-adding it through the "Add Site Search" dialog.
+        Supports both the classic settings/searchEngines layout and the
+        newer settings/search layout where the list is hidden behind a
+        "Your site shortcuts" row. That newer layout's Add button isn't
+        exposed to accessibility at all (confirmed via DevTools - it's
+        inside a shadow root Chrome doesn't expose to Windows), so it's
+        reached via Shift+Tab instead of a direct click - the one part of
+        this that isn't a normal accessibility-driven action.
+    1.x - 2026-07-19 - Registry policy, then file edits, then UI Automation
+        against the classic layout only. See "HOW WE GOT HERE" above.
 
     NOTES
     -----
     - Run this from a normal PowerShell window, NOT "Run as Administrator" -
-      see the 4.0.1 changelog entry above for why elevation actively hurts
-      here instead of helping like it did in older versions.
+      elevation can block the automation's clicks entirely (UIPI stops a
+      higher-integrity process from sending input to a lower one), and
+      Chrome usually won't run elevated in the first place.
     - Must run in an active, logged-in desktop session - UI Automation has
       nothing to click if there's no visible desktop.
-    - Uses whatever Chrome window is already open if there is one - doesn't
-      close or interrupt it (see 4.9.0 above). If a window's open, its
+    - Uses whatever Chrome window is already open if there is one. Its
       active tab gets navigated to the settings page rather than opening
       a separate new tab - a minor courtesy trade-off, not a functional one.
-    - Doesn't touch Web Data, Preferences, or the registry at all - the only
-      thing this version does is drive Chrome's own Settings page.
-    - No persistent lock/enforcement, same as always without enrolling in
-      Chrome Enterprise Core - see the 2.0.0 changelog note for that option.
+    - Doesn't touch Web Data, Preferences, or the registry at all.
+    - No persistent lock/enforcement - a hijacker can still change it again
+      later. The only way to actually prevent that is enrolling the device
+      in (free) Chrome Enterprise Core so DefaultSearchProviderEnabled
+      becomes an honored policy - a bigger setup, not attempted here.
     - If this keeps recurring on the same machine even after a clean run,
       that points to an active hijacker (extension or background program)
       re-asserting itself, not a one-time corrupted setting - worth checking
@@ -383,7 +81,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.22.0"
+$ScriptVersion = "2.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
