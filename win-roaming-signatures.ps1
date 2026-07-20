@@ -1,5 +1,5 @@
 # ==============================================================================
-# Disable-OutlookRoamingSignatures.ps1
+# Disable Outlook Roaming Signatures Script
 # Usage: irm signatures.vcc.net | iex
 # ==============================================================================
 # BACKGROUND
