@@ -7,6 +7,23 @@
 
     VERSION HISTORY
     ----------------
+    4.15.0 - 2026-07-19 - Best-effort support for Chrome's newer settings layout
+        - Reported on a real machine: a recent Chrome update now redirects
+          chrome://settings/searchEngines to chrome://settings/search, and
+          the engine list is hidden behind a "Your site shortcuts" dropdown
+          instead of shown directly. Rather than guess at its exact control
+          type/structure blind (expensive lesson from the Delete/Remove
+          mix-up earlier), both -DumpUITree and the real run now search
+          for anything named "site shortcuts" and try opening it (Expand
+          if it supports that pattern, Invoke otherwise) before giving up
+          if the table isn't immediately visible - old layout keeps working
+          exactly as before, since this only kicks in when the direct
+          table lookup comes up empty first.
+        - Still need a real dump of what's actually inside that dropdown
+          once opened to confirm the rest of the automation (rows, menus,
+          Add dialog) still uses the same structure on the new layout -
+          this only gets us to the point of finding the table, not proof
+          everything downstream still matches
     4.14.0 - 2026-07-19 - Handles Google being fully removed, not just non-default
         - Real dump captured the "Add Site Search" dialog: three Edit
           fields (Name/Shortcut/URL) that all share the same AutomationId
@@ -283,7 +300,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.14.0"
+$ScriptVersion = "4.15.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -533,6 +550,35 @@ if ($DumpUITree) {
         Write-Warn2 "No 'Add Site Search' button found"
     }
 
+    # Newer Chrome redirects searchEngines -> search and hides the engine
+    # list behind a "Your site shortcuts" dropdown instead of showing it
+    # directly. Try to find and open whatever that turns out to be -
+    # control type isn't known yet, so try both Expand and Invoke patterns.
+    $shortcutsEl = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition) |
+        Where-Object { $_.Current.Name -match "site shortcuts" } | Select-Object -First 1
+
+    if ($shortcutsEl) {
+        Write-Info "Found '$($shortcutsEl.Current.Name)' ($($shortcutsEl.Current.ControlType.ProgrammaticName -replace 'ControlType\.','')) - trying to open it..."
+        try {
+            $expandPattern = $null
+            if ($shortcutsEl.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$expandPattern)) {
+                $expandPattern.Expand()
+            } else {
+                $shortcutsEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            }
+            Start-Sleep -Milliseconds 800
+            Write-Sep
+            Show-UITree -Element $RootElement
+            Write-Sep
+        }
+        catch {
+            Write-Warn2 "Couldn't open it: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Info "No 'site shortcuts' element found - this machine may still be on the older layout"
+    }
+
     Write-Ok "Dump complete. Share this output back so the click targeting can be corrected if needed."
     return
 }
@@ -555,6 +601,32 @@ $tableCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.ControlType]::Table)
 $SearchEngineTable = Wait-ForElement -Finder {
     $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $tableCond)
+}
+
+if (-not $SearchEngineTable) {
+    # Newer Chrome hides the list behind a "Your site shortcuts" dropdown
+    # instead of showing it directly - try opening that before giving up
+    $shortcutsEl = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition) |
+        Where-Object { $_.Current.Name -match "site shortcuts" } | Select-Object -First 1
+
+    if ($shortcutsEl) {
+        Write-Info "Table not immediately visible - found '$($shortcutsEl.Current.Name)', trying to open it..."
+        try {
+            $expandPattern = $null
+            if ($shortcutsEl.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$expandPattern)) {
+                $expandPattern.Expand()
+            } else {
+                $shortcutsEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            }
+            $SearchEngineTable = Wait-ForElement -Finder {
+                $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $tableCond)
+            }
+        }
+        catch {
+            Write-Warn2 "Couldn't open '$($shortcutsEl.Current.Name)': $($_.Exception.Message)"
+        }
+    }
 }
 
 if (-not $SearchEngineTable) {
