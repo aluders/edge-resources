@@ -1,5 +1,5 @@
 # ============================================================================
-# Get-WifiPasswords.ps1
+# Show WiFi Passwords Script
 # ----------------------------------------------------------------------------
 # Enumerates all saved Wi-Fi profiles on the machine and displays their
 # stored passwords in clear text.
