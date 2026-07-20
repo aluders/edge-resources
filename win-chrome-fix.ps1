@@ -7,6 +7,27 @@
 
     VERSION HISTORY
     ----------------
+    4.14.0 - 2026-07-19 - Handles Google being fully removed, not just non-default
+        - Real dump captured the "Add Site Search" dialog: three Edit
+          fields (Name/Shortcut/URL) that all share the same AutomationId
+          ("input"), so they're matched by their actual Name text instead
+          - "Name", "Shortcut", "URL with %s in place of query"
+        - Real trap caught before it caused a silent bug: the URL itself
+          contains a literal "%", which SendKeys treats as a modifier key
+          (Alt) rather than a character - typed unescaped, it would have
+          silently mangled the URL instead of typing it. Added a
+          Send-LiteralKeys helper that escapes SendKeys' reserved
+          characters before typing anything.
+        - Logic is now the full three-way branch: Google exists and is
+          default → do nothing; exists but isn't default → click "Make
+          default"; doesn't exist at all → add it via the dialog above,
+          then fall through to the same "make default" step. Removal of
+          everything else runs after, same as before.
+        - Since a newly-added entry's landing table (Search engines vs.
+          Site search) isn't confirmed, the "find Google to make default"
+          search was broadened from just the search-engines table to the
+          whole page - the removal loop stays correctly scoped to just the
+          search-engines table, since that part was never in question
     4.13.0 - 2026-07-19 - Dump captures the Add dialog; fixed a real removal bug
         - New scenario reported: Google can end up completely removed from
           the list, not just non-default, and it's added back via "Add"
@@ -262,7 +283,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.13.0"
+$ScriptVersion = "4.14.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -292,6 +313,15 @@ function Wait-ForElement {
         Start-Sleep -Milliseconds 200
     }
     return $null
+}
+
+# SendKeys treats + ^ % ~ ( ) { } [ ] as special (e.g. % means "hold Alt") -
+# typing a literal URL containing % without escaping would silently mangle
+# it instead of typing a percent sign. This wraps any of those in braces so
+# they're sent as literal characters.
+function Send-LiteralKeys([string]$Text) {
+    $escaped = $Text -replace '([+^%~(){}\[\]])', '{$1}'
+    [System.Windows.Forms.SendKeys]::SendWait($escaped)
 }
 
 Write-Sep
@@ -520,9 +550,6 @@ function Invoke-UIA($Element) {
 # The search engines table is the first Table on the page - the Site search
 # table further down shares the same generic AutomationId, so position
 # (first vs. second) is what distinguishes them, not id.
-# The search engines table is the first Table on the page - the Site search
-# table further down shares the same generic AutomationId, so position
-# (first vs. second) is what distinguishes them, not id.
 $tableCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Table)
@@ -535,12 +562,93 @@ if (-not $SearchEngineTable) {
     return
 }
 
+# --- If Google isn't in the list at all (fully removed, not just non-
+#     default), add it back. Confirmed manually: this happens via "Add"
+#     under the separate "Site search" section, not anywhere obviously
+#     labeled for search engines - genuinely odd, but that's Chrome's UI. ---
+$nameCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "name-column")
+$googleExists = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond) |
+    Where-Object { $_.Current.Name -match "Google" }
+
+if (-not $googleExists) {
+    Write-Warn2 "Google isn't in the list at all - adding it back..."
+    try {
+        $addBtnCond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "addSearchEngine")
+        $addBtn = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $addBtnCond)
+
+        if (-not $addBtn) {
+            Write-Warn2 "Couldn't find the Add button - run with -DumpUITree to check"
+        }
+        else {
+            Invoke-UIA $addBtn
+
+            # All three fields share the same AutomationId ("input"), so
+            # they have to be matched by their actual Name text instead
+            $editCond = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Edit)
+            $nameField = Wait-ForElement -Finder {
+                $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCond) |
+                    Where-Object { $_.Current.Name -eq "Name" } | Select-Object -First 1
+            }
+
+            if (-not $nameField) {
+                Write-Warn2 "Add dialog didn't open - run with -DumpUITree to check"
+            }
+            else {
+                $shortcutField = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCond) |
+                    Where-Object { $_.Current.Name -eq "Shortcut" } | Select-Object -First 1
+                $urlField = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCond) |
+                    Where-Object { $_.Current.Name -eq "URL with %s in place of query" } | Select-Object -First 1
+
+                if (-not $shortcutField -or -not $urlField) {
+                    Write-Warn2 "Couldn't find all three Add-dialog fields - run with -DumpUITree to check"
+                }
+                else {
+                    $nameField.SetFocus()
+                    Start-Sleep -Milliseconds 200
+                    Send-LiteralKeys "Google"
+
+                    $shortcutField.SetFocus()
+                    Start-Sleep -Milliseconds 200
+                    Send-LiteralKeys "google.com"
+
+                    $urlField.SetFocus()
+                    Start-Sleep -Milliseconds 200
+                    Send-LiteralKeys "https://www.google.com/search?q=%s"
+
+                    $addSubmitCond = New-Object System.Windows.Automation.PropertyCondition(
+                        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "actionButton")
+                    $addSubmitBtn = Wait-ForElement -Finder {
+                        $btn = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $addSubmitCond)
+                        if ($btn -and $btn.Current.IsEnabled) { $btn } else { $null }
+                    }
+
+                    if (-not $addSubmitBtn) {
+                        Write-Warn2 "Add button never became enabled - run with -DumpUITree to check the filled-in fields"
+                    }
+                    else {
+                        Invoke-UIA $addSubmitBtn
+                        Start-Sleep -Milliseconds 500
+                        Write-Ok "Added Google back to the list"
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        Write-Warn2 "Failed to add Google back: $($_.Exception.Message)"
+    }
+}
+
+Write-Sep
+
 # --- Confirm Google is the default, and set it if not. Chrome marks
 #     whichever row is current default with a "(Default)" suffix right in
 #     its name - there's no separate dropdown for this in this version. ---
-$nameCond = New-Object System.Windows.Automation.PropertyCondition(
-    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "name-column")
-$rowNames = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond)
+$rowNames = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond)
 $googleIsDefault = $rowNames | Where-Object { $_.Current.Name -match "Google" -and $_.Current.Name -match "\(Default\)" }
 
 if ($googleIsDefault) {
@@ -551,7 +659,9 @@ else {
         $btnCond = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::Button)
-        $googleMenuBtn = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+        # Not scoped to $SearchEngineTable - a just-added Google entry's
+        # landing table isn't confirmed, so search the whole page for it
+        $googleMenuBtn = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
             Where-Object { $_.Current.Name -match "More actions" -and $_.Current.Name -match "Google" } | Select-Object -First 1
 
         if (-not $googleMenuBtn) {
