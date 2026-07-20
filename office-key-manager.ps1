@@ -1,4 +1,30 @@
+# Set-OfficeProductKey.ps1
 # Usage: irm office.vcc.net | iex
+#
+# Displays the current Office product key status and optionally
+# removes existing keys and installs a new one. Safe to run on
+# a properly activated machine — no changes are made unless
+# explicitly confirmed at each step.
+#
+# Requirements:
+#   - Run as Administrator (required for ospp.vbs)
+#   - MSI-based Office install (Click-to-Run installs lack ospp.vbs)
+#
+# Version History:
+#   1.0 - Initial release
+#         - Auto-detect Office installation path (Office15/16, x64/x86)
+#         - Display current license status via ospp.vbs /dstatus
+#         - Remove existing keys via /unpkey
+#         - Install new key via /inpkey with format validation
+#         - Optional online activation via /act
+#   1.1 - Replaced exit with return throughout to prevent closing
+#         the caller's PowerShell session when run via irm | iex
+#         - Removed unnecessary pause prompts on error paths
+#   1.2 - Restructured flow to be safe on activated machines
+#         - Status display is now always the first step (read-only)
+#         - Key changes gated behind explicit "Do you want to change?" prompt
+#         - Added LICENSE STATUS line to status output
+#         - Added .ToUpper() on key input to handle lowercase entries
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host "     OFFICE PRODUCT KEY MANAGER     " -ForegroundColor Black -BackgroundColor Cyan
