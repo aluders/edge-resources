@@ -7,6 +7,19 @@
 
     VERSION HISTORY
     ----------------
+    4.16.0 - 2026-07-19 - Fixed dump ordering for the new layout
+        - Real dump from the machine on Chrome's new layout confirmed the
+          good news: once revealed, the table structure underneath "Your
+          site shortcuts" is byte-for-byte identical to the old layout
+          (same DataItem rows, same "More actions for X" buttons) - Chrome
+          only moved the entry point, it didn't redesign the component.
+        - But the dump captured that too late to prove it: -DumpUITree was
+          trying to open the "More actions" menu and the Add dialog
+          BEFORE trying to reveal the site-shortcuts table, so both came
+          up empty on the new layout simply because nothing was visible
+          yet to click. Reordered so the reveal happens first - old
+          layout is unaffected since that step is a no-op when there's
+          nothing named "site shortcuts" to find.
     4.15.0 - 2026-07-19 - Best-effort support for Chrome's newer settings layout
         - Reported on a real machine: a recent Chrome update now redirects
           chrome://settings/searchEngines to chrome://settings/search, and
@@ -300,7 +313,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.15.0"
+$ScriptVersion = "4.16.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -480,6 +493,36 @@ if ($DumpUITree) {
     Show-UITree -Element $RootElement
     Write-Sep
 
+    # Newer Chrome redirects searchEngines -> search and hides the engine
+    # list behind a "Your site shortcuts" row instead of showing it
+    # directly - reveal that FIRST, before trying anything else below,
+    # since none of those can find real targets until the table is visible.
+    # Control type isn't known in advance, so try both Expand and Invoke.
+    $shortcutsEl = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition) |
+        Where-Object { $_.Current.Name -match "site shortcuts" } | Select-Object -First 1
+
+    if ($shortcutsEl) {
+        Write-Info "Found '$($shortcutsEl.Current.Name)' ($($shortcutsEl.Current.ControlType.ProgrammaticName -replace 'ControlType\.','')) - trying to open it..."
+        try {
+            $expandPattern = $null
+            if ($shortcutsEl.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$expandPattern)) {
+                $expandPattern.Expand()
+            } else {
+                $shortcutsEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            }
+            Start-Sleep -Milliseconds 800
+            Write-Sep
+            Show-UITree -Element $RootElement
+            Write-Sep
+        }
+        catch {
+            Write-Warn2 "Couldn't open it: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Info "No 'site shortcuts' element found - this machine may still be on the older layout"
+    }
+
     # A static dump can't show what's inside a menu that isn't open yet, so
     # open a non-default row's menu and dump again - whichever row is
     # currently marked "(Default)" has its "More actions" button disabled
@@ -548,35 +591,6 @@ if ($DumpUITree) {
         }
     } else {
         Write-Warn2 "No 'Add Site Search' button found"
-    }
-
-    # Newer Chrome redirects searchEngines -> search and hides the engine
-    # list behind a "Your site shortcuts" dropdown instead of showing it
-    # directly. Try to find and open whatever that turns out to be -
-    # control type isn't known yet, so try both Expand and Invoke patterns.
-    $shortcutsEl = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-        [System.Windows.Automation.Condition]::TrueCondition) |
-        Where-Object { $_.Current.Name -match "site shortcuts" } | Select-Object -First 1
-
-    if ($shortcutsEl) {
-        Write-Info "Found '$($shortcutsEl.Current.Name)' ($($shortcutsEl.Current.ControlType.ProgrammaticName -replace 'ControlType\.','')) - trying to open it..."
-        try {
-            $expandPattern = $null
-            if ($shortcutsEl.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$expandPattern)) {
-                $expandPattern.Expand()
-            } else {
-                $shortcutsEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            }
-            Start-Sleep -Milliseconds 800
-            Write-Sep
-            Show-UITree -Element $RootElement
-            Write-Sep
-        }
-        catch {
-            Write-Warn2 "Couldn't open it: $($_.Exception.Message)"
-        }
-    } else {
-        Write-Info "No 'site shortcuts' element found - this machine may still be on the older layout"
     }
 
     Write-Ok "Dump complete. Share this output back so the click targeting can be corrected if needed."
