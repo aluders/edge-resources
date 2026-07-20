@@ -7,6 +7,26 @@
 
     VERSION HISTORY
     ----------------
+    4.13.0 - 2026-07-19 - Dump captures the Add dialog; fixed a real removal bug
+        - New scenario reported: Google can end up completely removed from
+          the list, not just non-default, and it's added back via "Add"
+          under the unrelated-looking "Site search" section (confirmed by
+          the actual manual steps that fixed it previously) - not yet
+          automated, still gathering real field data for that.
+        - -DumpUITree previously couldn't capture that dialog's contents:
+          it always re-navigates to the base settings URL first, which
+          closes any dialog left open beforehand. Now it opens the Add
+          dialog itself (and the "More actions" menu) as part of the dump,
+          then closes each back out with Escape, so nothing needs to be
+          pre-staged by hand.
+        - Real bug (not diagnostic-only) caught along the way: a dump on a
+          machine where Bing had become default after Google was removed
+          showed the menu-opening code only excluded rows named "Google",
+          not whichever row currently holds "(Default)" - that row's
+          button is disabled, so hitting it would throw and abort. Fixed
+          in both the diagnostic and the actual removal loop, since the
+          same bug would have stopped the real run from removing Yahoo/
+          DuckDuckGo/Yandex too, not just failed on the default row
     4.12.0 - 2026-07-19 - Removed the legacy registry cleanup entirely
         - That step only ever existed to remediate damage from the old
           v1.x-2.x registry-policy versions of this script. Any machine
@@ -242,7 +262,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "4.12.0"
+$ScriptVersion = "4.13.0"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -414,14 +434,14 @@ if ($DumpUITree) {
     Write-Sep
 
     # A static dump can't show what's inside a menu that isn't open yet, so
-    # open a non-Google row's menu and dump again - Google's own "More
-    # actions" button is disabled while it's the active default, so it has
-    # to be a different row to actually see a working menu's contents
+    # open a non-default row's menu and dump again - whichever row is
+    # currently marked "(Default)" has its "More actions" button disabled
+    # (can't remove your own default), so it has to be a different row
     $btnCond = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::Button)
     $menuBtn = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
-        Where-Object { $_.Current.Name -match "More actions" -and $_.Current.Name -notmatch "Google" } |
+        Where-Object { $_.Current.Name -match "More actions" -and $_.Current.Name -notmatch "\(Default\)" } |
         Select-Object -First 1
 
     if ($menuBtn) {
@@ -440,12 +460,47 @@ if ($DumpUITree) {
             Write-Sep
             Show-UITree -Element $RootElement
             Write-Sep
+            [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
+            Start-Sleep -Milliseconds 300
         }
         catch {
             Write-Warn2 "Couldn't open that menu either: $($_.Exception.Message)"
         }
     } else {
-        Write-Warn2 "No non-Google 'More actions' button found to open"
+        Write-Warn2 "No non-default 'More actions' button found to open"
+    }
+
+    # Also open the "Add Site Search" dialog to reveal its real field
+    # structure - this is the flow used to add Google back if it's been
+    # fully removed rather than just demoted from default
+    $addBtnCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "addSearchEngine")
+    $addBtn = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $addBtnCond)
+
+    if ($addBtn) {
+        Write-Info "Opening the 'Add Site Search' dialog to reveal its real fields..."
+        try {
+            $addBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $editCond = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Edit)
+            $appeared = Wait-ForElement -Finder {
+                $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $editCond)
+            }
+            if (-not $appeared) {
+                Write-Warn2 "Dialog didn't seem to open - dumping current state anyway"
+            }
+            Write-Sep
+            Show-UITree -Element $RootElement
+            Write-Sep
+            [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
+            Start-Sleep -Milliseconds 300
+        }
+        catch {
+            Write-Warn2 "Couldn't open the Add dialog: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Warn2 "No 'Add Site Search' button found"
     }
 
     Write-Ok "Dump complete. Share this output back so the click targeting can be corrected if needed."
@@ -541,8 +596,8 @@ for ($i = 0; $i -lt 30; $i++) {
         $menuButtons = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
             Where-Object { $_.Current.Name -match "More actions" }
 
-        $target = $menuButtons | Where-Object { $_.Current.Name -notmatch "Google" } | Select-Object -First 1
-        if (-not $target) { break }   # nothing non-Google left
+        $target = $menuButtons | Where-Object { $_.Current.Name -notmatch "Google" -and $_.Current.Name -notmatch "\(Default\)" } | Select-Object -First 1
+        if (-not $target) { break }   # nothing removable left (Google, or whatever's currently default, may still be sitting there)
 
         $targetLabel = $target.Current.Name -replace "More actions,?\s*(for)?\s*", ""
         Invoke-UIA $target
