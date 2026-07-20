@@ -1,4 +1,22 @@
+# Clear-DnsCache.ps1
 # Usage: irm dns.vcc.net | iex
+#
+# Clears the Windows system DNS cache and the internal DNS caches
+# for Chrome and Edge, across all browser profiles. Browsers are
+# closed automatically if running before cache files are removed.
+#
+# Requirements:
+#   - Run as Administrator (required for Clear-DnsClientCache)
+#
+# Version History:
+#   1.0 - Initial release
+#         - Clear Windows DNS cache via Clear-DnsClientCache
+#         - Detect and close Chrome and Edge if running
+#         - Clear DNS Network cache for Default profile only
+#   1.1 - Added multi-profile support for Chrome and Edge
+#         - Introduced Clear-BrowserDnsCache helper function
+#         - Profiles matched by "Default" or "Profile N" naming
+#         - Per-profile success/failure reporting
 
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host "        DNS CACHE CLEANER           " -ForegroundColor Black -BackgroundColor Cyan
