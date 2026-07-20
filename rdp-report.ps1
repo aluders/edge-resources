@@ -1,22 +1,33 @@
-# elevated powershell
-# irm rdp-report.vcc.net | iex
+# ============================================================================
+# RDP Report Script
+# ----------------------------------------------------------------------------
+# Scans the Security event log for RDP logon attempts (successful and
+# failed) over the last N days and reports a table plus unique client IPs.
+#
+# Usage:
+#   irm rdp-report.vcc.net | iex
+#
+# Requires: Administrator privileges (to read Security event log)
+#
+# Changelog:
+#   1.0 - Initial release
+# ============================================================================
 
 # 1. Check for Administrator privileges
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
 if (-not $isAdmin) {
-    Write-Host "ERROR: Administrator privileges required to read Security Logs." -ForegroundColor Red
-    Write-Host "Please close, right-click, and 'Run as Administrator'." -ForegroundColor Yellow
+    Write-Host "[x] Administrator privileges required to read Security Logs." -ForegroundColor Red
+    Write-Host "    Please close this window, right-click PowerShell, select 'Run as Administrator', and try again." -ForegroundColor Yellow
     return
 }
 
-# Configuration
+# 2. Configuration
 $DaysBack = 30
 $MaxEvents = 2000
 $startTime = (Get-Date).AddDays(-$DaysBack)
 
-# Helper function to extract data from Event XML
+# 3. Helper function to extract data from Event XML
 function Get-EventData {
     param($xml, $fieldNames)
     foreach ($f in $fieldNames) {
@@ -30,7 +41,7 @@ Write-Host "----------------------"
 Write-Host "Scanning Security Log for RDP connections (Last $DaysBack days)..." -ForegroundColor Cyan
 Write-Host "----------------------"
 
-# Query SECURITY log
+# 4. Query SECURITY log
 $events = Get-WinEvent -FilterHashtable @{
     LogName='Security'
     Id=@(4624,4625)
@@ -44,7 +55,6 @@ $results = $events | ForEach-Object {
     # Check LogonType (10 = RemoteInteractive/RDP)
     $logonType = Get-EventData $xml @('LogonType')
     if ($logonType -ne '10') { return }
-
     $ip   = Get-EventData $xml @('IpAddress','Ip','Address')
     $user = Get-EventData $xml @('TargetUserName','SubjectUserName')
     
@@ -56,7 +66,6 @@ $results = $events | ForEach-Object {
         $status = "Failed" 
         $color = "Red"
     }
-
     [PSCustomObject]@{
         Time    = $_.TimeCreated.ToString("g")
         User    = if ($user) { $user } else { '(unknown)' }
@@ -66,14 +75,14 @@ $results = $events | ForEach-Object {
     }
 }
 
-# Output Table
+# 5. Output Table
 if ($results) {
     $results | Sort-Object Time -Descending | Format-Table Time, User, IP, Status -AutoSize
 } else {
     Write-Host "No RDP connections found in the last $DaysBack days." -ForegroundColor Yellow
 }
 
-# Unique IPs Summary
+# 6. Unique IPs Summary
 if ($results) {
     Write-Host "----------------------"
     Write-Host "Unique Client IPs:" -ForegroundColor Cyan
