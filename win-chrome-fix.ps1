@@ -1,5 +1,5 @@
 <#
-    Chrome Default Search Engine Repair Tool  v2.1
+    Chrome Default Search Engine Repair Tool  v2.2
     =================================================
     Sets Google as the default search engine and removes the others by
     driving Chrome's own Settings UI through Windows UI Automation - the
@@ -7,6 +7,15 @@
 
     VERSION HISTORY
     ----------------
+    2.2 - 2026-07-19 - Dump specifically tests an inactive row's menu
+        Real machine found with populated inactive shortcuts (normal
+        Chrome behavior - sites offering themselves as address-bar
+        shortcuts, not hijack-related). Confirmed the table structure
+        (name/URL/activateButton/More actions per row), but the earlier
+        generic menu test always grabbed a Site Search row first instead.
+        Now specifically targets an inactive row (identified by its
+        sibling "activateButton") to confirm its real menu contents
+        before building removal logic against it.
     2.1 - 2026-07-19 - Dump also reveals inactive/dormant shortcuts if present
         Every dump so far has shown "Available site shortcuts" (inactive
         entries) empty, so that section was never automated. -DumpUITree
@@ -88,7 +97,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "2.1"
+$ScriptVersion = "2.2"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -337,6 +346,57 @@ if ($DumpUITree) {
         }
     } else {
         Write-Info "No 'Available site shortcuts' element found (older layout, or genuinely nothing inactive)"
+    }
+
+    # The earlier "More actions" menu test above grabs whatever non-default
+    # row comes first in the page, which is usually a Site Search entry
+    # (Bookmarks etc.), not an inactive shortcut - test one of those
+    # specifically too, since its menu contents haven't been confirmed.
+    # Inactive rows are identified by having a sibling "activateButton" -
+    # that's what distinguishes them from every other row type.
+    $activateBtnCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "activateButton")
+    $anyActivateBtn = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $activateBtnCond)
+
+    if ($anyActivateBtn) {
+        $walker2 = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $rowParent = $walker2.GetParent($anyActivateBtn)
+        $inactiveMenuBtn = $null
+        if ($rowParent) {
+            $btnCond2 = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Button)
+            $inactiveMenuBtn = $rowParent.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond2) |
+                Where-Object { $_.Current.Name -match "More actions" } | Select-Object -First 1
+        }
+
+        if ($inactiveMenuBtn) {
+            Write-Info "Opening the menu for an inactive-shortcut row ('$($inactiveMenuBtn.Current.Name)') to reveal its real contents..."
+            try {
+                $inactiveMenuBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+                $menuItemCond2 = New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::MenuItem)
+                $appeared2 = Wait-ForElement -Finder {
+                    $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond2)
+                }
+                if (-not $appeared2) {
+                    Write-Warn2 "Menu didn't seem to open - dumping current state anyway"
+                }
+                Write-Sep
+                Show-UITree -Element $RootElement
+                Write-Sep
+                [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
+                Start-Sleep -Milliseconds 300
+            }
+            catch {
+                Write-Warn2 "Couldn't open the inactive row's menu: $($_.Exception.Message)"
+            }
+        } else {
+            Write-Warn2 "Found an inactive row's activate button but couldn't find its 'More actions' sibling"
+        }
+    } else {
+        Write-Info "No inactive shortcut rows found to test a menu on"
     }
 
     # DevTools confirmed the Add button is inside a shadow root Chrome
