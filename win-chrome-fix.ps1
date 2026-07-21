@@ -1,5 +1,5 @@
 <#
-    Chrome Default Search Engine Repair Tool  v2.2
+    Chrome Default Search Engine Repair Tool v2.3
     =================================================
     Sets Google as the default search engine and removes the others by
     driving Chrome's own Settings UI through Windows UI Automation - the
@@ -7,35 +7,11 @@
 
     VERSION HISTORY
     ----------------
-    2.2 - 2026-07-19 - Dump specifically tests an inactive row's menu
-        Real machine found with populated inactive shortcuts (normal
-        Chrome behavior - sites offering themselves as address-bar
-        shortcuts, not hijack-related). Confirmed the table structure
-        (name/URL/activateButton/More actions per row), but the earlier
-        generic menu test always grabbed a Site Search row first instead.
-        Now specifically targets an inactive row (identified by its
-        sibling "activateButton") to confirm its real menu contents
-        before building removal logic against it.
-    2.1 - 2026-07-19 - Dump also reveals inactive/dormant shortcuts if present
-        Every dump so far has shown "Available site shortcuts" (inactive
-        entries) empty, so that section was never automated. -DumpUITree
-        now tries opening it the same way as the active list, to capture
-        real structure once a machine with actual entries there shows up.
-        Diagnostic only for now - no removal logic built yet, pending data.
-    2.0 - 2026-07-19 - Current: UI Automation, both Chrome layouts
-        Drives the real Settings page instead of editing files (see "HOW
-        WE GOT HERE" below for why). Handles Google being fully removed -
-        not just non-default - by re-adding it through the "Add Site
-        Search" dialog. Supports both the classic settings/searchEngines
-        layout and the newer settings/search layout where the list is
-        hidden behind a "Your site shortcuts" row. That newer layout's
-        Add button isn't exposed to accessibility at all (confirmed via
-        DevTools - it's inside a shadow root Chrome doesn't expose to
-        Windows), so it's reached via Shift+Tab instead of a direct click
-        - the one part of this that isn't a normal accessibility-driven
-        action.
-    1.x - 2026-07-19 - Registry policy, then file edits, then UI Automation
-        against the classic layout only. See "HOW WE GOT HERE" below.
+    2.3 - Also removes inactive/dormant shortcuts (same Delete menu as the active list)
+    2.2 - Dump specifically tests an inactive row's menu contents
+    2.1 - Dump also reveals inactive shortcuts if present
+    2.0 - UI Automation rewrite; supports both old and new Chrome settings layouts
+    1.x - Registry policy, then file edits, then UI Automation (classic layout only) - see "HOW WE GOT HERE" below
 
     NOTES
     -----
@@ -97,7 +73,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "2.2"
+$ScriptVersion = "2.3"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -828,6 +804,89 @@ for ($i = 0; $i -lt 30; $i++) {
 
 if ($removed -eq 0) {
     Write-Info "No other search engines needed removing"
+}
+
+Write-Sep
+
+# --- Remove inactive/dormant shortcuts too, if any are present (normal
+#     Chrome behavior - sites offering themselves as address-bar
+#     shortcuts based on browsing history, not hijack-related, but tidied
+#     up here since they're still worth clearing). Found via the
+#     "activateButton" marker rather than table position, since table
+#     order differs between the old and new Chrome layouts but that
+#     marker doesn't. Same confirmed menu (More actions -> Delete, id=
+#     "delete") as the search engines table - but whether deleting one
+#     triggers the same confirmation dialog isn't confirmed, so this
+#     waits briefly for one and just proceeds if none shows up rather
+#     than treating its absence as a failure. ---
+$activateBtnCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "activateButton")
+$anyActivateBtn = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $activateBtnCond)
+
+if (-not $anyActivateBtn) {
+    Write-Info "No inactive shortcuts present"
+}
+else {
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    $InactiveTable = $anyActivateBtn
+    while ($InactiveTable -and $InactiveTable.Current.ControlType -ne [System.Windows.Automation.ControlType]::Table) {
+        $InactiveTable = $walker.GetParent($InactiveTable)
+    }
+
+    if (-not $InactiveTable) {
+        Write-Warn2 "Found an inactive shortcut but couldn't find its containing table - skipping"
+    }
+    else {
+        $removedInactive = 0
+        for ($i = 0; $i -lt 30; $i++) {
+            try {
+                $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Button)
+                $target = $InactiveTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+                    Where-Object { $_.Current.Name -match "More actions" } | Select-Object -First 1
+                if (-not $target) { break }
+
+                $targetLabel = $target.Current.Name -replace "More actions,?\s*(for)?\s*", ""
+                Invoke-UIA $target
+
+                $menuItemCond = New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::MenuItem)
+                $deleteItem = Wait-ForElement -Finder {
+                    $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $menuItemCond) |
+                        Where-Object { $_.Current.AutomationId -in @("delete", "deleteOption") } | Select-Object -First 1
+                }
+
+                if (-not $deleteItem) {
+                    Write-Warn2 "Opened the menu for '$targetLabel' but found no 'Delete' option - stopping inactive cleanup"
+                    break
+                }
+
+                Invoke-UIA $deleteItem
+
+                $confirmBtnCond = New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Button)
+                $confirmDelete = Wait-ForElement -TimeoutMs 2000 -Finder {
+                    $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $confirmBtnCond) |
+                        Where-Object { $_.Current.Name -eq "Delete" } | Select-Object -First 1
+                }
+                if ($confirmDelete) { Invoke-UIA $confirmDelete }
+
+                Start-Sleep -Milliseconds 300
+                Write-Ok "Removed inactive shortcut: $targetLabel"
+                $removedInactive++
+            }
+            catch {
+                Write-Warn2 "Stopped removing inactive shortcuts: $($_.Exception.Message)"
+                break
+            }
+        }
+        if ($removedInactive -eq 0) {
+            Write-Info "No inactive shortcuts needed removing"
+        }
+    }
 }
 
 Write-Sep
