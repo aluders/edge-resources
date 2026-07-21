@@ -1,5 +1,5 @@
 <#
-    Chrome Default Search Engine Repair Tool  v2.0
+    Chrome Default Search Engine Repair Tool  v2.1
     =================================================
     Sets Google as the default search engine and removes the others by
     driving Chrome's own Settings UI through Windows UI Automation - the
@@ -7,6 +7,12 @@
 
     VERSION HISTORY
     ----------------
+    2.1 - 2026-07-19 - Dump also reveals inactive/dormant shortcuts if present
+        Every dump so far has shown "Available site shortcuts" (inactive
+        entries) empty, so that section was never automated. -DumpUITree
+        now tries opening it the same way as the active list, to capture
+        real structure once a machine with actual entries there shows up.
+        Diagnostic only for now - no removal logic built yet, pending data.
     2.0 - 2026-07-19 - Current: UI Automation, both Chrome layouts
         Drives the real Settings page instead of editing files (see "HOW
         WE GOT HERE" below for why). Handles Google being fully removed -
@@ -82,7 +88,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "2.0"
+$ScriptVersion = "2.1"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -301,6 +307,36 @@ if ($DumpUITree) {
         }
     } else {
         Write-Info "No 'site shortcuts' element found - this machine may still be on the older layout"
+    }
+
+    # Same idea for "Available site shortcuts" (the inactive/dormant list)
+    # - every dump captured so far has shown this empty, so this is
+    # untested territory. If it's the same collapsible pattern as the
+    # active row, this should reveal real contents instead of just the
+    # empty placeholder text.
+    $inactiveEl = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition) |
+        Where-Object { $_.Current.Name -match "^Available site shortcuts" } | Select-Object -First 1
+
+    if ($inactiveEl) {
+        Write-Info "Found '$($inactiveEl.Current.Name)' - trying to open it too..."
+        try {
+            $expandPattern2 = $null
+            if ($inactiveEl.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$expandPattern2)) {
+                $expandPattern2.Expand()
+            } else {
+                $inactiveEl.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            }
+            Start-Sleep -Milliseconds 800
+            Write-Sep
+            Show-UITree -Element $RootElement
+            Write-Sep
+        }
+        catch {
+            Write-Warn2 "Couldn't open it: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Info "No 'Available site shortcuts' element found (older layout, or genuinely nothing inactive)"
     }
 
     # DevTools confirmed the Add button is inside a shadow root Chrome
