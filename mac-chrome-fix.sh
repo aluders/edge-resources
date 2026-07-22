@@ -1,101 +1,61 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool - macOS port    v3.5
+# Chrome Default Search Engine Repair Tool - macOS port    v3.7
 # ================================================================
 # Sets Google as the default search engine and removes the others by
-# driving Chrome's own Settings UI via macOS Accessibility - a compiled
-# Swift helper talking to Chrome's accessibility tree directly
-# (AXUIElementCreateApplication), the same underlying API VoiceOver and
-# every other mac automation tool uses. Not file edits - same reasoning
-# as the Windows version: Chrome signs Secure Preferences with an HMAC
-# and reverts anything that doesn't carry a valid signature, and that's
-# Chromium-core, not a Windows-specific protection, so it applies here
-# just as hard.
+# driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
+# not file edits, since Chrome signs prefs with an HMAC and reverts
+# untrusted changes.
 #
 # VERSION HISTORY
 # ----------------
-# 3.5 - Removed the fine-grained per-step timing breakdown from inactive-
-#       shortcut removal messages ("lookup=Xms wait-delete=Yms..."). That
-#       was diagnostic instrumentation added to hunt the old JXA
-#       slowness (v2.3) - now that the Swift rewrite is fast, it's just
-#       noise. Confirmed before removing it that the one consistently
-#       slow step (wait-confirm, ~2s) is genuine Chrome dialog-render
-#       time, not a scripting cost - lookup/press steps were all
-#       single-digit milliseconds in the same output.
-# 3.4 - Removed the pre-3.0 (1.0-2.5) changelog entries - that whole JXA/
-#       System Events era is already covered by HOW WE GOT HERE, so
-#       keeping both was redundant. No functional changes.
-# 3.3 - Trimmed NOTES and HOW WE GOT HERE to match the Windows version's
-#       tighter style - one-line changelog entries plus a short numbered
-#       list of abandoned approaches and why, instead of a running prose
-#       narrative. No functional changes.
-# 3.2 - Added an upfront swiftc availability check (fails fast with
-#       install guidance, before any Chrome launching happens) and fixed
-#       stale "System Events" wording left over from the v3.0 rewrite in
-#       the permission preflight and --help text - nothing depends on
-#       System Events anymore, only Automation permission for Chrome.
-# 3.1 - Fixed a swiftc compile error (AXValue downcast) in the embedded Swift helper
-# 3.0 - Rewrote the automation core in Swift/AXUIElement, replacing JXA/System Events - see HOW WE GOT HERE
-# 1.0-2.5 - JXA/System Events era - see HOW WE GOT HERE below
+# 3.7 - Cut VERSION HISTORY/NOTES/HOW WE GOT HERE down to bare facts -
+#       fragments over sentences, no more multi-line explanations per entry.
+# 3.6 - Dropped "via direct AXPress activation" from inactive-shortcut messages
+# 3.5 - Removed per-step timing breakdown from inactive-shortcut messages
+# 3.4 - Removed pre-3.0 changelog entries (see HOW WE GOT HERE)
+# 3.3 - Tightened NOTES/HOW WE GOT HERE
+# 3.2 - Added swiftc prerequisite check; fixed stale System Events wording
+# 3.1 - Fixed swiftc compile error (AXValue downcast)
+# 3.0 - Rewrote automation core in Swift/AXUIElement - see HOW WE GOT HERE
+# 1.0-2.5 - JXA/System Events era - see HOW WE GOT HERE
 #
 # NOTES
 # -----
-# - Requires the Swift compiler: `xcode-select --install` if swiftc is
-#   missing (checked automatically; exits with this command if needed).
-# - Requires three one-time permission grants, none scriptable:
-#   Accessibility for whatever app runs this script, Automation for
-#   controlling Chrome, and a SEPARATE Accessibility grant for the
-#   compiled helper binary itself (~/Library/Caches/com.vcc.chrome-search-
-#   repair) - permission is per-executable, not per-user.
-# - Must run in an active GUI login session - not over SSH, as root, or
-#   from a launchd background context.
-# - Doesn't touch Preferences, Web Data, or any profile files directly -
-#   Chrome's HMAC signing defeats that, same as on Windows.
-# - No persistent lock/enforcement - a hijacker can still change it again
-#   later. Chrome Enterprise Core enrollment (free) is the only real fix.
-# - If this keeps recurring, that points to an active hijacker (extension
-#   or LaunchAgent/LaunchDaemon) re-asserting itself, not a one-time
-#   corrupted setting - worth checking chrome://extensions and
-#   ~/Library/LaunchAgents / LaunchDaemons / Login Items.
+# - Requires swiftc (Xcode Command Line Tools: `xcode-select --install`)
+# - Requires 3 permission grants: Accessibility (this script's app),
+#   Automation (Chrome), Accessibility (compiled helper - separate grant,
+#   cached at ~/Library/Caches/com.vcc.chrome-search-repair)
+# - Needs an active GUI login session - not SSH, root, or launchd
+# - Doesn't touch Preferences/Web Data - HMAC-signed, same as Windows
+# - No persistent lock - Chrome Enterprise Core is the only real fix
+# - Recurring hijacks point to an extension or LaunchAgent, not a
+#   one-time corruption - check chrome://extensions and LaunchAgents
 #
 # USAGE
 # -----
 # Normal run:
 #     curl -fsSL https://chrome-mac.vcc.net | bash
 #
-# Diagnostic dump instead of clicking anything (use this first on any new
-# machine to calibrate before trusting a real run):
+# Dump instead of clicking (use first on any new machine):
 #     curl -fsSL https://chrome-mac.vcc.net | bash -s -- --dump-ui-tree
 #
 # HOW WE GOT HERE
 # -----------------
-# Two approaches were tried and abandoned before landing on this one:
-# 1. JXA driving System Events - functionally worked once debugged, but
-#    hit a structural performance ceiling: every property read is a
-#    separate AppleEvent round-trip through an entire extra process
-#    standing between the script and Chrome, with no batching available.
-#    No amount of scoping/caching fixed that - replaced with a compiled
-#    Swift binary calling the Accessibility API directly (v3.0).
-# 2. Resizing the settings window to reveal off-screen inactive shortcuts -
-#    the page's own layout doesn't respond to the window growing, so this
-#    never worked. Replaced with AXPress-based activation, which doesn't
-#    need real on-screen coordinates the way a synthetic click does (v2.1).
+# 1. JXA driving System Events - worked, but no batched property access;
+#    every read is a separate AppleEvent round-trip. Replaced with a
+#    compiled Swift binary calling AXUIElement directly (v3.0).
+# 2. Resizing the window to reveal off-screen shortcuts - page layout
+#    doesn't respond to window size. Replaced with AXPress activation,
+#    which needs no on-screen coordinates (v2.1).
 #
-# Also worth knowing: two assumptions ported directly from the Windows
-# script turned out to be wrong on macOS - that .role() returns humanized
-# strings (it returns raw AX constants instead) and that the search-engine
-# list uses a Table control (it's a flat, heading-scoped list) - both
-# forced a rewrite of the matching logic once real dumps confirmed it (v1.5).
-#
-# The current approach drives Chrome's own Settings UI via the
-# Accessibility API directly - the same trusted, OS-level interaction
-# VoiceOver uses, which Chrome can't tell apart from a person clicking -
-# same reasoning as the Windows version, just without a proxy process
-# standing in between.
+# Also wrong, ported from Windows: .role() returns humanized strings
+# (actually raw AX constants); search engines use a Table control
+# (actually a flat, heading-scoped list). Fixed in v1.5.
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.5"
+SCRIPT_VERSION="3.7"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -871,7 +831,7 @@ var inactiveRows = inactiveShortcutRows()
 if inactiveRows.isEmpty {
     info("No inactive shortcuts present")
 } else {
-    ok("Found \(inactiveRows.count) inactive shortcut(s) - removing via direct AXPress activation")
+    ok("Found \(inactiveRows.count) inactive shortcut(s)")
     var removedInactive = 0
     for _ in 0..<200 {
         let scoped = inactiveShortcutsElements(pageRoot)
