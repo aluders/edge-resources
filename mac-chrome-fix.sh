@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool - macOS port    v3.7
+# Chrome Default Search Engine Repair Tool - macOS port    v3.8
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,6 +9,10 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.8 - Fixed "Found N inactive shortcut(s)" overcounting - Chrome's
+#       accessibility tree duplicates rows as two nodes per site
+#       (confirmed repeatedly since early JXA dumps), so the raw count
+#       could show 2 for what's actually 1 site. Now deduped by name.
 # 3.7 - Cut VERSION HISTORY/NOTES/HOW WE GOT HERE down to bare facts -
 #       fragments over sentences, no more multi-line explanations per entry.
 # 3.6 - Dropped "via direct AXPress activation" from inactive-shortcut messages
@@ -55,7 +59,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.7"
+SCRIPT_VERSION="3.8"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -831,7 +835,13 @@ var inactiveRows = inactiveShortcutRows()
 if inactiveRows.isEmpty {
     info("No inactive shortcuts present")
 } else {
-    ok("Found \(inactiveRows.count) inactive shortcut(s)")
+    // Chrome's accessibility tree duplicates rows as two separate nodes
+    // for the same underlying element (confirmed repeatedly in real
+    // dumps throughout this project) - inactiveRows.count is raw node
+    // matches, not distinct sites, so it can overcount. Dedupe by name
+    // for a count that actually matches what gets removed.
+    let uniqueNames = Set(inactiveRows.map { nameOf($0).replacingOccurrences(of: "Click to activate ", with: "", options: .caseInsensitive) })
+    ok("Found \(uniqueNames.count) inactive shortcut(s)")
     var removedInactive = 0
     for _ in 0..<200 {
         let scoped = inactiveShortcutsElements(pageRoot)
