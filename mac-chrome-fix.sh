@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool - macOS port    v3.1
+# Chrome Default Search Engine Repair Tool - macOS port    v3.4
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's own Settings UI via macOS Accessibility - a compiled
@@ -14,46 +14,41 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.4 - Removed the pre-3.0 (1.0-2.5) changelog entries - that whole JXA/
+#       System Events era is already covered by HOW WE GOT HERE, so
+#       keeping both was redundant. No functional changes.
+# 3.3 - Trimmed NOTES and HOW WE GOT HERE to match the Windows version's
+#       tighter style - one-line changelog entries plus a short numbered
+#       list of abandoned approaches and why, instead of a running prose
+#       narrative. No functional changes.
+# 3.2 - Added an upfront swiftc availability check (fails fast with
+#       install guidance, before any Chrome launching happens) and fixed
+#       stale "System Events" wording left over from the v3.0 rewrite in
+#       the permission preflight and --help text - nothing depends on
+#       System Events anymore, only Automation permission for Chrome.
 # 3.1 - Fixed a swiftc compile error (AXValue downcast) in the embedded Swift helper
 # 3.0 - Rewrote the automation core in Swift/AXUIElement, replacing JXA/System Events - see HOW WE GOT HERE
-# 2.5 - Fixed: newly-added engines land under Site search, not Search engines - add and make-default are the same action
-# 2.4 - Made Google name-matching case-insensitive (real fix, but not the actual root cause - see 2.5)
-# 2.3 - Fixed a race condition after adding Google back; added fine-grained per-step removal timing
-# 2.2 - Reused a single scoped tree fetch per removal loop instead of re-walking repeatedly
-# 2.1 - Switched to AXPress activation instead of coordinate clicks, fixing zero-height/off-screen elements
-# 2.0 - Tried resizing the window for off-screen inactive shortcuts (didn't work - superseded by 2.1)
-# 1.9 - Confirmed console.log streams live; switched to live output + exit-code signaling
-# 1.8 - Scoped tree walks to the settings AXWebArea instead of the whole window; trimmed fixed delays
-# 1.7 - Bash now enforces --force-renderer-accessibility itself instead of requiring a manual pre-step
-# 1.6 - Confirmation pass - the remaining unconfirmed strings (Add dialog, Make default, Delete) all checked out
-# 1.5 - Major rewrite after a real dump: fixed wrong AX role-string assumptions, dropped table-based scoping
-# 1.4 - Found Application.currentApplication().delay() fails outright here; replaced with NSThread sleep
-# 1.3 - Added errStr() after discovering e.message itself could throw and mask the real error
-# 1.2 - Added per-step error tagging so failures show which call failed, not just a bare error code
-# 1.1 - Fixed invalid JXA (chromeApp.Window().make()) and added a top-level try/catch for real diagnostics
-# 1.0 - Initial macOS port of the Windows v2.3 UI Automation approach, using JXA/System Events
+# 1.0-2.5 - JXA/System Events era - see HOW WE GOT HERE below
 #
 # NOTES
 # -----
-# - Requires THREE one-time permission grants, none of which this script
-#   can grant itself: (1) Accessibility for whatever app runs this script,
-#   (2) Automation - macOS will pop up "Terminal wants to control Google
-#   Chrome" on first run, click Allow, (3) Accessibility for the compiled
-#   helper binary itself (~/Library/Caches/com.vcc.chrome-search-repair) -
-#   a separate executable needs its own grant even though this script is
-#   already trusted. No scripted bypass for any of these.
-# - Must run in an active GUI login session - not over plain SSH without
-#   Screen Sharing, not as root, not from a launchd background context.
-# - Doesn't touch the Preferences file, Web Data, or any profile files
-#   directly - Chrome's HMAC signing defeats that, same as on Windows.
+# - Requires the Swift compiler: `xcode-select --install` if swiftc is
+#   missing (checked automatically; exits with this command if needed).
+# - Requires three one-time permission grants, none scriptable:
+#   Accessibility for whatever app runs this script, Automation for
+#   controlling Chrome, and a SEPARATE Accessibility grant for the
+#   compiled helper binary itself (~/Library/Caches/com.vcc.chrome-search-
+#   repair) - permission is per-executable, not per-user.
+# - Must run in an active GUI login session - not over SSH, as root, or
+#   from a launchd background context.
+# - Doesn't touch Preferences, Web Data, or any profile files directly -
+#   Chrome's HMAC signing defeats that, same as on Windows.
 # - No persistent lock/enforcement - a hijacker can still change it again
-#   later. Chrome Enterprise Core enrollment (free) is the only way to
-#   make DefaultSearchProviderEnabled an honored policy.
-# - If this keeps recurring on the same machine, that points to an active
-#   hijacker re-asserting itself (extension, or a LaunchAgent/LaunchDaemon)
-#   rather than a one-time corrupted setting - worth checking
-#   chrome://extensions and ~/Library/LaunchAgents / LaunchDaemons / Login
-#   Items at that point.
+#   later. Chrome Enterprise Core enrollment (free) is the only real fix.
+# - If this keeps recurring, that points to an active hijacker (extension
+#   or LaunchAgent/LaunchDaemon) re-asserting itself, not a one-time
+#   corrupted setting - worth checking chrome://extensions and
+#   ~/Library/LaunchAgents / LaunchDaemons / Login Items.
 #
 # USAGE
 # -----
@@ -66,50 +61,33 @@
 #
 # HOW WE GOT HERE
 # -----------------
-# Started as a straight port of the Windows UI Automation approach onto
-# JXA driving System Events - same idea (drive the real Settings UI,
-# sidestep Chrome's HMAC-signed prefs), different OS mechanism. Early
-# versions (1.0-1.4) were mostly fixing JXA bugs blind, since a chain of
-# early crashes (invalid syntax, a masked error message, a Standard
-# Additions delay() that fails outright on this machine) meant no real
-# diagnostic output ever made it back - each fix only revealed the next
-# problem underneath it.
+# Two approaches were tried and abandoned before landing on this one:
+# 1. JXA driving System Events - functionally worked once debugged, but
+#    hit a structural performance ceiling: every property read is a
+#    separate AppleEvent round-trip through an entire extra process
+#    standing between the script and Chrome, with no batching available.
+#    No amount of scoping/caching fixed that - replaced with a compiled
+#    Swift binary calling the Accessibility API directly (v3.0).
+# 2. Resizing the settings window to reveal off-screen inactive shortcuts -
+#    the page's own layout doesn't respond to the window growing, so this
+#    never worked. Replaced with AXPress-based activation, which doesn't
+#    need real on-screen coordinates the way a synthetic click does (v2.1).
 #
-# Once real dumps started coming back (1.5 onward), two wrong assumptions
-# carried over from the Windows port turned out to matter a lot: .role()
-# returns raw AX constants, not humanized strings, and this Chrome layout
-# has no AXTable control at all - the element-matching approach had to be
-# rebuilt around heading-scoped sections instead of a table.
+# Also worth knowing: two assumptions ported directly from the Windows
+# script turned out to be wrong on macOS - that .role() returns humanized
+# strings (it returns raw AX constants instead) and that the search-engine
+# list uses a Table control (it's a flat, heading-scoped list) - both
+# forced a rewrite of the matching logic once real dumps confirmed it (v1.5).
 #
-# Two bigger discoveries reshaped the design further:
-#   - Chrome only exposes real page content to accessibility tools when
-#     launched with --force-renderer-accessibility - without it,
-#     automation sees only the toolbar and tabs, nothing on the actual
-#     page. The script enforces this itself now (1.7).
-#   - Newly-added search engines land under "Site search," not "Search
-#     engines" - clicking "Make default" from there is what promotes an
-#     entry into the real list, so adding Google back and making it
-#     default turned out to be one action, not two (2.5).
-#
-# Getting inactive/dormant shortcuts to delete reliably took two
-# attempts: resizing the settings window taller to bring off-screen rows
-# into view didn't work (2.0), because the page's own layout doesn't
-# respond to the window growing - switching to AXPress-based activation
-# instead of a coordinate-based click did (2.1), since AXPress doesn't
-# need the element to have real on-screen coordinates at all.
-#
-# JXA/System Events was eventually abandoned entirely (3.0) once it
-# became clear the remaining slowness was structural, not tunable: every
-# property read is a separate AppleEvent round-trip through an entire
-# extra process sitting between the script and Chrome, with no batching
-# available - the same reason Windows UI Automation (which supports
-# batched/cached fetches) was always going to be faster. The automation
-# core is now a compiled Swift binary talking to Chrome's own
-# accessibility tree directly.
+# The current approach drives Chrome's own Settings UI via the
+# Accessibility API directly - the same trusted, OS-level interaction
+# VoiceOver uses, which Chrome can't tell apart from a person clicking -
+# same reasoning as the Windows version, just without a proxy process
+# standing in between.
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.1"
+SCRIPT_VERSION="3.4"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -141,9 +119,10 @@ Usage:
                                                  trusting a real run.
   repair-chrome-search-macos.sh --help          Show this help
 
-Requires: Accessibility + Automation permission (Chrome, System Events)
-granted to whatever app runs this SCRIPT, AND a separate Accessibility
-grant for the compiled helper binary itself (cached at
+Requires: swiftc (Xcode Command Line Tools - `xcode-select --install` if
+missing), Accessibility + Automation permission (for Chrome) granted to
+whatever app runs this SCRIPT, AND a separate Accessibility grant for the
+compiled helper binary itself (cached at
 ~/Library/Caches/com.vcc.chrome-search-repair/chrome-search-repair-helper) -
 that grant is per-executable, not per-user, so it needs its own entry in
 System Settings even though it's launched by this already-trusted script.
@@ -190,6 +169,20 @@ if [[ ! -d "/Applications/Google Chrome.app" && ! -d "$HOME/Applications/Google 
   exit 1
 fi
 
+# CONFIRMED requirement as of v3.0: the automation core is a compiled
+# Swift binary, not JXA - checked here, before any Chrome launching or
+# navigation happens, so a missing toolchain fails fast instead of only
+# surfacing after Chrome's already been relaunched for nothing. Xcode
+# Command Line Tools (free, no full Xcode needed) provide swiftc; most
+# Mac dev-adjacent machines already have them, but a fresh machine won't.
+if ! command -v swiftc >/dev/null 2>&1; then
+  err "swiftc (the Swift compiler) isn't available - this script needs it as of v3.0"
+  err "to build its automation helper. Install Xcode Command Line Tools with:"
+  err "    xcode-select --install"
+  err "That's a GUI installer that takes a few minutes - re-run this script once it finishes."
+  exit 1
+fi
+
 sep
 
 # ---------------------------------------------------------------------------
@@ -197,6 +190,13 @@ sep
 #    can be granted from inside a script - both need an explicit human click
 #    at least once. This just detects the failure early with a clear message
 #    instead of letting it fail deep inside the real click-driving logic.
+#    Uses System Events as a side-effect-free generic smoke test (querying
+#    it doesn't launch anything, unlike `tell application "Google Chrome"`
+#    would) - this isn't a guarantee that Chrome-specific Automation
+#    permission is ALSO granted (macOS grants that per target app, not
+#    globally), just that the general osascript/Automation pipeline works
+#    at all. A Chrome-specific denial would still surface clearly at the
+#    navigation step below if this preflight passes but that doesn't.
 # ---------------------------------------------------------------------------
 info "Checking Accessibility / Automation permissions..."
 PERM_CHECK=$(osascript -e 'tell application "System Events" to get name of first process' 2>&1 1>/dev/null || true)
@@ -209,7 +209,7 @@ if echo "$PERM_CHECK" | grep -qi "not allowed assistive access\|1719"; then
 fi
 
 if echo "$PERM_CHECK" | grep -qi "not authorized to send Apple events\|-1743"; then
-  err "Automation permission for controlling System Events isn't granted yet."
+  err "Automation permission isn't granted yet for the app running this script."
   err "macOS should have shown an Allow/Deny prompt for this - if you clicked"
   err "Deny previously, fix it under System Settings > Privacy & Security >"
   err "Automation, then re-run."
