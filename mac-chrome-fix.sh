@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool - macOS port    v3.4
+# Chrome Default Search Engine Repair Tool - macOS port    v3.5
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's own Settings UI via macOS Accessibility - a compiled
@@ -14,6 +14,14 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.5 - Removed the fine-grained per-step timing breakdown from inactive-
+#       shortcut removal messages ("lookup=Xms wait-delete=Yms..."). That
+#       was diagnostic instrumentation added to hunt the old JXA
+#       slowness (v2.3) - now that the Swift rewrite is fast, it's just
+#       noise. Confirmed before removing it that the one consistently
+#       slow step (wait-confirm, ~2s) is genuine Chrome dialog-render
+#       time, not a scripting cost - lookup/press steps were all
+#       single-digit milliseconds in the same output.
 # 3.4 - Removed the pre-3.0 (1.0-2.5) changelog entries - that whole JXA/
 #       System Events era is already covered by HOW WE GOT HERE, so
 #       keeping both was redundant. No functional changes.
@@ -87,7 +95,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.4"
+SCRIPT_VERSION="3.5"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -866,50 +874,34 @@ if inactiveRows.isEmpty {
     ok("Found \(inactiveRows.count) inactive shortcut(s) - removing via direct AXPress activation")
     var removedInactive = 0
     for _ in 0..<200 {
-        let iterStart = Date()
         let scoped = inactiveShortcutsElements(pageRoot)
         let rows = findAllIn(scoped, { roleOf($0) == "AXButton" && $0.titleStartsWithIgnoreCase("Click to activate ") })
         guard let firstRow = rows.first else { break }
         let rawName = nameOf(firstRow)
         let siteName = rawName.replacingOccurrences(of: "Click to activate ", with: "", options: .caseInsensitive)
 
-        let tLookupEnd = Date()
         guard let moreBtn = findFirstIn(scoped, { roleOf($0) == "AXButton" && nameOf($0) == "More actions for \(siteName)" }) else {
             warn("Couldn't find the More-actions button for '\(siteName)' - stopping inactive cleanup")
             break
         }
-
         press(moreBtn)
-        let tPressMoreEnd = Date()
 
         let del2 = waitFor(3.0) {
             findFirst(pageRoot, { roleOf($0) == "AXMenuItem" && nameOf($0).lowercased() == "delete" })
         }
-        let tWaitDelEnd = Date()
         guard let del2 = del2 else {
             warn("No Delete option for '\(siteName)' - stopping inactive cleanup")
             break
         }
-
         press(del2)
-        let tPressDelEnd = Date()
 
         let confirm2 = waitFor(2.0) {
             findFirst(pageRoot, { roleOf($0) == "AXButton" && nameOf($0) == "Delete" })
         }
-        let tWaitConfirmEnd = Date()
         if let confirm2 = confirm2 { press(confirm2) }
-        let tPressConfirmEnd = Date()
 
         usleep(100_000)
-        let totalMs = Int(Date().timeIntervalSince(iterStart) * 1000)
-        let lookupMs = Int(tLookupEnd.timeIntervalSince(iterStart) * 1000)
-        let pressMoreMs = Int(tPressMoreEnd.timeIntervalSince(tLookupEnd) * 1000)
-        let waitDelMs = Int(tWaitDelEnd.timeIntervalSince(tPressMoreEnd) * 1000)
-        let pressDelMs = Int(tPressDelEnd.timeIntervalSince(tWaitDelEnd) * 1000)
-        let waitConfirmMs = Int(tWaitConfirmEnd.timeIntervalSince(tPressDelEnd) * 1000)
-        let pressConfirmMs = Int(tPressConfirmEnd.timeIntervalSince(tWaitConfirmEnd) * 1000)
-        ok("Removed inactive shortcut: \(siteName) (total \(totalMs)ms: lookup=\(lookupMs)ms press-more=\(pressMoreMs)ms wait-delete=\(waitDelMs)ms press-delete=\(pressDelMs)ms wait-confirm=\(waitConfirmMs)ms press-confirm=\(pressConfirmMs)ms)")
+        ok("Removed inactive shortcut: \(siteName)")
         removedInactive += 1
     }
     if removedInactive == 0 { info("No inactive shortcuts needed removing") }
