@@ -9,5 +9,5 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 # Running a Single Script via CMD:
 powershell.exe -ExecutionPolicy Bypass -File "C:\Path\To\YourScript.ps1"
 
-# if script downloaded might still need to unblock it...
+# if script was downloaded... might need unblock...
 Unblock-File -Path C:\Users\Admin\script.ps1
