@@ -1,5 +1,46 @@
 #!/bin/bash
 
+################################################################################
+# deSEC Restricted Token Generator
+################################################################################
+#
+# Description:
+#   Creates a deSEC API token scoped to DDNS-only access for a single
+#   subdomain, for use with routers/UDMs speaking the dyndns2 protocol
+#   against update.dedyn.io.
+#
+#   Steps performed:
+#     1. Authenticate (API token, or email/password — flags or interactive)
+#     2. Verify the target domain exists on the account
+#     3. Create a placeholder A record (1.1.1.1) if one doesn't exist yet,
+#        since a policy can't be scoped to an RRset that doesn't exist
+#     4. Create a new restricted token
+#     5. Attach a default deny-all policy, then grant write-only access to
+#        just the A and AAAA RRsets for the target subname
+#
+# Usage:
+#   ./desec-restricted-token.sh [--email EMAIL] [--password PASSWORD]
+#                                [--token TOKEN] [--domain FULLDOMAIN]
+#   ./desec-restricted-token.sh --help
+#
+#   --email/--password and --token are mutually exclusive; if neither is
+#   given, the script prompts interactively (token recommended if 2FA is
+#   enabled on the account).
+#
+# Output:
+#   FQDN / Username / Password / Server / Protocol values ready to drop
+#   into a router's or UDM's DDNS configuration.
+#
+# Version:     1.1
+# Last Update: 2026-07-23
+#
+# Changelog:
+#   1.1 - Auto-copy the final DDNS settings summary to the clipboard
+#         (pbcopy / xclip / xsel / clip.exe, with fallback notice)
+#   1.0 - Initial version
+#
+################################################################################
+
 echo "=== deSEC Restricted Token Generator ==="
 
 ################################################################################
@@ -316,18 +357,41 @@ echo ""
 # FINISH
 ################################################################################
 
-echo "=============================================="
-echo " Restricted Token Successfully Created!"
+SUMMARY=$(cat <<EOF
+==============================================
+ Restricted Token Successfully Created!
+
+ Token name:   $TOKEN_NAME
+ Token ID:     $TOKEN_ID
+
+ DDNS Settings:
+ FQDN:         $FULLDOMAIN
+ Username:     $FULLDOMAIN
+ Password:     $RESTRICTED_TOKEN
+ Server:       update.dedyn.io
+ UniFi:        update.dedyn.io/?myipv4=%i
+ Protocol:     dyndns2
+==============================================
+EOF
+)
+
 echo ""
-echo " Token name:   $TOKEN_NAME"
-echo " Token ID:     $TOKEN_ID"
+echo "$SUMMARY"
 echo ""
-echo " DDNS Settings:"
-echo " FQDN:         $FULLDOMAIN"
-echo " Username:     $FULLDOMAIN"
-echo " Password:     $RESTRICTED_TOKEN"
-echo " Server:       update.dedyn.io"
-echo " UniFi:        update.dedyn.io/?myipv4=%i"
-echo " Protocol:     dyndns2"
-echo "=============================================="
+
+if command -v pbcopy >/dev/null 2>&1; then
+  printf '%s' "$SUMMARY" | pbcopy
+  echo "✔ Settings copied to clipboard (pbcopy)."
+elif command -v xclip >/dev/null 2>&1; then
+  printf '%s' "$SUMMARY" | xclip -selection clipboard
+  echo "✔ Settings copied to clipboard (xclip)."
+elif command -v xsel >/dev/null 2>&1; then
+  printf '%s' "$SUMMARY" | xsel --clipboard --input
+  echo "✔ Settings copied to clipboard (xsel)."
+elif command -v clip.exe >/dev/null 2>&1; then
+  printf '%s' "$SUMMARY" | clip.exe
+  echo "✔ Settings copied to clipboard (clip.exe)."
+else
+  echo "! No clipboard utility found (pbcopy/xclip/xsel/clip.exe); settings not copied automatically."
+fi
 echo ""
