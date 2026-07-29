@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #===============================================================================
-# extract-gyb-media.sh - v4.0
+# extract-gyb-media.sh - v4.1
 #===============================================================================
 #
 # WHAT IT DOES
@@ -25,11 +25,6 @@
 # USAGE
 #   ./extract-gyb-media.sh /path/to/gyb-export [options]
 #
-#   Or, to just share an arbitrary folder as a plain directory listing
-#   (no extraction, no gallery - the standard `python3 -m http.server`
-#   look) via a Cloudflare quick tunnel:
-#   ./extract-gyb-media.sh --tunnel-list /path/to/folder [--port N]
-#
 #   Options:
 #     --dest DIR         Destination folder (default: SOURCE/media)
 #     --min-size BYTES   Skip attachments smaller than this (default: 15360,
@@ -46,6 +41,12 @@
 #                                entirely - just zip an already-extracted
 #                                media folder. Fastest way to grab everything
 #                                as one file to move off the server.
+#     --tunnel-list                Skip GYB entirely - share the given
+#                                  folder as-is via a plain python3
+#                                  -m http.server directory listing over
+#                                  a Cloudflare quick tunnel. The folder
+#                                  argument doesn't need to be a GYB
+#                                  export; any folder works.
 #     --dry-run                Report what would be extracted, write nothing
 #     --verbose                  Print per-file skip/error detail
 #     -h, --help                  Show this help
@@ -80,12 +81,17 @@
 #     the gallery always reflects everything currently in the media folder
 #   - The quick tunnel is unauthenticated - anyone with the URL can browse
 #     the gallery for as long as it's running. Stop it with Ctrl+C when done.
-#   - --tunnel-list is a standalone mode: it takes any folder (not just a
-#     GYB media folder) and shares it as-is via Python's default directory
-#     listing, no gallery HTML generated. Same self-managed cloudflared and
-#     retry logic as the gallery tunnel.
+#   - --tunnel-list treats the positional folder argument as the thing to
+#     share directly - no extraction, no gallery HTML, just Python's
+#     default directory listing. Same self-managed cloudflared and retry
+#     logic as the gallery tunnel. Behaves like --gallery-only/--zip-only:
+#     it's a mode flag, so it can go anywhere after the folder argument.
 #
 # VERSION HISTORY
+#   v4.1 - --tunnel-list is now a normal mode flag instead of a special
+#          leading argument - it reuses the positional folder like
+#          --gallery-only/--zip-only do, so it can go anywhere after the
+#          folder (e.g. "./gybmedia.sh /some/folder --tunnel-list").
 #   v4.0 - Added --tunnel-list DIR [--port N]: a standalone mode that
 #          shares any folder as a plain python3 -m http.server directory
 #          listing over a Cloudflare quick tunnel, no extraction or
@@ -293,31 +299,6 @@ serve_and_tunnel() {
     fi
 }
 
-run_tunnel_list() {
-    local dir="$1"
-    local port="$2"
-
-    if [ -z "$dir" ]; then
-        status_err "Usage: $0 --tunnel-list /path/to/folder [--port N]"
-        return 1
-    fi
-    if [ ! -d "$dir" ]; then
-        status_err "Folder not found: $dir"
-        return 1
-    fi
-    dir="$(cd "$dir" && pwd)"
-
-    if ! command -v python3 >/dev/null 2>&1; then
-        status_err "python3 is required but was not found"
-        return 1
-    fi
-
-    status_info "Serving:   $dir"
-    status_info "Port:      $port"
-
-    serve_and_tunnel "$dir" "$port" "Directory listing"
-}
-
 #===============================================================================
 # ARGUMENT PARSING
 #===============================================================================
@@ -332,9 +313,10 @@ NO_TUNNEL=0
 GALLERY_ONLY=0
 ZIP=0
 ZIP_ONLY=0
+TUNNEL_LIST=0
 
 print_help() {
-    sed -n '2,116p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,122p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 if [ $# -eq 0 ]; then
@@ -346,30 +328,6 @@ case "$1" in
     -h|--help)
         print_help
         exit 0
-        ;;
-    --tunnel-list)
-        shift
-        if [ $# -eq 0 ]; then
-            status_err "Usage: $0 --tunnel-list /path/to/folder [--port N]"
-            exit 1
-        fi
-        TL_DIR="$1"
-        shift
-        TL_PORT=8787
-        while [ $# -gt 0 ]; do
-            case "$1" in
-                --port)
-                    TL_PORT="$2"
-                    shift 2
-                    ;;
-                *)
-                    status_err "Unknown option: $1"
-                    exit 1
-                    ;;
-            esac
-        done
-        run_tunnel_list "$TL_DIR" "$TL_PORT"
-        exit $?
         ;;
 esac
 
@@ -407,6 +365,10 @@ while [ $# -gt 0 ]; do
             ZIP_ONLY=1
             shift
             ;;
+        --tunnel-list)
+            TUNNEL_LIST=1
+            shift
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -436,6 +398,17 @@ if [ ! -d "$SOURCE_DIR" ]; then
 fi
 
 SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
+
+if [ "$TUNNEL_LIST" -eq 1 ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        status_err "python3 is required but was not found"
+        exit 1
+    fi
+    status_info "Serving:   $SOURCE_DIR"
+    status_info "Port:      $PORT"
+    serve_and_tunnel "$SOURCE_DIR" "$PORT" "Directory listing"
+    exit $?
+fi
 
 if [ -z "$DEST_DIR" ]; then
     DEST_DIR="$SOURCE_DIR/media"
