@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #===============================================================================
-# extract-gyb-media.sh - v3.3
+# extract-gyb-media.sh - v4.0
 #===============================================================================
 #
 # WHAT IT DOES
@@ -24,6 +24,11 @@
 #
 # USAGE
 #   ./extract-gyb-media.sh /path/to/gyb-export [options]
+#
+#   Or, to just share an arbitrary folder as a plain directory listing
+#   (no extraction, no gallery - the standard `python3 -m http.server`
+#   look) via a Cloudflare quick tunnel:
+#   ./extract-gyb-media.sh --tunnel-list /path/to/folder [--port N]
 #
 #   Options:
 #     --dest DIR         Destination folder (default: SOURCE/media)
@@ -75,8 +80,18 @@
 #     the gallery always reflects everything currently in the media folder
 #   - The quick tunnel is unauthenticated - anyone with the URL can browse
 #     the gallery for as long as it's running. Stop it with Ctrl+C when done.
+#   - --tunnel-list is a standalone mode: it takes any folder (not just a
+#     GYB media folder) and shares it as-is via Python's default directory
+#     listing, no gallery HTML generated. Same self-managed cloudflared and
+#     retry logic as the gallery tunnel.
 #
 # VERSION HISTORY
+#   v4.0 - Added --tunnel-list DIR [--port N]: a standalone mode that
+#          shares any folder as a plain python3 -m http.server directory
+#          listing over a Cloudflare quick tunnel, no extraction or
+#          gallery involved. Refactored the web-server-start + tunnel-
+#          retry logic into a shared serve_and_tunnel() function reused
+#          by both gallery mode and --tunnel-list.
 #   v3.3 - Added --zip (zip the media folder as a sibling file after
 #          extraction) and --zip-only (skip extraction/gallery/tunnel,
 #          just zip an already-extracted media folder). Uses python3's
@@ -119,6 +134,191 @@ status_warn() { printf "%s[!]%s %s\n" "$YELLOW" "$RESET" "$1"; }
 status_err()  { printf "%s[x]%s %s\n" "$RED"   "$RESET" "$1"; }
 
 #===============================================================================
+# CLOUDFLARED DEPENDENCY MANAGEMENT (install / self-update, arch-aware)
+#===============================================================================
+
+install_cloudflared() {
+    local arch cf_arch cf_url tmp_bin
+    arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+    case "$arch" in
+        arm64|aarch64) cf_arch="arm64" ;;
+        armhf|armv7l)  cf_arch="arm" ;;
+        amd64|x86_64)  cf_arch="amd64" ;;
+        *)
+            status_err "Unsupported architecture for cloudflared: $arch"
+            return 1
+            ;;
+    esac
+    cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"
+
+    tmp_bin="$(mktemp)"
+    status_info "Downloading cloudflared for ${cf_arch} ..."
+    if ! curl -fsSL "$cf_url" -o "$tmp_bin"; then
+        status_err "cloudflared download failed"
+        rm -f "$tmp_bin"
+        return 1
+    fi
+    chmod +x "$tmp_bin"
+
+    if ! "$tmp_bin" --version >/dev/null 2>&1; then
+        status_err "Downloaded cloudflared binary failed verification"
+        rm -f "$tmp_bin"
+        return 1
+    fi
+
+    # If an old cloudflared is still running (e.g. an interrupted prior
+    # session), clear it out - an in-place overwrite of a running binary
+    # fails with "text file busy". The mv below is done from a temp file
+    # for the same reason, so this is belt-and-suspenders.
+    pkill -f cloudflared >/dev/null 2>&1 || true
+
+    if sudo mv -f "$tmp_bin" /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared; then
+        status_ok "cloudflared ready: $(cloudflared --version 2>&1 | head -1)"
+        return 0
+    fi
+    status_err "Failed installing cloudflared to /usr/local/bin"
+    rm -f "$tmp_bin"
+    return 1
+}
+
+ensure_cloudflared() {
+    if ! command -v cloudflared >/dev/null 2>&1; then
+        status_info "cloudflared not found - installing ..."
+        install_cloudflared
+        return $?
+    fi
+
+    local installed_ver latest_ver
+    installed_ver="$(cloudflared --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+    latest_ver="$(curl -fsSL "https://api.github.com/repos/cloudflare/cloudflared/releases/latest" \
+        | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+
+    if [ -z "$latest_ver" ]; then
+        status_info "cloudflared v${installed_ver} (update check unavailable)"
+    elif [ "$installed_ver" = "$latest_ver" ]; then
+        status_info "cloudflared up to date (v${installed_ver})"
+    else
+        status_info "cloudflared v${installed_ver} -> v${latest_ver} available, updating ..."
+        if ! install_cloudflared; then
+            status_warn "Update failed, continuing with existing v${installed_ver}"
+        fi
+    fi
+    return 0
+}
+
+#===============================================================================
+# SERVE + TUNNEL (generic: python3 -m http.server + Cloudflare quick tunnel,
+# with retry logic. Used by gallery mode and --tunnel-list alike.)
+#===============================================================================
+
+serve_and_tunnel() {
+    local serve_dir="$1"
+    local port="$2"
+    local label="${3:-Site}"
+
+    if ! ensure_cloudflared; then
+        status_err "cloudflared unavailable - sharing tunnel skipped"
+        return 1
+    fi
+
+    status_info "Starting local web server on port $port ..."
+    HTTP_LOG="$(mktemp)"
+    ( cd "$serve_dir" && exec python3 -m http.server "$port" ) >"$HTTP_LOG" 2>&1 &
+    HTTP_PID=$!
+    sleep 1
+
+    if ! kill -0 "$HTTP_PID" 2>/dev/null; then
+        status_err "Web server failed to start (port $port may already be in use)"
+        cat "$HTTP_LOG"
+        rm -f "$HTTP_LOG"
+        return 1
+    fi
+
+    cleanup() {
+        status_info "Shutting down tunnel and web server ..."
+        [ -n "${CF_PID:-}" ] && kill "$CF_PID" >/dev/null 2>&1 || true
+        [ -n "${HTTP_PID:-}" ] && kill "$HTTP_PID" >/dev/null 2>&1 || true
+        wait >/dev/null 2>&1 || true
+        [ -n "${CF_LOG:-}" ] && rm -f "$CF_LOG"
+        rm -f "$HTTP_LOG"
+        return 0
+    }
+    trap cleanup INT TERM EXIT
+
+    # Retries up to 5 times, 30s apart - Cloudflare's quick-tunnel API
+    # occasionally returns a transient error on first connect.
+    local tunnel_max_attempts=5
+    local tunnel_retry_delay=30
+    local tunnel_attempt=0
+    TUNNEL_URL=""
+
+    while [ "$tunnel_attempt" -lt "$tunnel_max_attempts" ]; do
+        tunnel_attempt=$((tunnel_attempt + 1))
+
+        pkill -f "cloudflared tunnel --url http://localhost:$port" >/dev/null 2>&1 || true
+        sleep 1
+
+        CF_LOG="$(mktemp)"
+        status_info "Opening Cloudflare quick tunnel (attempt ${tunnel_attempt}/${tunnel_max_attempts}) ..."
+        cloudflared tunnel --url "http://localhost:$port" --no-autoupdate >"$CF_LOG" 2>&1 &
+        CF_PID=$!
+
+        for _ in $(seq 1 30); do
+            TUNNEL_URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.trycloudflare\.com' "$CF_LOG" | head -n1 || true)"
+            [ -n "$TUNNEL_URL" ] && break
+            sleep 1
+        done
+
+        if [ -n "$TUNNEL_URL" ]; then
+            break
+        fi
+
+        kill "$CF_PID" >/dev/null 2>&1 || true
+        rm -f "$CF_LOG"
+
+        if [ "$tunnel_attempt" -lt "$tunnel_max_attempts" ]; then
+            status_warn "Tunnel attempt ${tunnel_attempt}/${tunnel_max_attempts} failed - retrying in ${tunnel_retry_delay}s ..."
+            sleep "$tunnel_retry_delay"
+        fi
+    done
+
+    if [ -n "$TUNNEL_URL" ]; then
+        status_ok "${label} live at: $TUNNEL_URL"
+        status_info "Press Ctrl+C to stop sharing"
+        wait "$CF_PID"
+        return 0
+    else
+        status_err "Tunnel failed after ${tunnel_max_attempts} attempts - re-run to try again"
+        return 1
+    fi
+}
+
+run_tunnel_list() {
+    local dir="$1"
+    local port="$2"
+
+    if [ -z "$dir" ]; then
+        status_err "Usage: $0 --tunnel-list /path/to/folder [--port N]"
+        return 1
+    fi
+    if [ ! -d "$dir" ]; then
+        status_err "Folder not found: $dir"
+        return 1
+    fi
+    dir="$(cd "$dir" && pwd)"
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        status_err "python3 is required but was not found"
+        return 1
+    fi
+
+    status_info "Serving:   $dir"
+    status_info "Port:      $port"
+
+    serve_and_tunnel "$dir" "$port" "Directory listing"
+}
+
+#===============================================================================
 # ARGUMENT PARSING
 #===============================================================================
 
@@ -134,7 +334,7 @@ ZIP=0
 ZIP_ONLY=0
 
 print_help() {
-    sed -n '2,101p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,116p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 if [ $# -eq 0 ]; then
@@ -146,6 +346,30 @@ case "$1" in
     -h|--help)
         print_help
         exit 0
+        ;;
+    --tunnel-list)
+        shift
+        if [ $# -eq 0 ]; then
+            status_err "Usage: $0 --tunnel-list /path/to/folder [--port N]"
+            exit 1
+        fi
+        TL_DIR="$1"
+        shift
+        TL_PORT=8787
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --port)
+                    TL_PORT="$2"
+                    shift 2
+                    ;;
+                *)
+                    status_err "Unknown option: $1"
+                    exit 1
+                    ;;
+            esac
+        done
+        run_tunnel_list "$TL_DIR" "$TL_PORT"
+        exit $?
         ;;
 esac
 
@@ -576,160 +800,11 @@ if [ "$NO_TUNNEL" -eq 1 ]; then
     exit 0
 fi
 
-#===============================================================================
-# CLOUDFLARED DEPENDENCY MANAGEMENT (install / self-update, arch-aware)
-#===============================================================================
-
-install_cloudflared() {
-    local arch cf_arch cf_url tmp_bin
-    arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
-    case "$arch" in
-        arm64|aarch64) cf_arch="arm64" ;;
-        armhf|armv7l)  cf_arch="arm" ;;
-        amd64|x86_64)  cf_arch="amd64" ;;
-        *)
-            status_err "Unsupported architecture for cloudflared: $arch"
-            return 1
-            ;;
-    esac
-    cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"
-
-    tmp_bin="$(mktemp)"
-    status_info "Downloading cloudflared for ${cf_arch} ..."
-    if ! curl -fsSL "$cf_url" -o "$tmp_bin"; then
-        status_err "cloudflared download failed"
-        rm -f "$tmp_bin"
-        return 1
-    fi
-    chmod +x "$tmp_bin"
-
-    if ! "$tmp_bin" --version >/dev/null 2>&1; then
-        status_err "Downloaded cloudflared binary failed verification"
-        rm -f "$tmp_bin"
-        return 1
-    fi
-
-    # If an old cloudflared is still running (e.g. an interrupted prior
-    # session), clear it out - an in-place overwrite of a running binary
-    # fails with "text file busy". The mv below is done from a temp file
-    # for the same reason, so this is belt-and-suspenders.
-    pkill -f cloudflared >/dev/null 2>&1 || true
-
-    if sudo mv -f "$tmp_bin" /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared; then
-        status_ok "cloudflared ready: $(cloudflared --version 2>&1 | head -1)"
-        return 0
-    fi
-    status_err "Failed installing cloudflared to /usr/local/bin"
-    rm -f "$tmp_bin"
-    return 1
-}
-
-ensure_cloudflared() {
-    if ! command -v cloudflared >/dev/null 2>&1; then
-        status_info "cloudflared not found - installing ..."
-        install_cloudflared
-        return $?
-    fi
-
-    local installed_ver latest_ver
-    installed_ver="$(cloudflared --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-    latest_ver="$(curl -fsSL "https://api.github.com/repos/cloudflare/cloudflared/releases/latest" \
-        | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-
-    if [ -z "$latest_ver" ]; then
-        status_info "cloudflared v${installed_ver} (update check unavailable)"
-    elif [ "$installed_ver" = "$latest_ver" ]; then
-        status_info "cloudflared up to date (v${installed_ver})"
-    else
-        status_info "cloudflared v${installed_ver} -> v${latest_ver} available, updating ..."
-        if ! install_cloudflared; then
-            status_warn "Update failed, continuing with existing v${installed_ver}"
-        fi
-    fi
-    return 0
-}
-
-status_info "Checking cloudflared ..."
-if ! ensure_cloudflared; then
-    status_err "cloudflared unavailable - sharing tunnel skipped"
-    status_warn "Media was extracted, but nothing is being served"
-    exit 0
-fi
-
 if [ ! -f "$DEST_DIR/index.html" ]; then
     status_warn "No gallery index found, nothing to serve"
     exit 0
 fi
 
-status_info "Starting local web server on port $PORT ..."
-HTTP_LOG="$(mktemp)"
-( cd "$DEST_DIR" && exec python3 -m http.server "$PORT" ) >"$HTTP_LOG" 2>&1 &
-HTTP_PID=$!
-sleep 1
-
-if ! kill -0 "$HTTP_PID" 2>/dev/null; then
-    status_err "Web server failed to start (port $PORT may already be in use)"
-    cat "$HTTP_LOG"
-    rm -f "$HTTP_LOG"
-    exit 1
-fi
-
-cleanup() {
-    status_info "Shutting down tunnel and web server ..."
-    [ -n "${CF_PID:-}" ] && kill "$CF_PID" >/dev/null 2>&1 || true
-    [ -n "${HTTP_PID:-}" ] && kill "$HTTP_PID" >/dev/null 2>&1 || true
-    wait >/dev/null 2>&1 || true
-    [ -n "${CF_LOG:-}" ] && rm -f "$CF_LOG"
-    rm -f "$HTTP_LOG"
-    return 0
-}
-trap cleanup INT TERM EXIT
-
-#===============================================================================
-# TUNNEL START (retries up to 5 times, 30s apart - mirrors ATEM script's
-# handling of Cloudflare's quick-tunnel API occasionally 500'ing)
-#===============================================================================
-
-TUNNEL_MAX_ATTEMPTS=5
-TUNNEL_RETRY_DELAY=30
-TUNNEL_ATTEMPT=0
-TUNNEL_URL=""
-
-while [ "$TUNNEL_ATTEMPT" -lt "$TUNNEL_MAX_ATTEMPTS" ]; do
-    TUNNEL_ATTEMPT=$((TUNNEL_ATTEMPT + 1))
-
-    pkill -f "cloudflared tunnel --url http://localhost:$PORT" >/dev/null 2>&1 || true
-    sleep 1
-
-    CF_LOG="$(mktemp)"
-    status_info "Opening Cloudflare quick tunnel (attempt ${TUNNEL_ATTEMPT}/${TUNNEL_MAX_ATTEMPTS}) ..."
-    cloudflared tunnel --url "http://localhost:$PORT" --no-autoupdate >"$CF_LOG" 2>&1 &
-    CF_PID=$!
-
-    for _ in $(seq 1 30); do
-        TUNNEL_URL="$(grep -Eo 'https://[A-Za-z0-9.-]+\.trycloudflare\.com' "$CF_LOG" | head -n1 || true)"
-        [ -n "$TUNNEL_URL" ] && break
-        sleep 1
-    done
-
-    if [ -n "$TUNNEL_URL" ]; then
-        break
-    fi
-
-    kill "$CF_PID" >/dev/null 2>&1 || true
-    rm -f "$CF_LOG"
-
-    if [ "$TUNNEL_ATTEMPT" -lt "$TUNNEL_MAX_ATTEMPTS" ]; then
-        status_warn "Tunnel attempt ${TUNNEL_ATTEMPT}/${TUNNEL_MAX_ATTEMPTS} failed - retrying in ${TUNNEL_RETRY_DELAY}s ..."
-        sleep "$TUNNEL_RETRY_DELAY"
-    fi
-done
-
-if [ -n "$TUNNEL_URL" ]; then
-    status_ok "Gallery live at: $TUNNEL_URL"
-    status_info "Press Ctrl+C to stop sharing"
-    wait "$CF_PID"
-else
-    status_err "Tunnel failed after ${TUNNEL_MAX_ATTEMPTS} attempts - re-run to try again"
-    exit 1
-fi
+status_info "Checking cloudflared ..."
+serve_and_tunnel "$DEST_DIR" "$PORT" "Gallery"
+exit $?
