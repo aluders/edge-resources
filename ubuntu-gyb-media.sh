@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #===============================================================================
-# extract-gyb-media.sh - v3.2
+# extract-gyb-media.sh - v3.3
 #===============================================================================
 #
 # WHAT IT DOES
@@ -34,6 +34,13 @@
 #     --no-tunnel          Extract only, skip gallery + tunnel entirely
 #     --gallery-only         Skip extraction, just rebuild the gallery from
 #                             an existing media folder and open the tunnel
+#     --zip                    Zip the media folder after extraction, saved
+#                              as a sibling of the media folder (e.g.
+#                              SOURCE/media.zip next to SOURCE/media)
+#     --zip-only                 Skip extraction, gallery, and tunnel
+#                                entirely - just zip an already-extracted
+#                                media folder. Fastest way to grab everything
+#                                as one file to move off the server.
 #     --dry-run                Report what would be extracted, write nothing
 #     --verbose                  Print per-file skip/error detail
 #     -h, --help                  Show this help
@@ -50,6 +57,10 @@
 #     skipped.
 #   - Tunnel startup retries up to 5 times at 30-second intervals, since
 #     Cloudflare's quick-tunnel API occasionally returns a transient error.
+#   - --zip/--zip-only use python3's built-in zipfile module, so no extra
+#     `zip` package needs to be installed. The archive is always written
+#     as a sibling of the media folder, never inside it (so re-zipping
+#     doesn't try to include the previous zip).
 #   - Only scans files under SOURCE; automatically skips the destination
 #     media folder if it lives inside SOURCE (e.g. SOURCE/media)
 #   - Non-email files GYB may also export (json/ics/label metadata, etc.)
@@ -66,6 +77,10 @@
 #     the gallery for as long as it's running. Stop it with Ctrl+C when done.
 #
 # VERSION HISTORY
+#   v3.3 - Added --zip (zip the media folder as a sibling file after
+#          extraction) and --zip-only (skip extraction/gallery/tunnel,
+#          just zip an already-extracted media folder). Uses python3's
+#          built-in zipfile module, no new dependency.
 #   v3.2 - cloudflared updates now download to a temp file, verify it
 #          runs, then atomically move it into place - fixes "Failure
 #          writing output to destination" / text-file-busy errors when
@@ -115,9 +130,11 @@ DRY_RUN=0
 VERBOSE=0
 NO_TUNNEL=0
 GALLERY_ONLY=0
+ZIP=0
+ZIP_ONLY=0
 
 print_help() {
-    sed -n '2,86p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,101p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 if [ $# -eq 0 ]; then
@@ -157,6 +174,15 @@ while [ $# -gt 0 ]; do
             GALLERY_ONLY=1
             shift
             ;;
+        --zip)
+            ZIP=1
+            shift
+            ;;
+        --zip-only)
+            ZIP=1
+            ZIP_ONLY=1
+            shift
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -194,6 +220,75 @@ fi
 if ! command -v python3 >/dev/null 2>&1; then
     status_err "python3 is required but was not found"
     exit 1
+fi
+
+#===============================================================================
+# ZIP ARCHIVE HELPER (used by --zip and --zip-only; no extra dependency -
+# uses python3's stdlib zipfile module rather than requiring `zip`)
+#===============================================================================
+
+zip_media_folder() {
+    local zip_parent zip_path count size
+
+    if [ ! -d "$DEST_DIR" ]; then
+        status_err "Media folder not found: $DEST_DIR"
+        return 1
+    fi
+
+    zip_parent="$(dirname "$DEST_DIR")"
+    zip_path="$zip_parent/$(basename "$DEST_DIR").zip"
+
+    if [ ! -w "$zip_parent" ]; then
+        status_err "No write permission on: $zip_parent"
+        status_info "The zip is written next to the media folder - check permissions there."
+        return 1
+    fi
+
+    status_info "Zipping media folder ..."
+    status_info "  Source: $DEST_DIR"
+    status_info "  Output: $zip_path"
+
+    count="$(python3 - "$DEST_DIR" "$zip_path" <<'PYEOF'
+import os
+import sys
+import zipfile
+
+src, dest = sys.argv[1], sys.argv[2]
+if os.path.exists(dest):
+    os.remove(dest)
+
+base = os.path.basename(os.path.normpath(src))
+count = 0
+with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(src):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            arcname = os.path.join(base, os.path.relpath(fpath, src))
+            zf.write(fpath, arcname)
+            count += 1
+print(count)
+PYEOF
+)"
+
+    if [ ! -f "$zip_path" ]; then
+        status_err "Zip creation failed"
+        return 1
+    fi
+
+    size="$(du -h "$zip_path" 2>/dev/null | cut -f1)"
+    status_ok "Zip created: $zip_path (${count} files, ${size})"
+    return 0
+}
+
+if [ "$ZIP_ONLY" -eq 1 ]; then
+    status_info "Source:    $SOURCE_DIR"
+    status_info "Dest:      $DEST_DIR"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        status_warn "Dry run - would zip $DEST_DIR, nothing written"
+        exit 0
+    fi
+    zip_media_folder
+    exit $?
 fi
 
 status_info "Source:    $SOURCE_DIR"
@@ -466,6 +561,10 @@ if [ "$DRY_RUN" -eq 0 ]; then
 else
     status_warn "Dry run complete - re-run without --dry-run to write files"
     exit 0
+fi
+
+if [ "$ZIP" -eq 1 ]; then
+    zip_media_folder || status_warn "Continuing despite zip failure"
 fi
 
 #===============================================================================
