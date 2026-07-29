@@ -84,7 +84,7 @@
 // recipient addresses still live in Worker Settings -> Variables.
 // ==================================================================
 const AWS_REGION = 'us-west-2'; // region the SES domain identity was verified in
-const FROM_EMAIL = 'elsinore@tommysexpress.us'; // any address on the verified SES domain
+const FROM_EMAIL = 'elsinore@tommys-express.us'; // any address on the verified SES domain
 
 // Maps UniFi Protect trigger keys to the word used in the alert
 // message. Keys not listed here fall back to a title-cased version
