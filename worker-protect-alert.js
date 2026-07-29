@@ -1,11 +1,11 @@
 /*
 ==================================================================
   UniFi Protect Alert -> Email (SMS Gateway) Cloudflare Worker
-  v1.2
+  v2.3
 ==================================================================
   WHAT IT DOES
     Receives a UniFi Protect Alarm Manager webhook (Custom Webhook,
-    POST) and sends a short, subject-less email via the Gmail API --
+    POST) and sends a short, subject-less email via Amazon SES --
     intended to be delivered through a carrier email-to-SMS gateway
     (e.g. 5551234567@vtext.com).
 
@@ -33,25 +33,43 @@
 
     3. In Worker Settings -> Variables, set:
          Secrets (encrypted):
-           OA_CLIENT_ID
-           OA_CLIENT_SECRET
-           OA_REFRESH_TOKEN
-           WEBHOOK_SECRET   (only needed if REQUIRE_WEBHOOK_SECRET
-                             is true)
+           AWS_ACCESS_KEY_ID       IAM user access key
+           AWS_SECRET_ACCESS_KEY   IAM user secret key
+           WEBHOOK_SECRET          (only needed if
+                                    REQUIRE_WEBHOOK_SECRET is true)
          Variables:
-           FROM_EMAIL       sending Workspace address
-           TO_EMAIL         SMS gateway address(es), comma-separated
-           TRIGGER_LABELS   optional JSON to override trigger wording
-                             e.g. {"person":"Person","vehicle":"Vehicle"}
+           NOTIFICATION_TO   SMS gateway address(es), comma-separated
+
+       AWS region, sending address, and trigger wording are set as
+       constants below (SITE CONFIG block) rather than Worker
+       variables, since they rarely change once a deployment is
+       wired up.
 
   NOTES
-    - No email subject is sent, since most carrier SMS gateways
-      ignore or mangle it, and some display it ahead of the body.
+    - No email subject is sent. The message is built as a raw MIME
+      email with no Subject header at all (SES's Raw content type),
+      since SES's Simple content type forces a Subject field that
+      shows as a blank subject line on some carrier gateways.
     - UniFi Protect's Custom Webhook has no built-in auth. The
       WEBHOOK_SECRET query-string check is a lightweight guard
       against random internet POSTs -- it is not full auth.
+    - The IAM user's policy should be scoped to ses:SendEmail on
+      just the verified domain identity ARN, not full SES access.
 
   VERSION HISTORY
+    2.3 - TRIGGER_LABELS moved from an optional env var into a
+          hardcoded SITE CONFIG constant. NOTIFICATION_TO replaces
+          TO_EMAIL to match naming convention used elsewhere.
+    2.2 - Switched from SES "Simple" content (forced a blank
+          Subject header) to "Raw" MIME content with no Subject
+          header at all, matching the original Gmail behavior
+    2.1 - AWS_REGION and FROM_EMAIL moved from Worker variables
+          into hardcoded SITE CONFIG constants
+    2.0 - Switched sending provider from Gmail API (OAuth2) to
+          Amazon SES (IAM access key + SigV4). Avoids Gmail's
+          from-address/alias restriction entirely, since SES
+          allows sending from any address on a verified domain.
+          Removed OA_CLIENT_ID / OA_CLIENT_SECRET / OA_REFRESH_TOKEN.
     1.2 - Message wording moved into CONFIG.MESSAGE_FORMAT
     1.1 - Added CONFIG block for toggles (webhook secret
           enforcement, event link, debug logging) instead of
@@ -61,9 +79,26 @@
 */
 
 // ==================================================================
-// CONFIG - toggle behavior here. Site-specific values (addresses,
-// credentials, secrets) still live in Worker Settings -> Variables,
-// since those change per deployment and shouldn't be hardcoded.
+// SITE CONFIG - values specific to this deployment. Update these
+// when copying the script to a new site/domain. Credentials and
+// recipient addresses still live in Worker Settings -> Variables.
+// ==================================================================
+const AWS_REGION = 'us-west-2'; // region the SES domain identity was verified in
+const FROM_EMAIL = 'elsinore@tommysexpress.us'; // any address on the verified SES domain
+
+// Maps UniFi Protect trigger keys to the word used in the alert
+// message. Keys not listed here fall back to a title-cased version
+// of the raw trigger key (e.g. "line_crossing" -> "Line Crossing").
+const TRIGGER_LABELS = {
+  person: 'Person',
+  vehicle: 'Vehicle',
+  animal: 'Animal',
+  motion: 'Motion',
+  ring: 'Doorbell'
+};
+
+// ==================================================================
+// CONFIG - toggle behavior here.
 // ==================================================================
 const CONFIG = {
   // Require the incoming request's ?token= to match the
@@ -89,7 +124,7 @@ const CONFIG = {
   //               (title-cased key, or a TRIGGER_LABELS override)
   //   {alarm}    the UniFi Protect alarm name, e.g. "Tunnel 1"
   // e.g. "{trigger} detected on {alarm}" -> "Person detected on Tunnel 1"
-  MESSAGE_FORMAT: '{trigger} detected on {alarm}'
+  MESSAGE_FORMAT: '{trigger} detected at TX-Elsinore'
 };
 
 export default {
@@ -122,17 +157,17 @@ export default {
     const trigger = alarm.triggers?.[0] || {};
     const triggerKey = trigger.key || CONFIG.DEFAULT_TRIGGER_KEY;
 
-    let message = buildMessage(triggerKey, alarmName, env);
+    let message = buildMessage(triggerKey, alarmName);
 
     if (CONFIG.INCLUDE_EVENT_LINK && alarm.eventLocalLink) {
       message += ` - ${alarm.eventLocalLink}`;
     }
 
     try {
-      await sendEmail(env, message);
+      await sendEmailViaSES(env, message);
     } catch (err) {
-      console.error('[x] Failed to send email:', err);
-      return new Response('Failed to send alert email', { status: 502 });
+      console.error('[x] Failed to send email:', err.message, '|', err.stack);
+      return new Response(`Failed to send alert email: ${err.message}`, { status: 502 });
     }
 
     console.log(`[+] Alert sent: ${message}`);
@@ -141,17 +176,8 @@ export default {
 };
 
 // ---- Build the human-readable alert text ----
-function buildMessage(triggerKey, alarmName, env) {
-  let labels = {};
-  if (env.TRIGGER_LABELS) {
-    try {
-      labels = JSON.parse(env.TRIGGER_LABELS);
-    } catch (err) {
-      console.error('[!] TRIGGER_LABELS is not valid JSON, using defaults');
-    }
-  }
-
-  const label = labels[triggerKey] || titleCase(triggerKey);
+function buildMessage(triggerKey, alarmName) {
+  const label = TRIGGER_LABELS[triggerKey] || titleCase(triggerKey);
 
   return CONFIG.MESSAGE_FORMAT
     .replace('{trigger}', label)
@@ -162,61 +188,136 @@ function titleCase(str) {
   return str.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// ---- Gmail send (OAuth2 refresh-token flow) ----
-async function sendEmail(env, bodyText) {
-  const accessToken = await getAccessToken(env);
+// ==================================================================
+// Amazon SES send (SigV4-signed REST call, no SDK dependency)
+// ==================================================================
+async function sendEmailViaSES(env, bodyText) {
+  const host = `email.${AWS_REGION}.amazonaws.com`;
+  const endpoint = `https://${host}/v2/email/outbound-emails`;
 
-  const toAddresses = env.TO_EMAIL.split(',').map((a) => a.trim()).join(', ');
+  const toAddresses = env.NOTIFICATION_TO.split(',').map((a) => a.trim());
 
+  // Build a raw MIME message with NO Subject header at all -- SES's
+  // "Simple" content type forces a Subject field (even a blank one
+  // still shows as an empty subject line on some gateways), so Raw
+  // content is used instead to match the original header-less
+  // behavior from the Gmail version of this script.
   const rawLines = [
-    `From: ${env.FROM_EMAIL}`,
-    `To: ${toAddresses}`,
+    `From: ${FROM_EMAIL}`,
+    `To: ${toAddresses.join(', ')}`,
     'Content-Type: text/plain; charset="UTF-8"',
     '',
     bodyText
   ];
-  const raw = rawLines.join('\r\n');
-  const encodedMessage = base64UrlEncode(raw);
+  const rawMessage = rawLines.join('\r\n');
 
-  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+  const requestBody = JSON.stringify({
+    Destination: { ToAddresses: toAddresses },
+    Content: {
+      Raw: { Data: base64Encode(rawMessage) }
+    }
+  });
+
+  const headers = await signSESRequest(env, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ raw: encodedMessage })
+    host,
+    path: '/v2/email/outbound-emails',
+    region: AWS_REGION,
+    body: requestBody
+  });
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: requestBody
   });
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Gmail API error ${res.status}: ${errText}`);
+    throw new Error(`SES API error ${res.status}: ${errText}`);
   }
 }
 
-async function getAccessToken(env) {
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: env.OA_CLIENT_ID,
-      client_secret: env.OA_CLIENT_SECRET,
-      refresh_token: env.OA_REFRESH_TOKEN,
-      grant_type: 'refresh_token'
-    })
-  });
+// ---- AWS SigV4 signing ----
+async function signSESRequest(env, { method, host, path, region, body }) {
+  const service = 'ses';
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, ''); // e.g. 20260728T120000Z
+  const dateStamp = amzDate.slice(0, 8);
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Token refresh failed ${res.status}: ${errText}`);
-  }
+  const payloadHash = await sha256Hex(body);
 
-  const data = await res.json();
-  return data.access_token;
+  const canonicalHeaders =
+    `content-type:application/json\n` +
+    `host:${host}\n` +
+    `x-amz-date:${amzDate}\n`;
+  const signedHeaders = 'content-type;host;x-amz-date';
+
+  const canonicalRequest = [
+    method,
+    path,
+    '', // no query string
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash
+  ].join('\n');
+
+  const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest)
+  ].join('\n');
+
+  const signingKey = await getSigningKey(env.AWS_SECRET_ACCESS_KEY, dateStamp, region, service);
+  const signature = toHex(await hmac(signingKey, stringToSign));
+
+  const authorizationHeader =
+    `AWS4-HMAC-SHA256 Credential=${env.AWS_ACCESS_KEY_ID}/${credentialScope}, ` +
+    `SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  return {
+    'Content-Type': 'application/json',
+    'X-Amz-Date': amzDate,
+    Authorization: authorizationHeader
+  };
 }
 
-function base64UrlEncode(str) {
+async function getSigningKey(secretKey, dateStamp, region, service) {
+  const kDate = await hmac(new TextEncoder().encode('AWS4' + secretKey), dateStamp);
+  const kRegion = await hmac(kDate, region);
+  const kService = await hmac(kRegion, service);
+  const kSigning = await hmac(kService, 'aws4_request');
+  return kSigning;
+}
+
+async function hmac(keyBytes, msg) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
+  return new Uint8Array(sig);
+}
+
+async function sha256Hex(str) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return toHex(new Uint8Array(digest));
+}
+
+function toHex(bytes) {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function base64Encode(str) {
   const bytes = new TextEncoder().encode(str);
   let binary = '';
   bytes.forEach((b) => (binary += String.fromCharCode(b)));
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return btoa(binary);
 }
