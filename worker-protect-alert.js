@@ -1,7 +1,7 @@
 /*
 ==================================================================
   UniFi Protect Alert -> Email (SMS Gateway) Cloudflare Worker
-  v2.3
+  v2.4
 ==================================================================
   WHAT IT DOES
     Receives a UniFi Protect Alarm Manager webhook (Custom Webhook,
@@ -50,6 +50,14 @@
       email with no Subject header at all (SES's Raw content type),
       since SES's Simple content type forces a Subject field that
       shows as a blank subject line on some carrier gateways.
+    - Each recipient in NOTIFICATION_TO gets its own individual
+      email/send, not one email addressed to all of them. Multiple
+      recipients on a single message get threaded as a group text
+      on some phones, and group SMS threads auto-upgrade to MMS.
+    - If NOTIFICATION_TO has multiple recipients and delivery fails
+      for some but not all of them, the request still succeeds
+      overall (the failure is logged) -- a partial alert is better
+      than no alert.
     - UniFi Protect's Custom Webhook has no built-in auth. The
       WEBHOOK_SECRET query-string check is a lightweight guard
       against random internet POSTs -- it is not full auth.
@@ -57,6 +65,10 @@
       just the verified domain identity ARN, not full SES access.
 
   VERSION HISTORY
+    2.4 - Each NOTIFICATION_TO recipient now gets a separate,
+          individually-addressed email instead of one email with
+          all recipients in the To: header, which was causing
+          carriers to thread multi-recipient alerts as group MMS
     2.3 - TRIGGER_LABELS moved from an optional env var into a
           hardcoded SITE CONFIG constant. NOTIFICATION_TO replaces
           TO_EMAIL to match naming convention used elsewhere.
@@ -192,19 +204,42 @@ function titleCase(str) {
 // Amazon SES send (SigV4-signed REST call, no SDK dependency)
 // ==================================================================
 async function sendEmailViaSES(env, bodyText) {
+  const toAddresses = env.NOTIFICATION_TO.split(',').map((a) => a.trim()).filter(Boolean);
+
+  // Send a SEPARATE email per recipient rather than one email with
+  // everyone in the To: header. Multiple recipients on one message
+  // gets threaded as a group conversation on some phones, and group
+  // SMS threads auto-upgrade to MMS -- which is what caused the
+  // failed-MMS pile-up. One-recipient-per-send keeps every alert a
+  // plain 1:1 SMS.
+  const results = await Promise.allSettled(
+    toAddresses.map((address) => sendSingleEmail(env, address, bodyText))
+  );
+
+  const failures = results
+    .map((r, i) => (r.status === 'rejected' ? { address: toAddresses[i], reason: r.reason } : null))
+    .filter(Boolean);
+
+  if (failures.length > 0) {
+    for (const f of failures) {
+      console.error(`[x] Failed to send to ${f.address}:`, f.reason?.message || f.reason);
+    }
+    // Only hard-fail the whole request if every recipient failed.
+    // Partial delivery (some recipients got the alert) still counts
+    // as a useful outcome, so it's logged but not thrown.
+    if (failures.length === toAddresses.length) {
+      throw new Error(failures.map((f) => `${f.address}: ${f.reason?.message || f.reason}`).join(' | '));
+    }
+  }
+}
+
+async function sendSingleEmail(env, toAddress, bodyText) {
   const host = `email.${AWS_REGION}.amazonaws.com`;
   const endpoint = `https://${host}/v2/email/outbound-emails`;
 
-  const toAddresses = env.NOTIFICATION_TO.split(',').map((a) => a.trim());
-
-  // Build a raw MIME message with NO Subject header at all -- SES's
-  // "Simple" content type forces a Subject field (even a blank one
-  // still shows as an empty subject line on some gateways), so Raw
-  // content is used instead to match the original header-less
-  // behavior from the Gmail version of this script.
   const rawLines = [
     `From: ${FROM_EMAIL}`,
-    `To: ${toAddresses.join(', ')}`,
+    `To: ${toAddress}`,
     'Content-Type: text/plain; charset="UTF-8"',
     '',
     bodyText
@@ -212,7 +247,7 @@ async function sendEmailViaSES(env, bodyText) {
   const rawMessage = rawLines.join('\r\n');
 
   const requestBody = JSON.stringify({
-    Destination: { ToAddresses: toAddresses },
+    Destination: { ToAddresses: [toAddress] },
     Content: {
       Raw: { Data: base64Encode(rawMessage) }
     }
