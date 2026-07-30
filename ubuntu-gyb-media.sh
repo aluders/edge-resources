@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #===============================================================================
-# extract-gyb-media.sh - v4.1
+# extract-gyb-media.sh - v4.2
 #===============================================================================
 #
 # WHAT IT DOES
@@ -82,12 +82,20 @@
 #   - The quick tunnel is unauthenticated - anyone with the URL can browse
 #     the gallery for as long as it's running. Stop it with Ctrl+C when done.
 #   - --tunnel-list treats the positional folder argument as the thing to
-#     share directly - no extraction, no gallery HTML, just Python's
-#     default directory listing. Same self-managed cloudflared and retry
-#     logic as the gallery tunnel. Behaves like --gallery-only/--zip-only:
-#     it's a mode flag, so it can go anywhere after the folder argument.
+#     share directly - no extraction, no gallery HTML, just a directory
+#     listing. Unlike the gallery (where clicking a thumbnail opens the
+#     full image/video inline), every file link in --tunnel-list forces
+#     a download (Content-Disposition: attachment) rather than opening
+#     in the browser - useful for documents, archives, mixed file types.
+#     Same self-managed cloudflared and retry logic as the gallery tunnel.
+#     Behaves like --gallery-only/--zip-only: it's a mode flag, so it can
+#     go anywhere after the folder argument.
 #
 # VERSION HISTORY
+#   v4.2 - --tunnel-list now forces every file to download
+#          (Content-Disposition: attachment) instead of opening inline
+#          in the browser, via a small custom handler swapped in for
+#          plain http.server. Directory listing itself is unaffected.
 #   v4.1 - --tunnel-list is now a normal mode flag instead of a special
 #          leading argument - it reuses the positional folder like
 #          --gallery-only/--zip-only do, so it can go anywhere after the
@@ -221,6 +229,7 @@ serve_and_tunnel() {
     local serve_dir="$1"
     local port="$2"
     local label="${3:-Site}"
+    local force_download="${4:-0}"
 
     if ! ensure_cloudflared; then
         status_err "cloudflared unavailable - sharing tunnel skipped"
@@ -229,8 +238,50 @@ serve_and_tunnel() {
 
     status_info "Starting local web server on port $port ..."
     HTTP_LOG="$(mktemp)"
-    ( cd "$serve_dir" && exec python3 -m http.server "$port" ) >"$HTTP_LOG" 2>&1 &
-    HTTP_PID=$!
+    if [ "$force_download" -eq 1 ]; then
+        python3 - "$serve_dir" "$port" <<'PYEOF' >"$HTTP_LOG" 2>&1 &
+import http.server
+import os
+import sys
+
+DIRECTORY = sys.argv[1]
+PORT = int(sys.argv[2])
+
+class DownloadHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=DIRECTORY, **kwargs)
+
+    def send_head(self):
+        path = self.translate_path(self.path)
+        if os.path.isfile(path):
+            try:
+                f = open(path, "rb")
+            except OSError:
+                self.send_error(404, "File not found")
+                return None
+            stat = os.fstat(f.fileno())
+            filename = os.path.basename(path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(stat.st_size))
+            self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+            self.end_headers()
+            return f
+        # Directories fall through to the normal listing behavior
+        return super().send_head()
+
+    def log_message(self, format, *args):
+        pass  # the bash script prints its own status lines
+
+with http.server.ThreadingHTTPServer(("", PORT), DownloadHandler) as httpd:
+    httpd.serve_forever()
+PYEOF
+        HTTP_PID=$!
+    else
+        ( cd "$serve_dir" && exec python3 -m http.server "$port" ) >"$HTTP_LOG" 2>&1 &
+        HTTP_PID=$!
+    fi
     sleep 1
 
     if ! kill -0 "$HTTP_PID" 2>/dev/null; then
@@ -316,7 +367,7 @@ ZIP_ONLY=0
 TUNNEL_LIST=0
 
 print_help() {
-    sed -n '2,122p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,130p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 if [ $# -eq 0 ]; then
@@ -406,7 +457,7 @@ if [ "$TUNNEL_LIST" -eq 1 ]; then
     fi
     status_info "Serving:   $SOURCE_DIR"
     status_info "Port:      $PORT"
-    serve_and_tunnel "$SOURCE_DIR" "$PORT" "Directory listing"
+    serve_and_tunnel "$SOURCE_DIR" "$PORT" "Directory listing" 1
     exit $?
 fi
 
