@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="49"
+INSTALLER_VERSION="50"
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v49)
+# ATEM MONITOR AUTO-INSTALLER (v50)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -46,11 +46,13 @@ INSTALLER_VERSION="49"
 # ------------------------------------------
 # This installer is idempotent. Running it again over an existing
 # install updates scripts and the service without touching your
-# atem.config (credentials and settings are always preserved).
-# New config keys added in later versions must be added to your
-# existing config manually — the script defaults safely if they
-# are missing (except DOWNLOAD_DAY and DOWNLOAD_AFTER_HOUR which
-# are required and will error loudly if absent).
+# atem.config credentials or settings. Any config keys added in
+# newer versions are automatically appended with their default
+# values if missing — you only need to edit the new key, not
+# rebuild your config from scratch.
+#
+# DOWNLOAD_DAY and DOWNLOAD_AFTER_HOUR are required and will error
+# loudly if absent (they have no safe default).
 #
 # INSTALLED FILES
 # ------------------------------------------
@@ -203,6 +205,12 @@ INSTALLER_VERSION="49"
 #
 # CHANGELOG
 # ------------------------------------------
+# v50 - Installer now checks for missing config keys after preserving
+#       an existing config. Any key absent from the file is appended
+#       with its default value and a comment. New keys added in future
+#       versions will appear automatically on re-run without needing
+#       to manually edit atem.config.
+#
 # v49 - Added FORCE_NEW_RECORDING config key. When enabled, if the
 #       ATEM is already recording at RECORD_START_TIME the scheduler
 #       stops the active recording, waits 10 seconds, then starts a
@@ -509,7 +517,56 @@ EOF
     chmod 600 "$CONFIG_FILE"
 fi
 
-# 8. CREATE TRIGGER.JS (The "Hitman" Script)
+# 7b. ENSURE ALL CONFIG KEYS ARE PRESENT
+# Adds any keys missing from an existing config without overwriting anything.
+add_config_if_missing() {
+    local KEY="$1"
+    local DEFAULT="$2"
+    local COMMENT="$3"
+    if ! grep -q "^${KEY}=" "$CONFIG_FILE"; then
+        echo "" >> "$CONFIG_FILE"
+        [[ -n "$COMMENT" ]] && echo "# ${COMMENT}" >> "$CONFIG_FILE"
+        echo "${KEY}=\"${DEFAULT}\"" >> "$CONFIG_FILE"
+        echo ">>> Added missing config key: ${KEY}=\"${DEFAULT}\""
+    fi
+}
+
+echo ">>> Checking config for missing keys..."
+
+# CONNECTION
+add_config_if_missing "ATEM_IP"              "10.1.0.40"          "IP address of the ATEM switcher"
+add_config_if_missing "ATEM_SOURCE_DIR"      "CPC"                "FTP directory on the ATEM to download from"
+
+# SCHEDULE
+add_config_if_missing "ENABLE_AUTO_RECORD"   "true"               "Auto-start ATEM recording at RECORD_START_TIME"
+add_config_if_missing "RECORD_START_TIME"    "09:55"              "Time to start recording (24h HH:MM)"
+add_config_if_missing "FORCE_NEW_RECORDING"  "false"              "If recording is already active at RECORD_START_TIME, stop it and start fresh (prevents sunday school merging with sermon)"
+add_config_if_missing "ENABLE_AUTO_STREAM"   "true"               "Auto-start ATEM streaming at STREAM_START_TIME"
+add_config_if_missing "STREAM_START_TIME"    "09:58"              "Time to start streaming (24h HH:MM)"
+
+# DOWNLOAD
+add_config_if_missing "ENABLE_DOWNLOAD"      "true"               "Enable FTP download from ATEM after recording stops"
+add_config_if_missing "DOWNLOAD_DAY"         "7"                  "Day(s) to allow downloads. 1=Mon...7=Sun. Comma-separated for multiple: 3,7"
+add_config_if_missing "DOWNLOAD_AFTER_HOUR"  "11"                 "Only download if recording stops at or after this hour (24h). Required — no default."
+
+# EMAIL
+add_config_if_missing "ENABLE_EMAIL"         "true"               "Send notification email when pipeline completes"
+add_config_if_missing "SMTP_SERVER"          "smtp.gmail.com"     "SMTP server hostname"
+add_config_if_missing "SMTP_PORT"            "587"                "SMTP port"
+add_config_if_missing "SMTP_USER"            "your_email@gmail.com" "SMTP auth username"
+add_config_if_missing "SMTP_PASS"            "your_app_password"  "SMTP auth password (use an app password for Gmail)"
+add_config_if_missing "EMAIL_FROM"           "your_email@gmail.com" "Sender address"
+add_config_if_missing "EMAIL_FROM_NAME"      "ATEM Monitor"       "Sender display name"
+add_config_if_missing "EMAIL_TO"             "your_email@gmail.com" "Recipient(s) comma-separated"
+add_config_if_missing "EMAIL_SUBJECT_PREFIX" "[ATEM-Pi]"          "Prefix added to all email subjects"
+
+# AUDIO
+add_config_if_missing "ENABLE_AUDIO_EXTRACT" "false"              "Extract AAC audio from downloaded MP4s as M4A (stream copy, no re-encoding)"
+
+# TUNNEL
+add_config_if_missing "ENABLE_TUNNEL"        "false"              "Start a Cloudflare tunnel after processing and include links in the email"
+add_config_if_missing "EMAIL_LINK_AUDIO"     "true"               "Include direct M4A download links in email (requires ENABLE_TUNNEL and ENABLE_AUDIO_EXTRACT)"
+add_config_if_missing "EMAIL_LINK_VIDEO"     "false"              "Include direct MP4 download links in email (requires ENABLE_TUNNEL)"
 cat > "$TRIGGER_SCRIPT" <<EOF
 const { Atem } = require('atem-connection');
 const fs = require('fs');
