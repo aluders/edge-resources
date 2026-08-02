@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="48"
+INSTALLER_VERSION="49"
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v48)
+# ATEM MONITOR AUTO-INSTALLER (v49)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -119,6 +119,11 @@ INSTALLER_VERSION="48"
 #   SCHEDULE:
 #     ENABLE_AUTO_RECORD   true/false — auto-start ATEM recording
 #     RECORD_START_TIME    HH:MM (24h) — when to start recording
+#     FORCE_NEW_RECORDING  true/false — if recording is already active
+#                          at RECORD_START_TIME, stop it, wait 10s,
+#                          then start a fresh one. Prevents sunday
+#                          school recordings from merging with the
+#                          sermon when a volunteer forgets to stop.
 #     ENABLE_AUTO_STREAM   true/false — auto-start ATEM streaming
 #     STREAM_START_TIME    HH:MM (24h) — when to start streaming
 #
@@ -198,6 +203,11 @@ INSTALLER_VERSION="48"
 #
 # CHANGELOG
 # ------------------------------------------
+# v49 - Added FORCE_NEW_RECORDING config key. When enabled, if the
+#       ATEM is already recording at RECORD_START_TIME the scheduler
+#       stops the active recording, waits 10 seconds, then starts a
+#       fresh one. Keeps sunday school and sermon as separate files.
+#
 # v48 - Email notification now says "Audio extracted" instead of
 #       "Audio saved". Renamed drivecheck alias to drivestatus.
 #
@@ -451,6 +461,10 @@ ATEM_SOURCE_DIR="CPC"
 # --- SUNDAY SCHEDULE (24-Hour Format: HH:MM) ---
 ENABLE_AUTO_RECORD="true"
 RECORD_START_TIME="09:55"
+# If recording is already active at RECORD_START_TIME (e.g. a volunteer
+# started it early for sunday school), stop it, wait 10 seconds, then
+# start a fresh recording so the sermon is its own file.
+FORCE_NEW_RECORDING="false"
 
 ENABLE_AUTO_STREAM="true"
 STREAM_START_TIME="09:58"
@@ -622,8 +636,22 @@ setInterval(() => {
 
     if (config.ENABLE_AUTO_RECORD === 'true' && currentTime === config.RECORD_START_TIME && !recordTriggered) {
         recordTriggered = true;
-        console.log('⏰ TRIGGER: Auto-Record');
-        myAtem.startRecording().catch(console.error);
+        const isCurrentlyRecording = myAtem.state &&
+            myAtem.state.recording &&
+            myAtem.state.recording.status &&
+            myAtem.state.recording.status.state === 1;
+
+        if (isCurrentlyRecording && config.FORCE_NEW_RECORDING === 'true') {
+            console.log('⏰ TRIGGER: Auto-Record (recording active — stopping for fresh start)');
+            myAtem.stopRecording().catch(console.error);
+            setTimeout(() => {
+                console.log('⏰ TRIGGER: Auto-Record (starting fresh recording)');
+                myAtem.startRecording().catch(console.error);
+            }, 10000);
+        } else {
+            console.log('⏰ TRIGGER: Auto-Record');
+            myAtem.startRecording().catch(console.error);
+        }
     }
     if (config.ENABLE_AUTO_STREAM === 'true' && currentTime === config.STREAM_START_TIME && !streamTriggered) {
         streamTriggered = true;
@@ -724,6 +752,11 @@ CONFIG FILE:  ~/atem.config
 
   ENABLE_AUTO_RECORD="true|false"  Auto-start recording on Sunday
   RECORD_START_TIME="HH:MM"        Time to start recording (24h)
+  FORCE_NEW_RECORDING="true|false"
+      If recording is already active at RECORD_START_TIME, stop it,
+      wait 10 seconds, then start a fresh recording. Useful when a
+      volunteer starts recording early (e.g. for sunday school) and
+      forgets to stop it before the main service.
 
   ENABLE_AUTO_STREAM="true|false"  Auto-start streaming on Sunday
   STREAM_START_TIME="HH:MM"        Time to start streaming (24h)
