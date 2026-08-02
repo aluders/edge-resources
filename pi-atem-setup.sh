@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="50"
+INSTALLER_VERSION="51"
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v50)
+# ATEM MONITOR AUTO-INSTALLER (v51)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -94,7 +94,7 @@ INSTALLER_VERSION="50"
 #                    GitHub releases, not apt — not in Pi OS repos)
 #   fastfetch        System info display
 #   smartmontools    Drive health monitoring (smartctl)
-#   speedtest        Ookla CLI speedtest (installed via packagecloud)
+#   speedtest        Ookla CLI speedtest (installed via direct install script)
 #
 # CONTROL SCRIPT FLAGS (~/atem-control.sh)
 # ------------------------------------------
@@ -205,6 +205,10 @@ INSTALLER_VERSION="50"
 #
 # CHANGELOG
 # ------------------------------------------
+# v51 - Ookla packagecloud repo removed from apt sources on re-run
+#       (returns 402 Payment Required, breaking apt update). Speedtest
+#       now installed via Ookla's direct install script instead.
+#
 # v50 - Installer now checks for missing config keys after preserving
 #       an existing config. Any key absent from the file is appended
 #       with its default value and a comment. New keys added in future
@@ -378,12 +382,22 @@ else
 fi
 
 # --- Ookla Speedtest ---
+# Remove the old packagecloud repo if present (now returns 402 Payment Required)
+OOKLA_REPO_LIST="/etc/apt/sources.list.d/ookla_speedtest-cli.list"
+OOKLA_REPO_LIST_ALT="/etc/apt/sources.list.d/speedtest.list"
+for REPO_FILE in "$OOKLA_REPO_LIST" "$OOKLA_REPO_LIST_ALT"; do
+    if [ -f "$REPO_FILE" ]; then
+        echo ">>> Removing broken Ookla packagecloud repo: $REPO_FILE"
+        sudo rm -f "$REPO_FILE"
+        sudo apt-get update -qq
+    fi
+done
+
 if command -v speedtest >/dev/null 2>&1; then
     echo ">>> Ookla speedtest already installed."
 else
-    echo ">>> Installing Ookla speedtest..."
-    sudo apt-get install -y curl
-    curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | sudo bash
+    echo ">>> Installing Ookla speedtest (direct install script)..."
+    curl -s https://install.speedtest.net/app/cli/install.deb.sh | sudo bash
     sudo apt-get install -y speedtest
 fi
 if command -v cloudflared >/dev/null 2>&1; then
