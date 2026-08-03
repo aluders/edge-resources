@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="52"
+INSTALLER_VERSION="53"
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v52)
+# ATEM MONITOR AUTO-INSTALLER (v53)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -205,8 +205,12 @@ INSTALLER_VERSION="52"
 #
 # CHANGELOG
 # ------------------------------------------
-# v52 - Added explicit To: header to swaks call so recipients see the
-#       email as properly addressed rather than appearing as BCC'd.
+# v53 - Removed warning icon from "Links are active" line in email —
+#       the triangle looked like an error at a glance.
+#       Reverted v52 To: header change — Gmail BCC warning is expected
+#       when the receiving account isn't listed in EMAIL_TO.
+#
+# v52 - Added explicit To: header to swaks call (reverted in v53).
 #
 # v51 - Ookla packagecloud repo removed from apt sources on re-run
 #       (returns 402 Payment Required, breaking apt update). Speedtest
@@ -883,7 +887,6 @@ send_notification() {
     swaks --to "$EMAIL_TO" \
           --from "$EMAIL_FROM" \
           --header "$FROM_HEADER" \
-          --header "To: $EMAIL_TO" \
           --server "$SMTP_SERVER" --port "$SMTP_PORT" \
           --auth LOGIN --auth-user "$SMTP_USER" --auth-password "$SMTP_PASS" --tls \
           --header "Subject: $EMAIL_SUBJECT_PREFIX $STATUS" \
@@ -1283,7 +1286,7 @@ ${LINKS_SECTION}"
 
     EMAIL_BODY+="📁 Full folder (video + audio):\n"
     EMAIL_BODY+="   ${TUNNEL_URL}/\n\n"
-    EMAIL_BODY+="⚠️  Links are active until the Pi reboots or next Sunday's run.\n"
+    EMAIL_BODY+="Links are active until the Pi reboots or next Sunday's run.\n"
 fi
 
 send_notification "SUCCESS" "$EMAIL_BODY"
