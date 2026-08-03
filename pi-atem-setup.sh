@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="51"
+INSTALLER_VERSION="52"
 
 # ==========================================
-# ATEM MONITOR AUTO-INSTALLER (v51)
+# ATEM MONITOR AUTO-INSTALLER (v52)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -205,6 +205,9 @@ INSTALLER_VERSION="51"
 #
 # CHANGELOG
 # ------------------------------------------
+# v52 - Added explicit To: header to swaks call so recipients see the
+#       email as properly addressed rather than appearing as BCC'd.
+#
 # v51 - Ookla packagecloud repo removed from apt sources on re-run
 #       (returns 402 Payment Required, breaking apt update). Speedtest
 #       now installed via Ookla's direct install script instead.
@@ -880,6 +883,7 @@ send_notification() {
     swaks --to "$EMAIL_TO" \
           --from "$EMAIL_FROM" \
           --header "$FROM_HEADER" \
+          --header "To: $EMAIL_TO" \
           --server "$SMTP_SERVER" --port "$SMTP_PORT" \
           --auth LOGIN --auth-user "$SMTP_USER" --auth-password "$SMTP_PASS" --tls \
           --header "Subject: $EMAIL_SUBJECT_PREFIX $STATUS" \
