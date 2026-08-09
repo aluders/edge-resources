@@ -130,10 +130,10 @@ const CACHE_KEY_LAST = `https://cache.local/yt-redirect-last/${UPLOADS_PLAYLIST_
 const ENABLE_SCHEDULING = true;
 const ENABLE_GO_LIVE = true;
 const ENABLE_AUTO_END = true;
-const ENABLE_GO_LIVE_NOTIFICATION = false;
-const ENABLE_NOTIFICATION_SUBJECT = true;  // Set to false to omit subject (cleaner for SMS gateways)
+const ENABLE_GO_LIVE_NOTIFICATION = true;
+const ENABLE_NOTIFICATION_SUBJECT = false;  // Set to false to omit subject (cleaner for SMS gateways)
 const ENABLE_REDIRECT = true;
-const VERBOSE_LOGGING = true;
+const VERBOSE_LOGGING = false;
 const DEVELOPER_MODE = false;
 
 function devModeOn() {
