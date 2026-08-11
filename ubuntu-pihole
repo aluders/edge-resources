@@ -6,3 +6,11 @@ sudo systemctl restart systemd-resolved
 sudo -i
 dpkg --configure -a
 curl -sSL https://install.pi-hole.net | bash
+
+wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared-linux-amd64.deb
+sudo useradd -s /usr/sbin/nologin -r -M cloudflared
+sudo nano /etc/default/cloudflared
+
+# Cloudflare DNS for Families (Malware & Adult Content Blocking)
+CLOUDFLARED_OPTS=--port 5053 --upstream https://1.1.1.3/dns-query --upstream https://1.0.0.3/dns-query
