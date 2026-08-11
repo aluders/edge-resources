@@ -7,36 +7,25 @@ sudo -i
 dpkg --configure -a
 curl -sSL https://install.pi-hole.net | bash
 
-wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-sudo dpkg -i cloudflared-linux-amd64.deb
-sudo useradd -s /usr/sbin/nologin -r -M cloudflared
+sudo apt update
+sudo apt install dnscrypt-proxy
 
-sudo nano /etc/default/cloudflared
+sudo nano /etc/dnscrypt-proxy/dnscrypt-proxy.toml
 
-# Cloudflare DNS for Families (Malware & Adult Content Blocking)
-CLOUDFLARED_OPTS=--port 5053 --upstream https://1.1.1.3/dns-query --upstream https://1.0.0.3/dns-query
+server_names = ['cloudflare-family']
 
-sudo nano /etc/systemd/system/cloudflared.service
+sudo mkdir -p /etc/systemd/system/dnscrypt-proxy.socket.d
+sudo nano /etc/systemd/system/dnscrypt-proxy.socket.d/override.conf
 
-[Unit]
-Description=cloudflared DNS over HTTPS proxy
-After=syslog.target network-online.target
-
-[Service]
-Type=simple
-User=cloudflared
-EnvironmentFile=/etc/default/cloudflared
-ExecStart=/usr/bin/cloudflared proxy-dns $CLOUDFLARED_OPTS
-Restart=on-failure
-RestartSec=10
-KillMode=process
-
-[Install]
-WantedBy=multi-user.target
+[Socket]
+ListenStream=
+ListenDatagram=
+ListenStream=127.0.0.1:5053
+ListenDatagram=127.0.0.1:5053
 
 sudo systemctl daemon-reload
-sudo systemctl enable cloudflared
-sudo systemctl start cloudflared
-sudo systemctl status cloudflared
+sudo systemctl restart dnscrypt-proxy.socket
+sudo systemctl restart dnscrypt-proxy.service
+sudo systemctl status dnscrypt-proxy
 
-dig @127.0.0.1 -p 5053 google.com
+dig @127.0.0.1 -p 5053 nudity.testcategory.com
