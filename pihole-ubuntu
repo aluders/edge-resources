@@ -1,0 +1,8 @@
+sudo mkdir -p /etc/systemd/resolved.conf.d
+echo -e "[Resolve]\nDNSStubListener=no" | sudo tee /etc/systemd/resolved.conf.d/no-stub.conf
+sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+sudo systemctl restart systemd-resolved
+
+sudo -i
+dpkg --configure -a
+curl -sSL https://install.pi-hole.net | bash
