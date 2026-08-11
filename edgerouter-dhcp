@@ -3,4 +3,4 @@ clear dhcp lease ip 192.168.1.50
 # if using dnsmasq for dhcp
 sudo sed -i '/192.168.1.50/d' /var/run/dnsmasq-dhcp.leases && sudo /etc/init.d/dnsmasq restart
 
-# i didnt have much luck with forcing a static map... ended up just toggling from dnsmasq enable to disable.
+# i didnt have much luck with forcing a static map... ended up just toggling from dnsmasq enable to disable
