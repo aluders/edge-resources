@@ -33,3 +33,10 @@ KillMode=process
 
 [Install]
 WantedBy=multi-user.target
+
+sudo systemctl daemon-reload
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+sudo systemctl status cloudflared
+
+dig @127.0.0.1 -p 5053 google.com
