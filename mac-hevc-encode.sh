@@ -19,32 +19,59 @@ DRY_RUN=false
 FORCE=false
 LIST_ONLY=false
 USER_PROVIDED_PRESET=false
-START_DIR=""
+TARGET=""          # positional arg — resolved later to INPUT_FILE or START_DIR
+INPUT_FILE=""      # set when TARGET is a file
+START_DIR=""       # set when TARGET is a directory (or prompted)
 
 # Container format flags — empty means "prompt the user"
 IN_FMT=""
 OUT_FMT=""
 OUT_FMT_SET=false   # true only when --out was explicitly passed
 
+# ── Supported input extensions ────────────────────────────────────────────────
+# Add new formats here; everything else is derived automatically.
+#
+#   VALID_IN_EXTS   — used to validate --in flag and single-file extensions
+#   default_out_fmt — preferred output container per input type:
+#                     mp4-family stays mp4; everything else defaults to mkv
+#                     (mkv carries subtitles/multi-audio more safely)
+#
+VALID_IN_EXTS="mp4 m4v mov mkv avi wmv ts mts m2ts flv"
+
+default_out_fmt() {
+    case "$1" in
+        mp4|m4v|mov|flv) echo "mp4" ;;
+        *)               echo "mkv" ;;
+    esac
+}
+
 # ================================
 #       HELP
 # ================================
 usage() {
     cat <<EOF
-Usage: encode.sh [OPTIONS] [DIRECTORY]
+Usage: encode.sh [OPTIONS] [FILE|DIRECTORY]
 
-  Recursively find video files and re-encode them to H.265/HEVC.
-  Output files are saved alongside the source as <name>-HEVC.<ext>.
+  Re-encode video files to H.265/HEVC using HandBrakeCLI.
+  Output is saved alongside the source as <name>-HEVC.<ext>.
   Already-converted files (*-HEVC.*) are never re-processed.
 
-  If DIRECTORY is omitted you will be prompted (defaults to current dir).
+  Pass a single FILE to encode just that file (format is inferred from its
+  extension — no --in prompt needed). Pass a DIRECTORY to recursively encode
+  all matching files inside it. If omitted, you will be prompted for a
+  directory (defaults to current dir).
 
 CONTAINER FORMAT
-  --in  FORMAT        Input container to search for:  mp4 | mkv  (default: prompt)
-  --out FORMAT        Output container to write:      mp4 | mkv  (default: same as input)
+  --in  FORMAT        Input container to search for (directory mode):
+                        mp4  m4v  mov  mkv  avi  wmv  ts  mts  m2ts  flv
+                        (default: prompt)
+  --out FORMAT        Output container to write:  mp4 | mkv  (default: smart per input)
+                        mp4-family inputs (mp4, m4v, mov, flv) → mp4
+                        Everything else (mkv, avi, wmv, ts…)   → mkv
 
-  ⚠️  Cross-container warning: mkv→mp4 may silently drop ASS/SSA subtitles and
-  some audio codecs that MP4 cannot carry. MKV→MKV is lossless on the container side.
+  ⚠️  Cross-container warning: inputs with ASS/SSA subtitles or multi-stream
+  audio (mkv, ts, m2ts, avi…) may lose tracks when written to mp4.
+  MKV output is always the safest choice for preserving all tracks.
 
 ENCODER
   (default)           Software x265 — best compatibility & quality control
@@ -94,6 +121,13 @@ EXAMPLES
   encode.sh --in mp4 --list ~/Movies
   encode.sh --in mkv --dry-run ~/Movies
 
+  # Encode a single file (format inferred from extension)
+  encode.sh "Doctor Who S02E01.mkv"
+  encode.sh --hardware --q 20 "Movie.mp4"
+
+  # Single file, cross-container
+  encode.sh --out mp4 "Episode.mkv"
+
   # Re-encode existing HEVC outputs at a different quality
   encode.sh --in mp4 --force --q 20 ~/Movies
 EOF
@@ -116,10 +150,11 @@ while [[ $# -gt 0 ]]; do
         -h|--help) usage ;;
 
         --in)
-            case "$2" in
-                mp4|mkv) IN_FMT="$2" ;;
-                *) echo "❌ Unknown --in format '$2'. Choose: mp4 | mkv"; exit 1 ;;
-            esac
+            if [[ " $VALID_IN_EXTS " == *" $2 "* ]]; then
+                IN_FMT="$2"
+            else
+                echo "❌ Unknown --in format '$2'. Supported: $VALID_IN_EXTS"; exit 1
+            fi
             shift 2 ;;
 
         --out)
@@ -127,7 +162,7 @@ while [[ $# -gt 0 ]]; do
                 mp4|mkv) OUT_FMT="$2"; OUT_FMT_SET=true ;;
                 *) echo "❌ Unknown --out format '$2'. Choose: mp4 | mkv"; exit 1 ;;
             esac
-            shift 2 ;;
+            shift 2 ;;   # output is always mp4 or mkv regardless of input type
 
         --hardware)
             ENCODER="vt_h265"
@@ -156,8 +191,8 @@ while [[ $# -gt 0 ]]; do
         -*) echo "❌ Unknown flag: $1  (try --help)"; exit 1 ;;
 
         *)
-            if [[ -z "$START_DIR" ]]; then
-                START_DIR="$1"; shift
+            if [[ -z "$TARGET" ]]; then
+                TARGET="$1"; shift
             else
                 echo "❌ Unexpected argument: $1  (try --help)"; exit 1
             fi ;;
@@ -176,27 +211,90 @@ prompt_format() {
     while true; do
         read -r -p "📦 $label container format [$choices, default: $default]: " result
         result="${result:-$default}"
-        case "$result" in
-            mp4|mkv) echo "$result"; return ;;
-            *) echo "   ❌ Please enter mp4 or mkv." ;;
-        esac
+        # Output is always mp4/mkv; input accepts any supported extension
+        if [[ "$label" = "Output" ]]; then
+            case "$result" in
+                mp4|mkv) echo "$result"; return ;;
+                *) echo "   ❌ Please enter mp4 or mkv." ;;
+            esac
+        else
+            if [[ " $VALID_IN_EXTS " == *" $result "* ]]; then
+                echo "$result"; return
+            else
+                echo "   ❌ Please enter one of: $VALID_IN_EXTS"
+            fi
+        fi
     done
 }
 
-if [[ -z "$IN_FMT" ]]; then
-    echo "─────────────────────────────────"
-    echo "  Container Format"
-    echo "─────────────────────────────────"
-    IN_FMT="$(prompt_format "Input" "mp4 | mkv" "mp4")"
-    # Only prompt for output when we're already in interactive mode
-    if [[ "$OUT_FMT_SET" = false ]]; then
-        OUT_FMT="$(prompt_format "Output" "mp4 | mkv" "$IN_FMT")"
+# ================================
+#       RESOLVE TARGET → FILE OR DIR
+# ================================
+check_deps
+
+TARGET="$(eval echo "${TARGET:-}")"
+
+if [[ -n "$TARGET" && -f "$TARGET" ]]; then
+    # ── Single-file mode ──────────────────────────────────────────────
+    INPUT_FILE="$(realpath "$TARGET")"
+    FILE_EXT="${INPUT_FILE##*.}"
+
+    # Validate extension
+    if [[ " $VALID_IN_EXTS " != *" $FILE_EXT "* ]]; then
+        echo "❌ Unsupported file type: .$FILE_EXT"
+        echo "   Supported: $VALID_IN_EXTS"
+        exit 1
     fi
+
+    # Warn if --in was passed and conflicts with the actual extension
+    if [[ -n "$IN_FMT" && "$IN_FMT" != "$FILE_EXT" ]]; then
+        echo "⚠️  --in $IN_FMT ignored — encoding a .$FILE_EXT file"
+    fi
+    IN_FMT="$FILE_EXT"
+
+    # Prompt for output format only if not set via flag
+    if [[ "$OUT_FMT_SET" = false ]]; then
+        SMART_DEFAULT="$(default_out_fmt "$IN_FMT")"
+        echo "─────────────────────────────────"
+        echo "  Container Format"
+        echo "─────────────────────────────────"
+        OUT_FMT="$(prompt_format "Output" "mp4 | mkv" "$SMART_DEFAULT")"
+    fi
+
+else
+    # ── Directory mode ────────────────────────────────────────────────
+    if [[ -n "$TARGET" && ! -d "$TARGET" ]]; then
+        echo "❌ Not a valid file or directory: '$TARGET'"; exit 1
+    fi
+
+    # Prompt for input format if not set via flag
+    if [[ -z "$IN_FMT" ]]; then
+        echo "─────────────────────────────────"
+        echo "  Container Format"
+        echo "─────────────────────────────────"
+        IN_FMT="$(prompt_format "Input" "$VALID_IN_EXTS" "mp4")"
+        if [[ "$OUT_FMT_SET" = false ]]; then
+            OUT_FMT="$(prompt_format "Output" "mp4 | mkv" "$IN_FMT")"
+        fi
+    fi
+
+    # Prompt for directory if not provided
+    if [[ -z "$TARGET" ]]; then
+        echo
+        read -r -p "📁 Enter directory to encode [default: current directory]: " USER_INPUT
+        TARGET="${USER_INPUT:-"."}"
+        [[ -z "$USER_INPUT" ]] && echo "   ...Using current directory."
+        echo
+        TARGET="$(eval echo "$TARGET")"
+    fi
+
+    [[ ! -d "$TARGET" ]] && { echo "❌ Not a valid directory: '$TARGET'"; exit 1; }
+    START_DIR="$(realpath "$TARGET")"
 fi
 
-# --in was a flag but --out was not — silently default output to match input
+# Silently default output format if still unset (smart per input type)
 if [[ -z "$OUT_FMT" ]]; then
-    OUT_FMT="$IN_FMT"
+    OUT_FMT="$(default_out_fmt "$IN_FMT")"
 fi
 
 # ================================
@@ -213,36 +311,26 @@ if [[ "$IN_FMT" != "$OUT_FMT" ]]; then
         echo
         read -r -p "  Continue anyway? [y/N]: " CONFIRM
         [[ "${CONFIRM,,}" != "y" ]] && { echo "Aborted."; exit 0; }
+        echo
     fi
-    echo
 fi
-
-# ================================
-#       RESOLVE DIRECTORY
-# ================================
-if [[ -z "$START_DIR" ]]; then
-    echo
-    read -r -p "📁 Enter directory to encode [default: current directory]: " USER_INPUT
-    START_DIR="${USER_INPUT:-"."}"
-    [[ -z "$USER_INPUT" ]] && echo "   ...Using current directory."
-    echo
-fi
-
-START_DIR="$(eval echo "$START_DIR")"
-[[ ! -d "$START_DIR" ]] && { echo "❌ Not a valid directory: '$START_DIR'"; exit 1; }
-START_DIR="$(realpath "$START_DIR")"
 
 # ================================
 #       COLLECT FILES
 # ================================
-check_deps
-
-echo "🎬 Searching for .$IN_FMT files in: $START_DIR"
-
 FILES=()
-while IFS= read -r file; do
-    FILES+=("$file")
-done < <(fd -e "$IN_FMT" -t f --exclude "*-HEVC.$IN_FMT" --exclude "*-HEVC.$OUT_FMT" . "$START_DIR")
+
+if [[ -n "$INPUT_FILE" ]]; then
+    # Single-file mode — use directly
+    echo "🎬 Single file: $(basename "$INPUT_FILE")"
+    FILES=("$INPUT_FILE")
+else
+    # Directory mode — search recursively
+    echo "🎬 Searching for .$IN_FMT files in: $START_DIR"
+    while IFS= read -r file; do
+        FILES+=("$file")
+    done < <(fd -e "$IN_FMT" -t f --exclude "*-HEVC.$IN_FMT" --exclude "*-HEVC.$OUT_FMT" . "$START_DIR")
+fi
 
 TOTAL=${#FILES[@]}
 if [[ $TOTAL -eq 0 ]]; then
