@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU BASELINE SETUP v1.5
+# UBUNTU BASELINE SETUP v1.7
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -30,21 +30,24 @@
 # components are left alone; only what's missing or misconfigured is
 # touched. Safe to re-run any time, on any schedule.
 #
+# FLAGS
+# -----
+#   --status          Print status of all components and exit (no changes)
+#   --only LIST       Only act on the components in LIST
+#   --skip LIST       Act on all components except those in LIST
+#   -y, --yes         Don't pause before the interactive Pi-hole installer
+#   -h, --help        Show usage and exit
+#
+#   LIST is a comma-separated list drawn from: dns, pihole, dnscrypt,
+#   pihole_upstream, fastfetch, speedtest, tautulli
+#
 # USAGE
 # -----
-#   sudo ./setup-ubuntu-baseline.sh                 install/repair everything
-#   sudo ./setup-ubuntu-baseline.sh --status         report only, no changes
+#   sudo ./setup-ubuntu-baseline.sh                      install/repair everything
+#   sudo ./setup-ubuntu-baseline.sh --status              report only
 #   sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
-#   sudo ./setup-ubuntu-baseline.sh --skip pihole
-#   sudo ./setup-ubuntu-baseline.sh --skip tautulli
-#   curl -fsSL ubuntu.vcc.net | sudo bash            remote deploy (all)
-#
-#   Flags:
-#     --status          Print status of all components and exit (no changes)
-#     --only LIST        Comma-separated component list to act on
-#     --skip LIST         Comma-separated component list to exclude
-#     --yes, -y          Don't pause before the Pi-hole interactive installer
-#     --help, -h        Show this usage block
+#   sudo ./setup-ubuntu-baseline.sh --skip pihole,tautulli
+#   curl -fsSL ubuntu.vcc.net | sudo bash                 remote deploy (all)
 #
 # NOTES
 # -----
@@ -83,6 +86,17 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.7 - Docs restructured: FLAGS is now the single reference for every
+#          flag (including the valid LIST component names), USAGE is a
+#          short set of examples only — no more duplicated/inconsistent
+#          flag descriptions across two sections. usage()'s LIST line is
+#          now generated from ALL_COMPONENTS so it can't drift out of sync
+#          with the actual component list. No functional changes.
+#   v1.6 - Docs only: usage examples in the header and in `usage()` are now
+#          identical, one example per flag, ordered to match the Flags:
+#          list below them (was a redundant/inconsistent mix — two --skip
+#          examples in the header, none for --yes, different set in
+#          usage()). No functional changes.
 #   v1.5 - tautulli: removed snap detection/migration logic. Clean install
 #          only now — assumes a fresh box with no prior Tautulli install.
 #          Use the standalone migrate-tautulli.sh script for snap-to-native
@@ -129,7 +143,7 @@
 set -uo pipefail
 
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="1.5"
+SCRIPT_VERSION="1.7"
 DNSCRYPT_SERVER_NAMES="cloudflare-family"
 DNSCRYPT_TOML="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
 DNSCRYPT_SOCKET_OVERRIDE_DIR="/etc/systemd/system/dnscrypt-proxy.socket.d"
@@ -167,21 +181,21 @@ Installs/repairs: dns (stub-listener disable), pihole, dnscrypt-proxy
 (native, no snap).
 Idempotent - safe to re-run.
 
-Usage:
-  sudo ./setup-ubuntu-baseline.sh                 install/repair everything
-  sudo ./setup-ubuntu-baseline.sh --status         report only, no changes
-  sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
-  sudo ./setup-ubuntu-baseline.sh --skip pihole
-  curl -fsSL ubuntu.vcc.net | sudo bash            remote deploy (all)
-
 Flags:
   --status        Print status of all components and exit (no changes)
-  --only LIST     Comma-separated component list to act on
-  --skip LIST     Comma-separated component list to exclude
+  --only LIST     Only act on the components in LIST
+  --skip LIST     Act on all components except those in LIST
   -y, --yes       Don't pause before the interactive Pi-hole installer
   -h, --help      Show this help
 
-Components: dns, pihole, dnscrypt, pihole_upstream, fastfetch, speedtest, tautulli
+  LIST is a comma-separated list drawn from: $(IFS=,; echo "${ALL_COMPONENTS[*]}" | sed 's/,/, /g')
+
+Usage:
+  sudo ./setup-ubuntu-baseline.sh                      install/repair everything
+  sudo ./setup-ubuntu-baseline.sh --status              report only
+  sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
+  sudo ./setup-ubuntu-baseline.sh --skip pihole,tautulli
+  curl -fsSL ubuntu.vcc.net | sudo bash                 remote deploy (all)
 EOF
 }
 
