@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU BASELINE SETUP v1.9
+# UBUNTU BASELINE SETUP v1.14
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -13,7 +13,9 @@
 #   dnscrypt   - installs dnscrypt-proxy, sets upstream to cloudflare-family,
 #                rebinds it to 127.0.0.1:5053 (socket override), and — if
 #                Pi-hole is present — points Pi-hole's upstream DNS at it
-#   fastfetch  - installs fastfetch (apt, falling back to latest .deb release)
+#   fastfetch  - installs fastfetch from the latest GitHub release .deb
+#                (not apt — Ubuntu's repo version lags upstream, so this
+#                skips apt for fastfetch entirely and always tracks latest)
 #   speedtest  - installs the official Ookla Speedtest CLI straight from
 #                Ookla's static release tarball (not the Python speedtest-cli
 #                clone, and not via apt — Ookla's packagecloud repo lags new
@@ -78,13 +80,16 @@
 #     alone (Pi-hole has its own `pihole -up`, apt packages sit at
 #     whatever was installed, Tautulli's git checkout doesn't get pulled).
 #     Use --update to bypass status checks and force every selected
-#     component to check for and apply a newer version instead (apt
-#     upgrade for dnscrypt/fastfetch, latest static tarball for speedtest,
-#     git pull for tautulli, `pihole -up` for pihole). Each of these
-#     compares current vs. latest first and no-ops (no restart, no
-#     rewrite) when already current — dns and pihole_upstream have no
-#     versioned artifact at all, so --update just confirms their config
-#     and otherwise does nothing.
+#     component with a versioned artifact to check for and apply a newer
+#     version instead (apt-get upgrade for dnscrypt, latest GitHub release
+#     for fastfetch, latest static tarball for speedtest, git pull for
+#     tautulli, `pihole -up` for pihole). Each compares current vs. latest
+#     first and no-ops (no restart, no rewrite) when already current.
+#     dns and pihole_upstream have no versioned artifact at all, so
+#     --update skips them entirely (they're excluded from
+#     UPDATABLE_COMPONENTS) rather than printing a no-op "nothing to
+#     update" every run — use a normal run (no --update) to check/repair
+#     their config instead.
 #   - Ookla speedtest ships a binary literally named `speedtest`, which
 #     collides with the unrelated Debian `speedtest-cli` package. This
 #     script checks for and removes that impostor before installing Ookla's.
@@ -103,6 +108,47 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.14 - dns and pihole_upstream removed from --update entirely (new
+#           UPDATABLE_COMPONENTS list). Neither has a versioned artifact,
+#           so under --update they were only ever printing a no-op
+#           "nothing to do" — that's not an update, it's noise. A normal
+#           (non --update) run still checks/repairs their config as
+#           always. If explicitly selected via --update --only dns, a
+#           one-line note explains why nothing happened rather than
+#           silently doing nothing.
+#   v1.13 - Every scripted package-manager call switched from `apt` to
+#           `apt-get`/`apt-cache`. `apt` explicitly warns "does not have a
+#           stable CLI interface, use with caution in scripts" and prints
+#           that to stderr on essentially every invocation — apt-get is
+#           the correct tool for unattended/scripted use and doesn't warn.
+#           No functional change, just stops the log spam and uses the
+#           tool actually meant for this. (The one remaining `apt install`
+#           reference is inside a manual-troubleshooting log message meant
+#           for a human to type interactively, left as-is on purpose.)
+#   v1.12 - fastfetch_install_latest_deb: chmod the mktemp dir/deb to
+#           world-readable before handing off to `apt install`. apt's
+#           sandboxed download step runs as the _apt user, which can't
+#           read into mktemp's default 0700 dir — harmless but noisy
+#           ("Download is performed unsandboxed... Permission denied")
+#           on every fastfetch install/update. Purely cosmetic fix.
+#   v1.11 - fastfetch dropped apt entirely — same reasoning as speedtest's
+#           v1.2 change: Ubuntu's repo version lags upstream (this is what
+#           caused the v1.10 bug, apt silently satisfying an older version
+#           and masking a real update). install_fastfetch and
+#           update_fastfetch both now go straight to the latest GitHub
+#           release .deb via the shared fastfetch_install_latest_deb(),
+#           no apt-first/apt-upgradable branching left.
+#   v1.10 - Real bug fix: update_fastfetch correctly detected a newer
+#           GitHub release but then called install_fastfetch(), which
+#           tries `apt install fastfetch` first — that's a silent no-op
+#           when fastfetch is already installed via apt, even at an older
+#           version than apt's own repo carries, so the newer release
+#           never actually got installed. The GitHub .deb install path is
+#           now its own function (fastfetch_install_latest_deb) that
+#           update_fastfetch calls directly when it's already determined
+#           apt can't supply the newer version. Also silenced the stray
+#           "N packages can be upgraded" apt chatter that was leaking into
+#           dnscrypt/fastfetch update output.
 #   v1.9 - --update now actually checks before acting instead of
 #          unconditionally re-installing/restarting every run: dnscrypt
 #          compares installed vs. apt-candidate package version, fastfetch
@@ -182,7 +228,7 @@
 set -uo pipefail
 
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="1.9"
+SCRIPT_VERSION="1.14"
 DNSCRYPT_SERVER_NAMES="cloudflare-family"
 DNSCRYPT_TOML="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
 DNSCRYPT_SOCKET_OVERRIDE_DIR="/etc/systemd/system/dnscrypt-proxy.socket.d"
@@ -197,6 +243,11 @@ TAUTULLI_USER="tautulli"
 TAUTULLI_REPO="https://github.com/Tautulli/Tautulli.git"
 TAUTULLI_PORT="8181"
 ALL_COMPONENTS=(dns pihole dnscrypt pihole_upstream fastfetch speedtest tautulli)
+# Subset with an actual versioned artifact to check/update. dns and
+# pihole_upstream are pure config-state (no version to compare against),
+# so they're excluded from --update entirely rather than reporting a
+# no-op "nothing to do" every run.
+UPDATABLE_COMPONENTS=(pihole dnscrypt fastfetch speedtest tautulli)
 # ------------------------------------------------------------------------- --
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -266,6 +317,14 @@ component_selected() {
   return 0
 }
 
+component_updatable() {
+  local c="$1" u
+  for u in "${UPDATABLE_COMPONENTS[@]}"; do
+    [[ "$u" == "$c" ]] && return 0
+  done
+  return 1
+}
+
 # -------------------------------------------------------------- ROOT CHECK --
 if [[ $EUID -ne 0 ]]; then
   log_info "Re-running with sudo..."
@@ -290,7 +349,7 @@ apt_updated=0
 ensure_apt_updated() {
   if [[ $apt_updated -eq 0 ]]; then
     log_info "Running apt update..."
-    apt update -qq && apt_updated=1
+    apt-get update -qq && apt_updated=1
   fi
 }
 
@@ -434,7 +493,7 @@ install_dnscrypt() {
   if ! dpkg -s dnscrypt-proxy >/dev/null 2>&1; then
     ensure_apt_updated
     log_info "Installing dnscrypt-proxy..."
-    DEBIAN_FRONTEND=noninteractive apt install -y dnscrypt-proxy
+    DEBIAN_FRONTEND=noninteractive apt-get install -y dnscrypt-proxy
   fi
 
   log_info "Setting dnscrypt-proxy server_names = ['${DNSCRYPT_SERVER_NAMES}']..."
@@ -481,26 +540,29 @@ status_fastfetch() {
   command -v fastfetch >/dev/null 2>&1
 }
 
+fastfetch_install_latest_deb() {
+  local tmp deb_url
+  tmp=$(mktemp -d)
+  chmod 755 "$tmp"   # apt's sandboxed download step runs as _apt; mktemp's
+                      # default 0700 blocks it from reading here, which
+                      # produces a harmless but noisy "unsandboxed" warning
+  deb_url=$(curl -fsSL https://api.github.com/repos/fastfetch-cli/fastfetch/releases/latest \
+    | grep -Eo '"browser_download_url": *"[^"]*linux-amd64\.deb"' \
+    | head -n1 | cut -d'"' -f4)
+  if [[ -n "$deb_url" ]]; then
+    curl -fsSL "$deb_url" -o "${tmp}/fastfetch.deb"
+    chmod 644 "${tmp}/fastfetch.deb"
+    apt-get install -y "${tmp}/fastfetch.deb"
+  else
+    log_err "Could not resolve a fastfetch .deb release URL."
+  fi
+  rm -rf "$tmp"
+}
+
 install_fastfetch() {
   ensure_apt_updated
-  log_info "Installing fastfetch..."
-  if DEBIAN_FRONTEND=noninteractive apt install -y fastfetch >/dev/null 2>&1; then
-    :
-  else
-    log_warn "fastfetch not available via apt on this release — falling back to latest GitHub .deb."
-    local tmp deb_url
-    tmp=$(mktemp -d)
-    deb_url=$(curl -fsSL https://api.github.com/repos/fastfetch-cli/fastfetch/releases/latest \
-      | grep -Eo '"browser_download_url": *"[^"]*linux-amd64\.deb"' \
-      | head -n1 | cut -d'"' -f4)
-    if [[ -n "$deb_url" ]]; then
-      curl -fsSL "$deb_url" -o "${tmp}/fastfetch.deb"
-      apt install -y "${tmp}/fastfetch.deb"
-    else
-      log_err "Could not resolve a fastfetch .deb release URL."
-    fi
-    rm -rf "$tmp"
-  fi
+  log_info "Installing fastfetch (latest GitHub release)..."
+  fastfetch_install_latest_deb
   if status_fastfetch; then
     log_ok "fastfetch installed ($(fastfetch --version 2>/dev/null | head -n1))."
   else
@@ -520,7 +582,7 @@ status_speedtest() {
 install_speedtest() {
   if command -v speedtest >/dev/null 2>&1 && ! speedtest --version 2>/dev/null | grep -qi "ookla"; then
     log_warn "Found a non-Ookla 'speedtest' (likely speedtest-cli) — removing it first."
-    apt remove -y speedtest-cli >/dev/null 2>&1 || true
+    apt-get remove -y speedtest-cli >/dev/null 2>&1 || true
   fi
 
   install_speedtest_static
@@ -592,7 +654,7 @@ install_tautulli() {
   if [[ ${#missing[@]} -gt 0 ]]; then
     log_info "Installing: ${missing[*]}"
     for pkg in "${missing[@]}"; do
-      DEBIAN_FRONTEND=noninteractive apt install -y "$pkg" 2>/dev/null \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" 2>/dev/null \
         || log_warn "Package '${pkg}' not available, skipping (may be covered by another package in the list)."
     done
   fi
@@ -680,14 +742,6 @@ EOF
 # instead. dns and pihole_upstream have no versioned artifact to update —
 # they just reassert their (idempotent) config, so update_ for those is an
 # alias for install_.
-update_dns() {
-  if status_dns; then
-    log_ok "dns: no versioned artifact — config already correct, nothing to do."
-  else
-    install_dns
-  fi
-}
-
 update_pihole() {
   if ! status_pihole; then
     log_warn "Pi-hole not installed — installing instead of updating."
@@ -698,21 +752,13 @@ update_pihole() {
   pihole -up   # Pi-hole's own updater already reports "up to date" and no-ops cleanly
 }
 
-update_pihole_upstream() {
-  if status_pihole_upstream; then
-    log_ok "pihole_upstream: no versioned artifact — already correct, nothing to do."
-  else
-    install_pihole_upstream
-  fi
-}
-
 update_dnscrypt() {
   if ! status_dnscrypt; then install_dnscrypt; return; fi
   local before after
   before=$(dpkg-query -W -f='${Version}' dnscrypt-proxy 2>/dev/null)
   log_info "Checking for a newer dnscrypt-proxy package..."
-  apt update -qq
-  apt install --only-upgrade -y dnscrypt-proxy >/dev/null
+  apt-get update -qq >/dev/null
+  apt-get install --only-upgrade -y dnscrypt-proxy >/dev/null
   after=$(dpkg-query -W -f='${Version}' dnscrypt-proxy 2>/dev/null)
   if [[ "$before" != "$after" ]]; then
     log_ok "dnscrypt-proxy upgraded ${before} -> ${after}."
@@ -724,23 +770,18 @@ update_dnscrypt() {
 
 update_fastfetch() {
   if ! status_fastfetch; then install_fastfetch; return; fi
-  apt update -qq
-  if apt list --upgradable 2>/dev/null | grep -q '^fastfetch/'; then
-    log_info "Upgrading fastfetch via apt..."
-    apt install --only-upgrade -y fastfetch
-    log_ok "fastfetch upgraded ($(fastfetch --version 2>/dev/null | head -n1))."
-    return
-  fi
-  # Not tracked as upgradable by apt — either already latest, or it was
-  # installed via the GitHub .deb fallback (not apt's business to upgrade).
-  # Compare current version against the latest GitHub release tag directly.
   local cur latest_tag
   cur=$(fastfetch --version 2>/dev/null | head -n1)
   latest_tag=$(curl -fsSL https://api.github.com/repos/fastfetch-cli/fastfetch/releases/latest 2>/dev/null \
     | grep -Eo '"tag_name": *"[^"]*"' | head -n1 | cut -d'"' -f4)
   if [[ -n "$latest_tag" && "$cur" != *"${latest_tag#v}"* ]]; then
-    log_info "Newer fastfetch release available (${latest_tag}) — installing..."
-    install_fastfetch
+    log_info "Newer fastfetch release available (${latest_tag}, currently: ${cur}) — installing..."
+    fastfetch_install_latest_deb
+    if status_fastfetch; then
+      log_ok "fastfetch updated ($(fastfetch --version 2>/dev/null | head -n1))."
+    else
+      log_err "fastfetch update failed."
+    fi
   else
     log_ok "fastfetch already up to date (${cur})."
   fi
@@ -810,11 +851,24 @@ fi
 
 for c in "${ALL_COMPONENTS[@]}"; do
   component_selected "$c" || continue
-  echo
   if [[ $UPDATE_MODE -eq 1 ]]; then
+    if ! component_updatable "$c"; then
+      # No versioned artifact to check (dns, pihole_upstream). Only worth a
+      # line if the person explicitly asked for it via --only; otherwise
+      # it's silently excluded from the update pass rather than printing a
+      # no-op "nothing to do" for something that was never a version check.
+      if [[ -n "$ONLY_LIST" ]]; then
+        echo
+        log_info "=== ${c} (update) ==="
+        log_warn "${c} has no versioned artifact — nothing to update. (Use a normal run to check/repair its config.)"
+      fi
+      continue
+    fi
+    echo
     log_info "=== ${c} (update) ==="
     "update_${c}"
   else
+    echo
     log_info "=== ${c} ==="
     if "status_${c}"; then
       log_ok "${c} already configured correctly — nothing to do."
