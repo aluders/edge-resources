@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU BASELINE SETUP v1.7
+# UBUNTU BASELINE SETUP v1.9
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -33,6 +33,8 @@
 # FLAGS
 # -----
 #   --status          Print status of all components and exit (no changes)
+#   --update          Force an update pass on selected components, even if
+#                      their status check already passes (see NOTES)
 #   --only LIST       Only act on the components in LIST
 #   --skip LIST       Act on all components except those in LIST
 #   -y, --yes         Don't pause before the interactive Pi-hole installer
@@ -45,6 +47,8 @@
 # -----
 #   sudo ./setup-ubuntu-baseline.sh                      install/repair everything
 #   sudo ./setup-ubuntu-baseline.sh --status              report only
+#   sudo ./setup-ubuntu-baseline.sh --update               update everything to latest
+#   sudo ./setup-ubuntu-baseline.sh --update --only tautulli   update just one component
 #   sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
 #   sudo ./setup-ubuntu-baseline.sh --skip pihole,tautulli
 #   curl -fsSL ubuntu.vcc.net | sudo bash                 remote deploy (all)
@@ -68,6 +72,19 @@
 #     completion of the stack — skip it with `--skip pihole_upstream` if you
 #     don't want it touched). It's a no-op (reports OK) on boxes with no
 #     Pi-hole installed.
+#   - Ordinary re-runs are idempotent but NOT self-updating: once a
+#     component's status check passes, its install_<c> function is never
+#     called again, so an already-healthy component's version is left
+#     alone (Pi-hole has its own `pihole -up`, apt packages sit at
+#     whatever was installed, Tautulli's git checkout doesn't get pulled).
+#     Use --update to bypass status checks and force every selected
+#     component to check for and apply a newer version instead (apt
+#     upgrade for dnscrypt/fastfetch, latest static tarball for speedtest,
+#     git pull for tautulli, `pihole -up` for pihole). Each of these
+#     compares current vs. latest first and no-ops (no restart, no
+#     rewrite) when already current — dns and pihole_upstream have no
+#     versioned artifact at all, so --update just confirms their config
+#     and otherwise does nothing.
 #   - Ookla speedtest ships a binary literally named `speedtest`, which
 #     collides with the unrelated Debian `speedtest-cli` package. This
 #     script checks for and removes that impostor before installing Ookla's.
@@ -86,6 +103,28 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.9 - --update now actually checks before acting instead of
+#          unconditionally re-installing/restarting every run: dnscrypt
+#          compares installed vs. apt-candidate package version, fastfetch
+#          compares against the latest GitHub release tag when not
+#          apt-tracked, speedtest compares installed version against the
+#          latest Ookla tarball filename, and tautulli compares local HEAD
+#          against the fetched upstream HEAD. Each reports "already up to
+#          date" and skips config rewrite/service restart when nothing
+#          changed. dns/pihole_upstream (no versioned artifact) now just
+#          confirm config via their normal status check instead of always
+#          reasserting and restarting. pihole's `-up` was already
+#          self-idempotent and is unchanged. Refactored speedtest's
+#          tarball-URL lookup into speedtest_latest_tgz_url() so install
+#          and update share one implementation.
+#   v1.8 - Added --update flag: bypasses each component's status check and
+#          runs an update_<c> function instead (apt --only-upgrade for
+#          dnscrypt/fastfetch, latest static tarball for speedtest, git
+#          pull for tautulli, `pihole -up` for pihole; dns/pihole_upstream
+#          just reassert config). Previously a re-run never touched a
+#          component once its status check passed, so nothing actually
+#          updated on its own — this gives an explicit way to force it,
+#          combinable with --only for a single component.
 #   v1.7 - Docs restructured: FLAGS is now the single reference for every
 #          flag (including the valid LIST component names), USAGE is a
 #          short set of examples only — no more duplicated/inconsistent
@@ -143,7 +182,7 @@
 set -uo pipefail
 
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="1.7"
+SCRIPT_VERSION="1.9"
 DNSCRYPT_SERVER_NAMES="cloudflare-family"
 DNSCRYPT_TOML="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
 DNSCRYPT_SOCKET_OVERRIDE_DIR="/etc/systemd/system/dnscrypt-proxy.socket.d"
@@ -167,6 +206,7 @@ log_warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 log_err()  { echo -e "${RED}[x]${NC} $*"; }
 
 STATUS_ONLY=0
+UPDATE_MODE=0
 ASSUME_YES=0
 ONLY_LIST=""
 SKIP_LIST=""
@@ -183,6 +223,7 @@ Idempotent - safe to re-run.
 
 Flags:
   --status        Print status of all components and exit (no changes)
+  --update        Force an update pass, even if status already passes
   --only LIST     Only act on the components in LIST
   --skip LIST     Act on all components except those in LIST
   -y, --yes       Don't pause before the interactive Pi-hole installer
@@ -193,6 +234,8 @@ Flags:
 Usage:
   sudo ./setup-ubuntu-baseline.sh                      install/repair everything
   sudo ./setup-ubuntu-baseline.sh --status              report only
+  sudo ./setup-ubuntu-baseline.sh --update               update everything to latest
+  sudo ./setup-ubuntu-baseline.sh --update --only tautulli   update just one component
   sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
   sudo ./setup-ubuntu-baseline.sh --skip pihole,tautulli
   curl -fsSL ubuntu.vcc.net | sudo bash                 remote deploy (all)
@@ -203,6 +246,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --status) STATUS_ONLY=1; shift ;;
+    --update) UPDATE_MODE=1; shift ;;
     --only) ONLY_LIST="$2"; shift 2 ;;
     --skip) SKIP_LIST="$2"; shift 2 ;;
     -y|--yes) ASSUME_YES=1; shift ;;
@@ -488,21 +532,25 @@ install_speedtest() {
   fi
 }
 
-install_speedtest_static() {
-  local arch tgz_url tmp
+speedtest_latest_tgz_url() {
+  local arch
   case "$(uname -m)" in
     x86_64)  arch="linux-x86_64" ;;
     aarch64) arch="linux-aarch64" ;;
     armv7l)  arch="linux-armhf" ;;
-    *) log_err "Unsupported architecture for static speedtest binary: $(uname -m)"; return ;;
+    *) return 1 ;;
   esac
-
-  tgz_url=$(curl -fsSL https://www.speedtest.net/apps/cli 2>/dev/null \
+  curl -fsSL https://www.speedtest.net/apps/cli 2>/dev/null \
     | grep -Eo "https://install\.speedtest\.net/app/cli/ookla-speedtest-[0-9.]+-${arch}\.tgz" \
-    | head -n1)
+    | head -n1
+}
+
+install_speedtest_static() {
+  local tgz_url tmp
+  tgz_url=$(speedtest_latest_tgz_url)
 
   if [[ -z "$tgz_url" ]]; then
-    log_err "Could not find a static speedtest tarball URL for ${arch}."
+    log_err "Could not find a static speedtest tarball URL for $(uname -m)."
     return
   fi
 
@@ -623,6 +671,116 @@ EOF
 }
 
 # ==============================================================================
+# UPDATE FUNCTIONS (--update)
+# ==============================================================================
+# Normal mode only calls install_<c> when status_<c> fails — so a healthy
+# component is never touched again, and version drift (a newer dnscrypt-proxy
+# package, a newer Tautulli commit, etc.) is invisible. --update bypasses the
+# status check for every selected component and runs its update_<c> function
+# instead. dns and pihole_upstream have no versioned artifact to update —
+# they just reassert their (idempotent) config, so update_ for those is an
+# alias for install_.
+update_dns() {
+  if status_dns; then
+    log_ok "dns: no versioned artifact — config already correct, nothing to do."
+  else
+    install_dns
+  fi
+}
+
+update_pihole() {
+  if ! status_pihole; then
+    log_warn "Pi-hole not installed — installing instead of updating."
+    install_pihole
+    return
+  fi
+  log_info "Running 'pihole -up' to update Pi-hole core/web/FTL..."
+  pihole -up   # Pi-hole's own updater already reports "up to date" and no-ops cleanly
+}
+
+update_pihole_upstream() {
+  if status_pihole_upstream; then
+    log_ok "pihole_upstream: no versioned artifact — already correct, nothing to do."
+  else
+    install_pihole_upstream
+  fi
+}
+
+update_dnscrypt() {
+  if ! status_dnscrypt; then install_dnscrypt; return; fi
+  local before after
+  before=$(dpkg-query -W -f='${Version}' dnscrypt-proxy 2>/dev/null)
+  log_info "Checking for a newer dnscrypt-proxy package..."
+  apt update -qq
+  apt install --only-upgrade -y dnscrypt-proxy >/dev/null
+  after=$(dpkg-query -W -f='${Version}' dnscrypt-proxy 2>/dev/null)
+  if [[ "$before" != "$after" ]]; then
+    log_ok "dnscrypt-proxy upgraded ${before} -> ${after}."
+    install_dnscrypt  # reasserts config/socket/service against the new package
+  else
+    log_ok "dnscrypt-proxy already at latest (${after}) and correctly configured — nothing to do."
+  fi
+}
+
+update_fastfetch() {
+  if ! status_fastfetch; then install_fastfetch; return; fi
+  apt update -qq
+  if apt list --upgradable 2>/dev/null | grep -q '^fastfetch/'; then
+    log_info "Upgrading fastfetch via apt..."
+    apt install --only-upgrade -y fastfetch
+    log_ok "fastfetch upgraded ($(fastfetch --version 2>/dev/null | head -n1))."
+    return
+  fi
+  # Not tracked as upgradable by apt — either already latest, or it was
+  # installed via the GitHub .deb fallback (not apt's business to upgrade).
+  # Compare current version against the latest GitHub release tag directly.
+  local cur latest_tag
+  cur=$(fastfetch --version 2>/dev/null | head -n1)
+  latest_tag=$(curl -fsSL https://api.github.com/repos/fastfetch-cli/fastfetch/releases/latest 2>/dev/null \
+    | grep -Eo '"tag_name": *"[^"]*"' | head -n1 | cut -d'"' -f4)
+  if [[ -n "$latest_tag" && "$cur" != *"${latest_tag#v}"* ]]; then
+    log_info "Newer fastfetch release available (${latest_tag}) — installing..."
+    install_fastfetch
+  else
+    log_ok "fastfetch already up to date (${cur})."
+  fi
+}
+
+update_speedtest() {
+  if ! status_speedtest; then install_speedtest; return; fi
+  local cur latest_url latest_ver
+  cur=$(speedtest --version 2>/dev/null | head -n1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+  latest_url=$(speedtest_latest_tgz_url)
+  latest_ver=$(echo "$latest_url" | grep -Eo 'speedtest-[0-9.]+' | grep -Eo '[0-9.]+$')
+  if [[ -n "$latest_ver" && "$latest_ver" != "$cur" ]]; then
+    log_info "Newer Ookla speedtest available (${latest_ver}, currently ${cur}) — installing..."
+    install_speedtest_static
+    if status_speedtest; then
+      log_ok "Ookla Speedtest CLI updated ($(speedtest --version 2>/dev/null | head -n1))."
+    else
+      log_err "speedtest update failed — check manually (https://www.speedtest.net/apps/cli)."
+    fi
+  else
+    log_ok "Ookla speedtest already up to date (${cur:-unknown})."
+  fi
+}
+
+update_tautulli() {
+  if ! status_tautulli; then install_tautulli; return; fi
+  git config --system --add safe.directory "$TAUTULLI_DIR" 2>/dev/null || true
+  local before after
+  before=$(git -C "$TAUTULLI_DIR" rev-parse HEAD 2>/dev/null)
+  git -C "$TAUTULLI_DIR" fetch --quiet 2>/dev/null
+  after=$(git -C "$TAUTULLI_DIR" rev-parse '@{u}' 2>/dev/null)
+  if [[ -n "$after" && "$before" != "$after" ]]; then
+    log_info "New Tautulli commits available — updating..."
+    install_tautulli
+  else
+    log_ok "Tautulli already up to date ($(git -C "$TAUTULLI_DIR" rev-parse --short HEAD 2>/dev/null))."
+  fi
+}
+
+# ==============================================================================
 # STATUS REPORT
 # ==============================================================================
 print_status_report() {
@@ -653,11 +811,16 @@ fi
 for c in "${ALL_COMPONENTS[@]}"; do
   component_selected "$c" || continue
   echo
-  log_info "=== ${c} ==="
-  if "status_${c}"; then
-    log_ok "${c} already configured correctly — nothing to do."
+  if [[ $UPDATE_MODE -eq 1 ]]; then
+    log_info "=== ${c} (update) ==="
+    "update_${c}"
   else
-    "install_${c}"
+    log_info "=== ${c} ==="
+    if "status_${c}"; then
+      log_ok "${c} already configured correctly — nothing to do."
+    else
+      "install_${c}"
+    fi
   fi
 done
 
