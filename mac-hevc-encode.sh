@@ -1,5 +1,42 @@
 #!/bin/bash
-# encode.sh — Batch convert video files to H.265/HEVC using HandBrakeCLI
+# =============================================================================
+# encode.sh — v1.8
+# =============================================================================
+# WHAT IT DOES
+#   Recursively finds video files in a directory (or encodes a single file)
+#   and re-encodes them to H.265/HEVC using HandBrakeCLI. Output files are
+#   saved alongside the source as <name>-HEVC.<ext>. Already-converted files
+#   (*-HEVC.*) are never re-processed.
+#
+# USAGE
+#   encode.sh [OPTIONS] [FILE|DIRECTORY]
+#   encode.sh --help
+#
+# REQUIREMENTS
+#   brew install handbrake fd
+#
+# NOTES
+#   - Supports input formats: mp4, m4v, mov, mkv, avi, wmv, ts, mts, m2ts, flv
+#   - Output is always mp4 or mkv (prompt or --out flag)
+#   - MP4-family inputs default to mp4 output; all others default to mkv
+#   - Cross-container warning shown when mkv/ts/avi → mp4 (track loss risk)
+#   - Hardware encoding via Apple VideoToolbox (--hardware flag, Mac only)
+#
+# VERSION HISTORY
+#   1.8   Fixed eval echo crash on filenames containing parentheses or special
+#         characters — replaced with safe tilde expansion (${var/#\~/$HOME})
+#   1.7   Expanded input format support: m4v, mov, avi, wmv, ts, mts, m2ts, flv
+#         Smart output format defaults per input type
+#   1.6   Added single-file mode (format inferred from extension)
+#   1.5   Added output format prompt in interactive mode; fixed empty array
+#         unbound variable error on macOS bash 3.2
+#   1.4   Fixed audio args subshell bug (array expansion); fixed --optimize
+#         being passed to HandBrakeCLI for MKV output (MP4-only flag)
+#   1.3   Added mkv input/output support with --in/--out flags and prompts
+#   1.2   Added --help, --list, --audio, final encode tally
+#   1.1   Added --hardware (vt_h265), --preset, --force, --dry-run
+#   1.0   Initial release — mp4-only, software x265, basic flags
+# =============================================================================
 
 set -euo pipefail
 IFS=$'\n'
@@ -232,7 +269,7 @@ prompt_format() {
 # ================================
 check_deps
 
-TARGET="$(eval echo "${TARGET:-}")"
+TARGET="${TARGET/#\~/$HOME}"
 
 if [[ -n "$TARGET" && -f "$TARGET" ]]; then
     # ── Single-file mode ──────────────────────────────────────────────
@@ -285,7 +322,7 @@ else
         TARGET="${USER_INPUT:-"."}"
         [[ -z "$USER_INPUT" ]] && echo "   ...Using current directory."
         echo
-        TARGET="$(eval echo "$TARGET")"
+        TARGET="${TARGET/#\~/$HOME}"
     fi
 
     [[ ! -d "$TARGET" ]] && { echo "❌ Not a valid directory: '$TARGET'"; exit 1; }
