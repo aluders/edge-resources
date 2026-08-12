@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU BASELINE SETUP v1.3
+# UBUNTU BASELINE SETUP v1.4
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -18,6 +18,13 @@
 #                Ookla's static release tarball (not the Python speedtest-cli
 #                clone, and not via apt — Ookla's packagecloud repo lags new
 #                Ubuntu releases by months, so apt is skipped entirely)
+#   tautulli   - clean-installs Tautulli natively (git clone + venv +
+#                systemd unit under a dedicated `tautulli` system user),
+#                NOT via snap — keeps this box off snapd entirely so it
+#                stays a lean single-purpose DNS/monitoring appliance.
+#                Idempotent: re-running pulls latest and reinstalls deps
+#                but leaves an existing config.ini/tautulli.db alone. No
+#                snap detection or migration logic — assumes a fresh box.
 #
 # Every component has a status check that runs first. Already-correct
 # components are left alone; only what's missing or misconfigured is
@@ -29,6 +36,7 @@
 #   sudo ./setup-ubuntu-baseline.sh --status         report only, no changes
 #   sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
 #   sudo ./setup-ubuntu-baseline.sh --skip pihole
+#   sudo ./setup-ubuntu-baseline.sh --skip tautulli
 #   curl -fsSL ubuntu.vcc.net | sudo bash            remote deploy (all)
 #
 #   Flags:
@@ -60,9 +68,27 @@
 #   - Ookla speedtest ships a binary literally named `speedtest`, which
 #     collides with the unrelated Debian `speedtest-cli` package. This
 #     script checks for and removes that impostor before installing Ookla's.
+#   - tautulli's systemd unit MUST be Type=simple with no --daemon flag on
+#     the ExecStart line. Tautulli's --daemon flag self-forks and detaches,
+#     which makes the parent process exit immediately — systemd sees that
+#     exit and reports the service as cleanly stopped ("Deactivated
+#     successfully" in the journal) even though it never actually crashed.
+#     Learned this the hard way migrating an existing snap install; baked
+#     the fix in here so a fresh baseline box never hits it.
+#   - tautulli assumes a fresh box: no snap detection, no data migration.
+#     If you're moving an existing snap-based Tautulli to this baseline,
+#     use the standalone migrate-tautulli.sh script instead (or migrate
+#     config.ini/tautulli.db into /opt/tautulli/data by hand before your
+#     first run of this component).
 #
 # VERSION HISTORY
 # ----------------
+#   v1.5 - tautulli: removed snap detection/migration logic. Clean install
+#          only now — assumes a fresh box with no prior Tautulli install.
+#          Use the standalone migrate-tautulli.sh script for snap-to-native
+#          migrations instead.
+#   v1.4 - Added tautulli component: native install (git + venv + systemd,
+#          dedicated system user), no snap dependency.
 #   v1.3 - pihole_upstream no longer swallows the pihole-FTL --config output:
 #          exit code and stdout/stderr are now surfaced on failure, and a
 #          failed verification dumps the actual `upstreams` line(s) from
@@ -103,7 +129,7 @@
 set -uo pipefail
 
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="1.3"
+SCRIPT_VERSION="1.5"
 DNSCRYPT_SERVER_NAMES="cloudflare-family"
 DNSCRYPT_TOML="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
 DNSCRYPT_SOCKET_OVERRIDE_DIR="/etc/systemd/system/dnscrypt-proxy.socket.d"
@@ -112,7 +138,12 @@ DNSCRYPT_LISTEN="127.0.0.1:5053"
 RESOLVED_DROPIN_DIR="/etc/systemd/resolved.conf.d"
 RESOLVED_DROPIN="${RESOLVED_DROPIN_DIR}/no-stub.conf"
 PIHOLE_SETUPVARS="/etc/pihole/setupVars.conf"
-ALL_COMPONENTS=(dns pihole dnscrypt pihole_upstream fastfetch speedtest)
+TAUTULLI_DIR="/opt/tautulli"
+TAUTULLI_DATA_DIR="${TAUTULLI_DIR}/data"
+TAUTULLI_USER="tautulli"
+TAUTULLI_REPO="https://github.com/Tautulli/Tautulli.git"
+TAUTULLI_PORT="8181"
+ALL_COMPONENTS=(dns pihole dnscrypt pihole_upstream fastfetch speedtest tautulli)
 # ------------------------------------------------------------------------- --
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -132,7 +163,8 @@ usage() {
 UBUNTU BASELINE SETUP (v${SCRIPT_VERSION})
 
 Installs/repairs: dns (stub-listener disable), pihole, dnscrypt-proxy
-(cloudflare-family @ 127.0.0.1:5053), fastfetch, Ookla speedtest.
+(cloudflare-family @ 127.0.0.1:5053), fastfetch, Ookla speedtest, tautulli
+(native, no snap).
 Idempotent - safe to re-run.
 
 Usage:
@@ -149,7 +181,7 @@ Flags:
   -y, --yes       Don't pause before the interactive Pi-hole installer
   -h, --help      Show this help
 
-Components: dns, pihole, dnscrypt, pihole_upstream, fastfetch, speedtest
+Components: dns, pihole, dnscrypt, pihole_upstream, fastfetch, speedtest, tautulli
 EOF
 }
 
@@ -468,6 +500,112 @@ install_speedtest_static() {
     log_err "Static tarball download/extract failed."
   fi
   rm -rf "$tmp"
+}
+
+# ==============================================================================
+# COMPONENT: tautulli (native install — git + venv + systemd, no snap)
+# ==============================================================================
+status_tautulli() {
+  [[ -x "${TAUTULLI_DIR}/venv/bin/python" ]] || return 1
+  [[ -f "${TAUTULLI_DIR}/Tautulli.py" ]] || return 1
+  [[ -f "/etc/systemd/system/tautulli.service" ]] || return 1
+  systemctl is-active --quiet tautulli.service || return 1
+  return 0
+}
+
+install_tautulli() {
+  ensure_apt_updated
+
+  # ---- dependencies (git, python3-venv/ensurepip) ----
+  log_info "Checking tautulli dependencies (git, venv, pip)..."
+  local missing=()
+  command -v git >/dev/null 2>&1 || missing+=(git)
+  local py_ver
+  py_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+  if ! python3 -m venv --without-pip /tmp/.tautulli_venv_check_$$ >/dev/null 2>&1; then
+    missing+=("python3-venv" "python${py_ver}-venv")
+  fi
+  rm -rf "/tmp/.tautulli_venv_check_$$"
+  python3 -c "import ensurepip" >/dev/null 2>&1 || missing+=(python3-pip)
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_info "Installing: ${missing[*]}"
+    for pkg in "${missing[@]}"; do
+      DEBIAN_FRONTEND=noninteractive apt install -y "$pkg" 2>/dev/null \
+        || log_warn "Package '${pkg}' not available, skipping (may be covered by another package in the list)."
+    done
+  fi
+  if ! python3 -m venv --without-pip /tmp/.tautulli_venv_verify_$$ >/dev/null 2>&1; then
+    log_err "python3 venv module still not functional after dependency install."
+    log_err "Try manually: apt install python${py_ver}-venv"
+    return
+  fi
+  rm -rf "/tmp/.tautulli_venv_verify_$$"
+
+  # ---- dedicated system user ----
+  if ! id "$TAUTULLI_USER" >/dev/null 2>&1; then
+    log_info "Creating system user '${TAUTULLI_USER}'..."
+    useradd --system --no-create-home --shell /usr/sbin/nologin "$TAUTULLI_USER"
+  fi
+
+  # ---- clone / update ----
+  git config --system --add safe.directory "$TAUTULLI_DIR" 2>/dev/null || true
+  if [[ -d "${TAUTULLI_DIR}/.git" ]]; then
+    log_info "Existing Tautulli checkout found, pulling latest..."
+    git -C "$TAUTULLI_DIR" pull --ff-only
+  else
+    log_info "Cloning Tautulli into ${TAUTULLI_DIR}..."
+    git clone --depth 1 "$TAUTULLI_REPO" "$TAUTULLI_DIR"
+  fi
+
+  # ---- venv + deps ----
+  if [[ ! -x "${TAUTULLI_DIR}/venv/bin/python" ]]; then
+    log_info "Creating Python venv..."
+    python3 -m venv "${TAUTULLI_DIR}/venv"
+  fi
+  log_info "Installing/updating Python dependencies..."
+  "${TAUTULLI_DIR}/venv/bin/pip" install --quiet --upgrade pip
+  "${TAUTULLI_DIR}/venv/bin/pip" install --quiet -r "${TAUTULLI_DIR}/requirements.txt"
+
+  # ---- data dir ----
+  mkdir -p "$TAUTULLI_DATA_DIR"
+  if [[ ! -f "${TAUTULLI_DATA_DIR}/config.ini" ]]; then
+    log_info "No existing config found — Tautulli will create a fresh one on first start."
+  fi
+  chown -R "${TAUTULLI_USER}:${TAUTULLI_USER}" "$TAUTULLI_DIR"
+
+  # ---- systemd unit ----
+  # NOTE: Type=simple + no --daemon flag is deliberate. --daemon self-forks
+  # and the parent exits immediately, which systemd reads as a clean stop.
+  log_info "Writing systemd unit..."
+  cat > /etc/systemd/system/tautulli.service <<EOF
+[Unit]
+Description=Tautulli
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${TAUTULLI_USER}
+Group=${TAUTULLI_USER}
+WorkingDirectory=${TAUTULLI_DIR}
+ExecStart=${TAUTULLI_DIR}/venv/bin/python ${TAUTULLI_DIR}/Tautulli.py --nolaunch --config ${TAUTULLI_DATA_DIR}/config.ini --datadir ${TAUTULLI_DATA_DIR}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now tautulli.service >/dev/null 2>&1
+  systemctl restart tautulli.service
+  sleep 2
+
+  if status_tautulli; then
+    log_ok "Tautulli installed and running (http://<host>:${TAUTULLI_PORT})."
+  else
+    log_err "tautulli.service did not verify cleanly. 'systemctl status tautulli' for detail:"
+    systemctl --no-pager status tautulli 2>&1 | sed 's/^/    /'
+  fi
 }
 
 # ==============================================================================
