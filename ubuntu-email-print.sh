@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v2.6
+#  emailprint.sh  —  Email-to-Print  v2.7
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer via IPP (driverless).
@@ -24,6 +24,7 @@
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    2.7  — Backup file uses .txt extension for Gmail preview compatibility
 #    2.6  — Added dependencies list to header
 #    2.5  — Updated paper size values to IPP format (na_letter_8.5x11in etc.)
 #    2.4  — Fixed register_printer to use ipp:// throughout (was still using socket://)
@@ -510,7 +511,7 @@ cmd_backup() {
     header "Config backup"
 
     # Always save a local copy
-    local backup_file="/tmp/emailprint-backup-$(date +%Y-%m-%d_%H%M%S).conf"
+    local backup_file="/tmp/emailprint-backup-$(date +%Y-%m-%d_%H%M%S).txt"
     cp "$CONFIG_FILE" "$backup_file"
     ok "Local backup saved → ${backup_file}"
 
@@ -559,10 +560,7 @@ msg['From']    = imap_user
 msg['To']      = backup_email
 msg['Subject'] = 'Email-to-Print Config Backup ({})'.format(timestamp)
 msg.attach(MIMEText(
-    'Email-to-Print configuration backup.
-'
-    'Restore with:  sudo ./emailprint.sh --restore emailprint.conf
-',
+    'Email-to-Print configuration backup.\nRestore with: sudo ./emailprint.sh --restore emailprint.conf',
     'plain'
 ))
 
@@ -570,7 +568,8 @@ with open(config_path, 'rb') as f:
     part = MIMEBase('application', 'octet-stream')
     part.set_payload(f.read())
     encoders.encode_base64(part)
-    part.add_header('Content-Disposition', 'attachment; filename="emailprint.conf"')
+    attach_name = 'emailprint-backup-' + datetime.now().strftime('%Y-%m-%d_%H%M%S') + '.txt'
+    part.add_header('Content-Disposition', 'attachment; filename="' + attach_name + '"')
     msg.attach(part)
 
 server = smtplib.SMTP(smtp_host, smtp_port)
@@ -582,7 +581,7 @@ server.quit()
 print('OK')
 PYEOF
 
-    if python3 "$py_tmp" "$CONFIG_FILE" 2>/dev/null; then
+    if python3 "$py_tmp" "$CONFIG_FILE"; then
         ok "Backup emailed to ${BACKUP_EMAIL}"
     else
         error "Failed to email backup — check SMTP settings in config"
