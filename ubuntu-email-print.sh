@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v2.0
+#  emailprint.sh  —  Email-to-Print  v2.1
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer via IPP (driverless).
@@ -9,9 +9,9 @@
 #    sudo ./emailprint.sh                   First-time install
 #    sudo ./emailprint.sh --install         Same as above
 #    sudo ./emailprint.sh --config          Re-run configuration wizard
-#         ./emailprint.sh --status          Show service status & recent logs
-#         ./emailprint.sh --test            Test email login only
-#         ./emailprint.sh --poll            Force an immediate mailbox check
+#    sudo ./emailprint.sh --status          Show service status & recent logs
+#    sudo ./emailprint.sh --test            Test email login only
+#    sudo ./emailprint.sh --poll            Force an immediate mailbox check
 #    sudo ./emailprint.sh --start           Start the service
 #    sudo ./emailprint.sh --stop            Stop the service
 #    sudo ./emailprint.sh --restart         Restart the service
@@ -23,6 +23,7 @@
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    2.1  — Corrected sudo usage in header; --status, --test, --poll require sudo
 #    2.0  — IPP/driverless printing, timezone setup, backup/restore,
 #            --poll flag, generic naming
 #    1.0  — Initial release
@@ -750,9 +751,9 @@ cmd_help() {
     echo    "  sudo $0                       First-time install"
     echo    "  sudo $0 --install             Same as above"
     echo    "  sudo $0 --config              Re-run configuration wizard"
-    echo    "       $0 --status              Show status, config, email test & logs"
-    echo    "       $0 --test                Test email login only"
-    echo    "       $0 --poll                Force an immediate mailbox check"
+    echo    "  sudo $0 --status              Show status, config, email test & logs"
+    echo    "  sudo $0 --test                Test email login only"
+    echo    "  sudo $0 --poll                Force an immediate mailbox check"
     echo    "  sudo $0 --start               Start the service"
     echo    "  sudo $0 --stop                Stop the service"
     echo    "  sudo $0 --restart             Restart the service"
