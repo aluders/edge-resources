@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v2.3
+#  emailprint.sh  —  Email-to-Print  v2.4
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer via IPP (driverless).
@@ -24,6 +24,7 @@
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    2.4  — Fixed register_printer to use ipp:// throughout (was still using socket://)
 #    2.3  — Added --printer-info command for IPP capability discovery
 #    2.2  — Fixed color mode IPP attribute (ColorModel -> print-color-mode)
 #    2.1  — Corrected sudo usage in header; --status, --test, --poll require sudo
@@ -227,34 +228,20 @@ register_printer() {
     header "Registering printer in CUPS"
 
     lpadmin -x "$PRINTER_NAME" 2>/dev/null || true
-    info "Adding ${PRINTER_NAME} at socket://${PRINTER_IP}:9100"
+    info "Adding ${PRINTER_NAME} via IPP at ${PRINTER_IP}"
 
-    local driver
-    driver=$(lpinfo -m 2>/dev/null | grep -i "l8900\|8900" | head -1 | awk '{print $1}')
-
-    if [[ -n "$driver" ]]; then
-        info "Using driver: ${driver}"
-        if lpadmin -p "$PRINTER_NAME" -E \
-                -v "socket://${PRINTER_IP}:9100" \
-                -m "$driver" 2>/dev/null; then
-            ok "Printer registered with driver"
-            cupsenable "$PRINTER_NAME" 2>/dev/null || true
-            cupsaccept "$PRINTER_NAME" 2>/dev/null || true
-            _test_printer_reachable
+    if lpadmin -p "$PRINTER_NAME" -E                -v "ipp://${PRINTER_IP}/ipp/print"                -m everywhere 2>/dev/null; then
+        ok "Printer registered (IPP Everywhere / driverless)"
+    else
+        info "IPP Everywhere failed — registering with IPP URI only"
+        if lpadmin -p "$PRINTER_NAME" -E                    -v "ipp://${PRINTER_IP}/ipp/print" 2>/dev/null; then
+            ok "Printer registered (IPP driverless)"
+        else
+            warn "Could not auto-register printer — add manually at http://localhost:631"
+            warn "  URI:  ipp://${PRINTER_IP}/ipp/print"
+            warn "  Name: ${PRINTER_NAME}"
             return
         fi
-        warn "Driver registration failed — trying IPP Everywhere"
-    fi
-
-    if lpadmin -p "$PRINTER_NAME" -E \
-               -v "socket://${PRINTER_IP}:9100" \
-               -m everywhere 2>/dev/null; then
-        ok "Printer registered (IPP Everywhere)"
-    else
-        info "IPP Everywhere failed — registering as raw queue"
-        lpadmin -p "$PRINTER_NAME" -E \
-                -v "socket://${PRINTER_IP}:9100" 2>/dev/null || \
-        warn "Could not register printer — add manually at http://localhost:631"
     fi
 
     cupsenable  "$PRINTER_NAME" 2>/dev/null || true
