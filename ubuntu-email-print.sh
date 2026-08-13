@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v2.5
+#  emailprint.sh  —  Email-to-Print  v2.6
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer via IPP (driverless).
@@ -24,6 +24,7 @@
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    2.6  — Added dependencies list to header
 #    2.5  — Updated paper size values to IPP format (na_letter_8.5x11in etc.)
 #    2.4  — Fixed register_printer to use ipp:// throughout (was still using socket://)
 #    2.3  — Added --printer-info command for IPP capability discovery
@@ -32,6 +33,17 @@
 #    2.0  — IPP/driverless printing, timezone setup, backup/restore,
 #            --poll flag, generic naming
 #    1.0  — Initial release
+# =============================================================================
+#  Dependencies (auto-installed if missing):
+#    - python3        Runtime for the email monitoring daemon
+#    - python3-pip    Python package manager
+#    - cups           Common Unix Printing System
+#    - ipptool        IPP printer query tool (part of cups-client)
+#
+#  Pre-requisites (manual setup required):
+#    - A Gmail App Password (or equivalent) for the monitored mailbox
+#    - A network printer with IPP/IPP Everywhere support
+#    - VPN or network access to the printer IP at install time
 # =============================================================================
 #  NOTE — Verifying print options for a new printer:
 #    When setting up a new/different printer, verify the correct IPP attribute
