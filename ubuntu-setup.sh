@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU BASELINE SETUP v1.14
+# UBUNTU BASELINE SETUP v1.16
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -79,17 +79,23 @@
 #     called again, so an already-healthy component's version is left
 #     alone (Pi-hole has its own `pihole -up`, apt packages sit at
 #     whatever was installed, Tautulli's git checkout doesn't get pulled).
-#     Use --update to bypass status checks and force every selected
-#     component with a versioned artifact to check for and apply a newer
-#     version instead (apt-get upgrade for dnscrypt, latest GitHub release
-#     for fastfetch, latest static tarball for speedtest, git pull for
-#     tautulli, `pihole -up` for pihole). Each compares current vs. latest
-#     first and no-ops (no restart, no rewrite) when already current.
+#     Use --update to check each versioned component against the latest
+#     available release/commit and apply it if newer (apt-get upgrade for
+#     dnscrypt, latest GitHub release for fastfetch, latest static
+#     tarball for speedtest, git pull for tautulli, `pihole -up` for
+#     pihole). --update deliberately does NOT verify or repair config —
+#     that's the normal run's job. Each update_<c> only checks "is this
+#     installed at all" (so a version comparison is meaningful) before
+#     comparing versions; it never calls the deep status_<c>/install_<c>
+#     config-repair path. If a component isn't installed, --update just
+#     says so and leaves it — run without --update to install/repair it.
 #     dns and pihole_upstream have no versioned artifact at all, so
 #     --update skips them entirely (they're excluded from
-#     UPDATABLE_COMPONENTS) rather than printing a no-op "nothing to
-#     update" every run — use a normal run (no --update) to check/repair
-#     their config instead.
+#     UPDATABLE_COMPONENTS) — use a normal run to check/repair their
+#     config instead. For the same reason, --update does not print the
+#     final Component status report (that's status_<c>, i.e. config
+#     correctness) — it ends with a plain completion line. Use a normal
+#     run or --status to see full config state.
 #   - Ookla speedtest ships a binary literally named `speedtest`, which
 #     collides with the unrelated Debian `speedtest-cli` package. This
 #     script checks for and removes that impostor before installing Ookla's.
@@ -108,6 +114,28 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.16 - --update no longer prints the final Component status report.
+#           That report calls every status_<c> function — the same
+#           config-correctness checks v1.15 deliberately removed from the
+#           update path itself — so showing it after --update reintroduced
+#           config-checking through the back door. --update now ends with
+#           a plain "Update pass complete" line instead; use a normal run
+#           or --status for full config state.
+#   v1.15 - --update no longer touches config at all, only versions. The
+#           previous update_dnscrypt/update_tautulli gated on the full
+#           status_<c> check (deep config/service validation) and fell
+#           through to install_<c> (full repair: rewrite config, reassert
+#           ownership, restart services) whenever that check failed for
+#           ANY reason — not just a real version bump. update_dnscrypt
+#           also printed "and correctly configured" after a pure version
+#           check that never actually inspected the config. Every
+#           update_<c> now gates on existence only (package installed /
+#           binary present / repo cloned — just enough to know a version
+#           check is meaningful), compares current vs. latest, and on a
+#           genuine update pulls/upgrades + restarts the service directly
+#           — no config rewrite, no ownership/systemd-unit reassertion.
+#           If a component isn't installed, --update reports that and
+#           stops; install/repair still only happens via a normal run.
 #   v1.14 - dns and pihole_upstream removed from --update entirely (new
 #           UPDATABLE_COMPONENTS list). Neither has a versioned artifact,
 #           so under --update they were only ever printing a no-op
@@ -228,7 +256,7 @@
 set -uo pipefail
 
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="1.14"
+SCRIPT_VERSION="1.16"
 DNSCRYPT_SERVER_NAMES="cloudflare-family"
 DNSCRYPT_TOML="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
 DNSCRYPT_SOCKET_OVERRIDE_DIR="/etc/systemd/system/dnscrypt-proxy.socket.d"
@@ -743,9 +771,8 @@ EOF
 # they just reassert their (idempotent) config, so update_ for those is an
 # alias for install_.
 update_pihole() {
-  if ! status_pihole; then
-    log_warn "Pi-hole not installed — installing instead of updating."
-    install_pihole
+  if ! command -v pihole >/dev/null 2>&1; then
+    log_warn "Pi-hole not installed — run without --update first."
     return
   fi
   log_info "Running 'pihole -up' to update Pi-hole core/web/FTL..."
@@ -753,7 +780,13 @@ update_pihole() {
 }
 
 update_dnscrypt() {
-  if ! status_dnscrypt; then install_dnscrypt; return; fi
+  # Existence check only (is it installed at all, so a version check even
+  # makes sense) — NOT a config-correctness check. Fixing drifted config
+  # is the normal run's job, not --update's.
+  if ! dpkg -s dnscrypt-proxy >/dev/null 2>&1; then
+    log_warn "dnscrypt-proxy not installed — run without --update first."
+    return
+  fi
   local before after
   before=$(dpkg-query -W -f='${Version}' dnscrypt-proxy 2>/dev/null)
   log_info "Checking for a newer dnscrypt-proxy package..."
@@ -761,15 +794,19 @@ update_dnscrypt() {
   apt-get install --only-upgrade -y dnscrypt-proxy >/dev/null
   after=$(dpkg-query -W -f='${Version}' dnscrypt-proxy 2>/dev/null)
   if [[ "$before" != "$after" ]]; then
-    log_ok "dnscrypt-proxy upgraded ${before} -> ${after}."
-    install_dnscrypt  # reasserts config/socket/service against the new package
+    log_info "dnscrypt-proxy upgraded ${before} -> ${after}, restarting service..."
+    systemctl restart dnscrypt-proxy.service
+    log_ok "dnscrypt-proxy updated to ${after}."
   else
-    log_ok "dnscrypt-proxy already at latest (${after}) and correctly configured — nothing to do."
+    log_ok "dnscrypt-proxy already at latest (${after})."
   fi
 }
 
 update_fastfetch() {
-  if ! status_fastfetch; then install_fastfetch; return; fi
+  if ! command -v fastfetch >/dev/null 2>&1; then
+    log_warn "fastfetch not installed — run without --update first."
+    return
+  fi
   local cur latest_tag
   cur=$(fastfetch --version 2>/dev/null | head -n1)
   latest_tag=$(curl -fsSL https://api.github.com/repos/fastfetch-cli/fastfetch/releases/latest 2>/dev/null \
@@ -777,18 +814,17 @@ update_fastfetch() {
   if [[ -n "$latest_tag" && "$cur" != *"${latest_tag#v}"* ]]; then
     log_info "Newer fastfetch release available (${latest_tag}, currently: ${cur}) — installing..."
     fastfetch_install_latest_deb
-    if status_fastfetch; then
-      log_ok "fastfetch updated ($(fastfetch --version 2>/dev/null | head -n1))."
-    else
-      log_err "fastfetch update failed."
-    fi
+    log_ok "fastfetch updated ($(fastfetch --version 2>/dev/null | head -n1))."
   else
     log_ok "fastfetch already up to date (${cur})."
   fi
 }
 
 update_speedtest() {
-  if ! status_speedtest; then install_speedtest; return; fi
+  if ! command -v speedtest >/dev/null 2>&1; then
+    log_warn "speedtest not installed — run without --update first."
+    return
+  fi
   local cur latest_url latest_ver
   cur=$(speedtest --version 2>/dev/null | head -n1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
   latest_url=$(speedtest_latest_tgz_url)
@@ -796,26 +832,29 @@ update_speedtest() {
   if [[ -n "$latest_ver" && "$latest_ver" != "$cur" ]]; then
     log_info "Newer Ookla speedtest available (${latest_ver}, currently ${cur}) — installing..."
     install_speedtest_static
-    if status_speedtest; then
-      log_ok "Ookla Speedtest CLI updated ($(speedtest --version 2>/dev/null | head -n1))."
-    else
-      log_err "speedtest update failed — check manually (https://www.speedtest.net/apps/cli)."
-    fi
+    log_ok "Ookla Speedtest CLI updated ($(speedtest --version 2>/dev/null | head -n1))."
   else
     log_ok "Ookla speedtest already up to date (${cur:-unknown})."
   fi
 }
 
 update_tautulli() {
-  if ! status_tautulli; then install_tautulli; return; fi
+  if [[ ! -x "${TAUTULLI_DIR}/venv/bin/python" || ! -f "${TAUTULLI_DIR}/Tautulli.py" ]]; then
+    log_warn "tautulli not installed — run without --update first."
+    return
+  fi
   git config --system --add safe.directory "$TAUTULLI_DIR" 2>/dev/null || true
   local before after
   before=$(git -C "$TAUTULLI_DIR" rev-parse HEAD 2>/dev/null)
   git -C "$TAUTULLI_DIR" fetch --quiet 2>/dev/null
   after=$(git -C "$TAUTULLI_DIR" rev-parse '@{u}' 2>/dev/null)
   if [[ -n "$after" && "$before" != "$after" ]]; then
-    log_info "New Tautulli commits available — updating..."
-    install_tautulli
+    log_info "New Tautulli commits available — pulling and restarting..."
+    git -C "$TAUTULLI_DIR" pull --ff-only
+    "${TAUTULLI_DIR}/venv/bin/pip" install --quiet --upgrade pip
+    "${TAUTULLI_DIR}/venv/bin/pip" install --quiet -r "${TAUTULLI_DIR}/requirements.txt"
+    systemctl restart tautulli.service
+    log_ok "Tautulli updated to $(git -C "$TAUTULLI_DIR" rev-parse --short HEAD 2>/dev/null)."
   else
     log_ok "Tautulli already up to date ($(git -C "$TAUTULLI_DIR" rev-parse --short HEAD 2>/dev/null))."
   fi
@@ -878,5 +917,13 @@ for c in "${ALL_COMPONENTS[@]}"; do
   fi
 done
 
-print_status_report
-log_ok "Done. (setup-ubuntu-baseline v${SCRIPT_VERSION})"
+if [[ $UPDATE_MODE -eq 1 ]]; then
+  # No status report here on purpose — status_<c> is the config-correctness
+  # check, which is exactly what --update is not supposed to touch. Run
+  # without --update (or with --status) to see full config state.
+  echo
+  log_ok "Update pass complete. (setup-ubuntu-baseline v${SCRIPT_VERSION})"
+else
+  print_status_report
+  log_ok "Done. (setup-ubuntu-baseline v${SCRIPT_VERSION})"
+fi
