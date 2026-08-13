@@ -1,40 +1,52 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Brother Email Print  single-file installer & manager
+#  emailprint.sh  —  Email-to-Print  v2.0
 # =============================================================================
+#  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
+#  to a CUPS-registered network printer via IPP (driverless).
+#
 #  Usage:
-#    sudo ./emailprint.sh              First-time install
-#    sudo ./emailprint.sh --install    Same as above
-#    sudo ./emailprint.sh --config     Re-run configuration wizard
-#         ./emailprint.sh --status     Show service status & recent logs
-#         ./emailprint.sh --test       Test email login only
-#    sudo ./emailprint.sh --start      Start the service
-#    sudo ./emailprint.sh --stop       Stop the service
-#    sudo ./emailprint.sh --restart    Restart the service
-#         ./emailprint.sh --logs       Live tail of service logs
-#    sudo ./emailprint.sh --clear-logs Clear service journal logs
-#    sudo ./emailprint.sh --uninstall  Remove everything
-#         ./emailprint.sh --help       Show this help
+#    sudo ./emailprint.sh                   First-time install
+#    sudo ./emailprint.sh --install         Same as above
+#    sudo ./emailprint.sh --config          Re-run configuration wizard
+#         ./emailprint.sh --status          Show service status & recent logs
+#         ./emailprint.sh --test            Test email login only
+#         ./emailprint.sh --poll            Force an immediate mailbox check
+#    sudo ./emailprint.sh --start           Start the service
+#    sudo ./emailprint.sh --stop            Stop the service
+#    sudo ./emailprint.sh --restart         Restart the service
+#         ./emailprint.sh --logs            Live tail of service logs
+#    sudo ./emailprint.sh --clear-logs      Clear service journal logs
+#    sudo ./emailprint.sh --backup          Save & email a config backup
+#    sudo ./emailprint.sh --restore <file>  Restore config from backup file
+#    sudo ./emailprint.sh --uninstall       Remove everything
+#         ./emailprint.sh --help            Show this help
+# =============================================================================
+#  Version history:
+#    2.0  — IPP/driverless printing, timezone setup, backup/restore,
+#            --poll flag, generic naming
+#    1.0  — Initial release
 # =============================================================================
 
-INSTALL_DIR="/opt/brother-email-print"
-CONFIG_DIR="/etc/brother-email-print"
+INSTALL_DIR="/opt/email-print"
+CONFIG_DIR="/etc/email-print"
 CONFIG_FILE="${CONFIG_DIR}/emailprint.conf"
-PYTHON_SCRIPT="${INSTALL_DIR}/brother_email_print.py"
-SERVICE_NAME="brother-email-print"
+PYTHON_SCRIPT="${INSTALL_DIR}/email_print_daemon.py"
+SERVICE_NAME="email-print"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SERVICE_USER="printuser"
 
-PYTHON_B64="IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiIKYnJvdGhlcl9lbWFpbF9wcmludC5weQpNb25pdG9ycyBhbiBJTUFQIG1haWxib3ggZm9sZGVyIGZvciB1bnJlYWQgbWVzc2FnZXMgYW5kIHByaW50cwpQREYgYXR0YWNobWVudHMgdG8gdGhlIGNvbmZpZ3VyZWQgQ1VQUyBwcmludGVyLgpTdWNjZXNzZnVsbHkgcHJvY2Vzc2VkIGVtYWlscyBhcmUgbWFya2VkIGFzIHJlYWQuCgpFZGl0IC9ldGMvYnJvdGhlci1lbWFpbC1wcmludC9lbWFpbHByaW50LmNvbmYgdG8gY2hhbmdlIHNldHRpbmdzLCB0aGVuOgogIHN1ZG8gc3lzdGVtY3RsIHJlc3RhcnQgYnJvdGhlci1lbWFpbC1wcmludAoiIiIKCmltcG9ydCBpbWFwbGliCmltcG9ydCBlbWFpbAppbXBvcnQgb3MKaW1wb3J0IHN1YnByb2Nlc3MKaW1wb3J0IHRlbXBmaWxlCmltcG9ydCB0aW1lCmltcG9ydCBsb2dnaW5nCmZyb20gZW1haWwuaGVhZGVyIGltcG9ydCBkZWNvZGVfaGVhZGVyCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aApmcm9tIHR5cGluZyBpbXBvcnQgT3B0aW9uYWwKCkNPTkZJR19GSUxFID0gUGF0aCgiL2V0Yy9icm90aGVyLWVtYWlsLXByaW50L2VtYWlscHJpbnQuY29uZiIpCgpsb2dnaW5nLmJhc2ljQ29uZmlnKAogICAgbGV2ZWw9bG9nZ2luZy5JTkZPLAogICAgZm9ybWF0PSIlKGFzY3RpbWUpcyAgJShsZXZlbG5hbWUpLThzICUobWVzc2FnZSlzIiwKICAgIGRhdGVmbXQ9IiVZLSVtLSVkICVIOiVNOiVTIiwKKQpsb2cgPSBsb2dnaW5nLmdldExvZ2dlcihfX25hbWVfXykKCgpkZWYgbG9hZF9jb25maWcocGF0aDogUGF0aCkgLT4gZGljdDoKICAgIGNmZyA9IHt9CiAgICB3aXRoIHBhdGgub3BlbigpIGFzIGY6CiAgICAgICAgZm9yIGxpbmUgaW4gZjoKICAgICAgICAgICAgbGluZSA9IGxpbmUuc3RyaXAoKQogICAgICAgICAgICBpZiBub3QgbGluZSBvciBsaW5lLnN0YXJ0c3dpdGgoIiMiKToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIGlmICI9IiBub3QgaW4gbGluZToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIGtleSwgXywgdmFsID0gbGluZS5wYXJ0aXRpb24oIj0iKQogICAgICAgICAgICBjZmdba2V5LnN0cmlwKCldID0gdmFsLnN0cmlwKCkuc3RyaXAoJyInKS5zdHJpcCgiJyIpCiAgICByZXR1cm4gY2ZnCgoKZGVmIGJ1aWxkX3NldHRpbmdzKGNmZzogZGljdCkgLT4gZGljdDoKICAgIGFsbG93ZWRfc2VuZGVycyA9IHNldCgpCiAgICByYXcgPSBjZmcuZ2V0KCJBTExPV0VEX1NFTkRFUlMiLCAiIikuc3RyaXAoKQogICAgaWYgcmF3OgogICAgICAgIGFsbG93ZWRfc2VuZGVycyA9IHtzLnN0cmlwKCkgZm9yIHMgaW4gcmF3LnNwbGl0KCIsIikgaWYgcy5zdHJpcCgpfQoKICAgIGFsbG93ZWRfbWltZSA9IHNldChjZmcuZ2V0KCJBTExPV0VEX01JTUUiLCAiYXBwbGljYXRpb24vcGRmIikuc3BsaXQoKSkKCiAgICBscF9vcHRpb25zID0gWwogICAgICAgICItbyIsICJtZWRpYT17fSIuZm9ybWF0KGNmZy5nZXQoIkxQX01FRElBIiwgIkxldHRlciIpKSwKICAgICAgICAiLW8iLCAic2lkZXM9e30iLmZvcm1hdChjZmcuZ2V0KCJMUF9TSURFUyIsICJvbmUtc2lkZWQiKSksCiAgICAgICAgIi1vIiwgIkNvbG9yTW9kZWw9e30iLmZvcm1hdChjZmcuZ2V0KCJMUF9DT0xPUiIsICJjb2xvciIpKSwKICAgIF0KCiAgICByZXR1cm4gewogICAgICAgICJpbWFwX2hvc3QiOiAgICAgICBjZmdbIklNQVBfSE9TVCJdLAogICAgICAgICJpbWFwX3BvcnQiOiAgICAgICBpbnQoY2ZnLmdldCgiSU1BUF9QT1JUIiwgOTkzKSksCiAgICAgICAgImltYXBfdXNlciI6ICAgICAgIGNmZ1siSU1BUF9VU0VSIl0sCiAgICAgICAgImltYXBfcGFzcyI6ICAgICAgIGNmZ1siSU1BUF9QQVNTIl0sCiAgICAgICAgImltYXBfbWFpbGJveCI6ICAgIGNmZy5nZXQoIklNQVBfTUFJTEJPWCIsICJJTkJPWCIpLAogICAgICAgICJpbWFwX3NzbCI6ICAgICAgICBjZmcuZ2V0KCJJTUFQX1VTRV9TU0wiLCAidHJ1ZSIpLmxvd2VyKCkgPT0gInRydWUiLAogICAgICAgICJwcmludGVyIjogICAgICAgICBjZmdbIlBSSU5URVJfTkFNRSJdLAogICAgICAgICJwb2xsX2ludGVydmFsIjogICBpbnQoY2ZnLmdldCgiUE9MTF9JTlRFUlZBTCIsIDYwKSksCiAgICAgICAgImFsbG93ZWRfc2VuZGVycyI6IGFsbG93ZWRfc2VuZGVycywKICAgICAgICAiYWxsb3dlZF9taW1lIjogICAgYWxsb3dlZF9taW1lLAogICAgICAgICJhbGxvd2VkX2V4dCI6ICAgICB7Ii5wZGYifSwKICAgICAgICAibHBfb3B0aW9ucyI6ICAgICAgbHBfb3B0aW9ucywKICAgIH0KCgpkZWYgY29ubmVjdF9pbWFwKHM6IGRpY3QpOgogICAgY2xzID0gaW1hcGxpYi5JTUFQNF9TU0wgaWYgc1siaW1hcF9zc2wiXSBlbHNlIGltYXBsaWIuSU1BUDQKICAgIGNvbm4gPSBjbHMoc1siaW1hcF9ob3N0Il0sIHNbImltYXBfcG9ydCJdKQogICAgY29ubi5sb2dpbihzWyJpbWFwX3VzZXIiXSwgc1siaW1hcF9wYXNzIl0pCiAgICBsb2cuaW5mbygiQ29ubmVjdGVkIHRvICVzIGFzICVzIiwgc1siaW1hcF9ob3N0Il0sIHNbImltYXBfdXNlciJdKQogICAgcmV0dXJuIGNvbm4KCgpkZWYgZmV0Y2hfdW5zZWVuKGNvbm4sIG1haWxib3g6IHN0cikgLT4gbGlzdDoKICAgIGNvbm4uc2VsZWN0KCcie30iJy5mb3JtYXQobWFpbGJveCkpCiAgICBzdGF0dXMsIGRhdGEgPSBjb25uLnNlYXJjaChOb25lLCAiVU5TRUVOIikKICAgIGlmIHN0YXR1cyAhPSAiT0siIG9yIG5vdCBkYXRhWzBdOgogICAgICAgIHJldHVybiBbXQogICAgcmV0dXJuIGRhdGFbMF0uc3BsaXQoKQoKCmRlZiBkZWNvZGVfbmFtZShyYXcpIC0+IE9wdGlvbmFsW3N0cl06CiAgICBpZiByYXcgaXMgTm9uZToKICAgICAgICByZXR1cm4gTm9uZQogICAgcGFydHMgPSBkZWNvZGVfaGVhZGVyKHJhdykKICAgIG5hbWUgPSAiIgogICAgZm9yIHBhcnQsIGNoYXJzZXQgaW4gcGFydHM6CiAgICAgICAgaWYgaXNpbnN0YW5jZShwYXJ0LCBieXRlcyk6CiAgICAgICAgICAgIG5hbWUgKz0gcGFydC5kZWNvZGUoY2hhcnNldCBvciAidXRmLTgiLCBlcnJvcnM9InJlcGxhY2UiKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIG5hbWUgKz0gcGFydAogICAgcmV0dXJuIG5hbWUKCgpkZWYgc2VuZGVyX2FsbG93ZWQobXNnLCBhbGxvd2VkOiBzZXQpIC0+IGJvb2w6CiAgICBpZiBub3QgYWxsb3dlZDoKICAgICAgICByZXR1cm4gVHJ1ZQogICAgZnJvbV9oZHIgPSBtc2cuZ2V0KCJGcm9tIiwgIiIpCiAgICByZXR1cm4gYW55KGFkZHIgaW4gZnJvbV9oZHIgZm9yIGFkZHIgaW4gYWxsb3dlZCkKCgpkZWYgcHJpbnRfZmlsZShwYXRoOiBzdHIsIG5hbWU6IHN0ciwgczogZGljdCkgLT4gYm9vbDoKICAgICIiIlNlbmQgZmlsZSBkaXJlY3RseSB0byBwcmludGVyIHZpYSBDVVBTLiIiIgogICAgY21kID0gWyJscCIsICItZCIsIHNbInByaW50ZXIiXV0gKyBzWyJscF9vcHRpb25zIl0gKyBbcGF0aF0KICAgIGxvZy5pbmZvKCIgIFByaW50aW5nICUtNDBzIC0+ICVzIiwgbmFtZSwgc1sicHJpbnRlciJdKQogICAgcmVzdWx0ID0gc3VicHJvY2Vzcy5ydW4oY21kLCBjYXB0dXJlX291dHB1dD1UcnVlLCB0ZXh0PVRydWUpCiAgICBpZiByZXN1bHQucmV0dXJuY29kZSA9PSAwOgogICAgICAgIGxvZy5pbmZvKCIgIE9LICAlcyIsIHJlc3VsdC5zdGRvdXQuc3RyaXAoKSkKICAgICAgICByZXR1cm4gVHJ1ZQogICAgbG9nLmVycm9yKCIgIEZBSUwgICVzIiwgcmVzdWx0LnN0ZGVyci5zdHJpcCgpKQogICAgcmV0dXJuIEZhbHNlCgoKZGVmIHByb2Nlc3NfbWVzc2FnZShjb25uLCBtc2dfaWQ6IGJ5dGVzLCBzOiBkaWN0KToKICAgIHN0YXR1cywgZGF0YSA9IGNvbm4uZmV0Y2gobXNnX2lkLCAiKFJGQzgyMikiKQogICAgaWYgc3RhdHVzICE9ICJPSyI6CiAgICAgICAgbG9nLndhcm5pbmcoIkNvdWxkIG5vdCBmZXRjaCBtZXNzYWdlICVzIiwgbXNnX2lkKQogICAgICAgIHJldHVybgoKICAgIG1zZyA9IGVtYWlsLm1lc3NhZ2VfZnJvbV9ieXRlcyhkYXRhWzBdWzFdKQogICAgcmF3X3N1YmogPSBkZWNvZGVfaGVhZGVyKG1zZy5nZXQoIlN1YmplY3QiLCAiIikpWzBdWzBdCiAgICBzdWJqZWN0ID0gcmF3X3N1YmouZGVjb2RlKGVycm9ycz0icmVwbGFjZSIpIGlmIGlzaW5zdGFuY2UocmF3X3N1YmosIGJ5dGVzKSBlbHNlIHJhd19zdWJqCiAgICBsb2cuaW5mbygiTWVzc2FnZTogJXMgIChmcm9tOiAlcykiLCBzdWJqZWN0LCBtc2cuZ2V0KCJGcm9tIiwgInVua25vd24iKSkKCiAgICBpZiBub3Qgc2VuZGVyX2FsbG93ZWQobXNnLCBzWyJhbGxvd2VkX3NlbmRlcnMiXSk6CiAgICAgICAgbG9nLmluZm8oIiAgU2tpcHBpbmcg4oCUIHNlbmRlciBub3QgaW4gYWxsb3dlZCBsaXN0IikKICAgICAgICBjb25uLnN0b3JlKG1zZ19pZCwgIitGTEFHUyIsICJcXFNlZW4iKQogICAgICAgIHJldHVybgoKICAgIHByaW50ZWQgPSAwCiAgICBmYWlsZWQgID0gMAoKICAgIGZvciBwYXJ0IGluIG1zZy53YWxrKCk6CiAgICAgICAgY29udGVudF90eXBlID0gcGFydC5nZXRfY29udGVudF90eXBlKCkKICAgICAgICBmaWxlbmFtZSA9IGRlY29kZV9uYW1lKHBhcnQuZ2V0X2ZpbGVuYW1lKCkpCiAgICAgICAgZXh0ID0gb3MucGF0aC5zcGxpdGV4dChmaWxlbmFtZSBvciAiIilbMV0ubG93ZXIoKQoKICAgICAgICBpZiBjb250ZW50X3R5cGUgbm90IGluIHNbImFsbG93ZWRfbWltZSJdIGFuZCBleHQgbm90IGluIHNbImFsbG93ZWRfZXh0Il06CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgcGF5bG9hZCA9IHBhcnQuZ2V0X3BheWxvYWQoZGVjb2RlPVRydWUpCiAgICAgICAgaWYgbm90IHBheWxvYWQ6CiAgICAgICAgICAgIGNvbnRpbnVlCgogICAgICAgIHN1ZmZpeCA9IGV4dCBpZiBleHQgZWxzZSAiLnBkZiIKICAgICAgICB3aXRoIHRlbXBmaWxlLk5hbWVkVGVtcG9yYXJ5RmlsZShzdWZmaXg9c3VmZml4LCBkZWxldGU9RmFsc2UpIGFzIHRtcDoKICAgICAgICAgICAgdG1wLndyaXRlKHBheWxvYWQpCiAgICAgICAgICAgIHRtcF9wYXRoID0gdG1wLm5hbWUKICAgICAgICB0cnk6CiAgICAgICAgICAgIGlmIHByaW50X2ZpbGUodG1wX3BhdGgsIGZpbGVuYW1lIG9yICJhdHRhY2htZW50Iiwgcyk6CiAgICAgICAgICAgICAgICBwcmludGVkICs9IDEKICAgICAgICAgICAgZWxzZToKICAgICAgICAgICAgICAgIGZhaWxlZCArPSAxCiAgICAgICAgZmluYWxseToKICAgICAgICAgICAgb3MudW5saW5rKHRtcF9wYXRoKQoKICAgIGlmIGZhaWxlZCA+IDA6CiAgICAgICAgbG9nLndhcm5pbmcoIiAgJWQgYXR0YWNobWVudChzKSBmYWlsZWQg4oCUIGxlYXZpbmcgdW5yZWFkIGZvciByZXRyeSIsIGZhaWxlZCkKICAgIGVsc2U6CiAgICAgICAgaWYgcHJpbnRlZCA9PSAwOgogICAgICAgICAgICBsb2cuaW5mbygiICBObyBwcmludGFibGUgYXR0YWNobWVudHMgZm91bmQiKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIGxvZy5pbmZvKCIgICVkIGF0dGFjaG1lbnQocykgcHJpbnRlZCBzdWNjZXNzZnVsbHkiLCBwcmludGVkKQogICAgICAgIGNvbm4uc3RvcmUobXNnX2lkLCAiK0ZMQUdTIiwgIlxcU2VlbiIpCgoKZGVmIHBvbGxfb25jZShzOiBkaWN0KToKICAgIHRyeToKICAgICAgICBjb25uID0gY29ubmVjdF9pbWFwKHMpCiAgICAgICAgaWRzICA9IGZldGNoX3Vuc2Vlbihjb25uLCBzWyJpbWFwX21haWxib3giXSkKICAgICAgICBpZiBub3QgaWRzOgogICAgICAgICAgICBsb2cuZGVidWcoIk5vIHVucmVhZCBtZXNzYWdlcyBpbiAnJXMnIiwgc1siaW1hcF9tYWlsYm94Il0pCiAgICAgICAgZm9yIG1pZCBpbiBpZHM6CiAgICAgICAgICAgIHByb2Nlc3NfbWVzc2FnZShjb25uLCBtaWQsIHMpCiAgICAgICAgY29ubi5sb2dvdXQoKQogICAgZXhjZXB0IGltYXBsaWIuSU1BUDQuZXJyb3IgYXMgZXhjOgogICAgICAgIGxvZy5lcnJvcigiSU1BUCBlcnJvcjogJXMiLCBleGMpCiAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGV4YzoKICAgICAgICBsb2cuZXJyb3IoIlVuZXhwZWN0ZWQgZXJyb3I6ICVzIiwgZXhjLCBleGNfaW5mbz1UcnVlKQoKCmRlZiBtYWluKCk6CiAgICBpZiBub3QgQ09ORklHX0ZJTEUuZXhpc3RzKCk6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgKICAgICAgICAgICAgIkNvbmZpZyBmaWxlIG5vdCBmb3VuZDoge31cbiIKICAgICAgICAgICAgIlJ1biB0aGUgaW5zdGFsbGVyOiBzdWRvIGVtYWlscHJpbnQuc2ggLS1pbnN0YWxsIi5mb3JtYXQoQ09ORklHX0ZJTEUpCiAgICAgICAgKQogICAgY2ZnID0gbG9hZF9jb25maWcoQ09ORklHX0ZJTEUpCiAgICBzICAgPSBidWlsZF9zZXR0aW5ncyhjZmcpCiAgICBsb2cuaW5mbygiU3RhcnRlZCAgKHBvbGwgZXZlcnkgJWRzKSIsIHNbInBvbGxfaW50ZXJ2YWwiXSkKICAgIGxvZy5pbmZvKCJQcmludGVyICA6ICVzIiwgc1sicHJpbnRlciJdKQogICAgbG9nLmluZm8oIk1haWxib3ggIDogJXMgIEAgICVzIiwgc1siaW1hcF9tYWlsYm94Il0sIHNbImltYXBfaG9zdCJdKQoKICAgIHdoaWxlIFRydWU6CiAgICAgICAgY2ZnID0gbG9hZF9jb25maWcoQ09ORklHX0ZJTEUpCiAgICAgICAgcyAgID0gYnVpbGRfc2V0dGluZ3MoY2ZnKQogICAgICAgIHBvbGxfb25jZShzKQogICAgICAgIHRpbWUuc2xlZXAoc1sicG9sbF9pbnRlcnZhbCJdKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtYWluKCkK"
+PYTHON_B64="IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiIKZW1haWxfcHJpbnRfZGFlbW9uLnB5Ck1vbml0b3JzIGFuIElNQVAgbWFpbGJveCBmb2xkZXIgZm9yIHVucmVhZCBtZXNzYWdlcyBhbmQgcHJpbnRzClBERiBhdHRhY2htZW50cyB0byB0aGUgY29uZmlndXJlZCBDVVBTIHByaW50ZXIuClN1Y2Nlc3NmdWxseSBwcm9jZXNzZWQgZW1haWxzIGFyZSBtYXJrZWQgYXMgcmVhZC4KCkVkaXQgL2V0Yy9lbWFpbC1wcmludC9lbWFpbHByaW50LmNvbmYgdG8gY2hhbmdlIHNldHRpbmdzLCB0aGVuOgogIHN1ZG8gc3lzdGVtY3RsIHJlc3RhcnQgZW1haWwtcHJpbnQKClJ1biBhIG9uZS1zaG90IHBvbGw6CiAgc3VkbyBweXRob24zIC9vcHQvZW1haWwtcHJpbnQvZW1haWxfcHJpbnRfZGFlbW9uLnB5IC0tcG9sbAoiIiIKCmltcG9ydCBpbWFwbGliCmltcG9ydCBlbWFpbAppbXBvcnQgb3MKaW1wb3J0IHN1YnByb2Nlc3MKaW1wb3J0IHN5cwppbXBvcnQgdGVtcGZpbGUKaW1wb3J0IHRpbWUKaW1wb3J0IGxvZ2dpbmcKZnJvbSBlbWFpbC5oZWFkZXIgaW1wb3J0IGRlY29kZV9oZWFkZXIKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmZyb20gdHlwaW5nIGltcG9ydCBPcHRpb25hbAoKQ09ORklHX0ZJTEUgPSBQYXRoKCIvZXRjL2VtYWlsLXByaW50L2VtYWlscHJpbnQuY29uZiIpCgpsb2dnaW5nLmJhc2ljQ29uZmlnKAogICAgbGV2ZWw9bG9nZ2luZy5JTkZPLAogICAgZm9ybWF0PSIlKGFzY3RpbWUpcyAgJShsZXZlbG5hbWUpLThzICUobWVzc2FnZSlzIiwKICAgIGRhdGVmbXQ9IiVZLSVtLSVkICVIOiVNOiVTIiwKKQpsb2cgPSBsb2dnaW5nLmdldExvZ2dlcihfX25hbWVfXykKCgpkZWYgbG9hZF9jb25maWcocGF0aDogUGF0aCkgLT4gZGljdDoKICAgIGNmZyA9IHt9CiAgICB3aXRoIHBhdGgub3BlbigpIGFzIGY6CiAgICAgICAgZm9yIGxpbmUgaW4gZjoKICAgICAgICAgICAgbGluZSA9IGxpbmUuc3RyaXAoKQogICAgICAgICAgICBpZiBub3QgbGluZSBvciBsaW5lLnN0YXJ0c3dpdGgoIiMiKToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIGlmICI9IiBub3QgaW4gbGluZToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIGtleSwgXywgdmFsID0gbGluZS5wYXJ0aXRpb24oIj0iKQogICAgICAgICAgICBjZmdba2V5LnN0cmlwKCldID0gdmFsLnN0cmlwKCkuc3RyaXAoJyInKS5zdHJpcCgiJyIpCiAgICByZXR1cm4gY2ZnCgoKZGVmIGJ1aWxkX3NldHRpbmdzKGNmZzogZGljdCkgLT4gZGljdDoKICAgIGFsbG93ZWRfc2VuZGVycyA9IHNldCgpCiAgICByYXcgPSBjZmcuZ2V0KCJBTExPV0VEX1NFTkRFUlMiLCAiIikuc3RyaXAoKQogICAgaWYgcmF3OgogICAgICAgIGFsbG93ZWRfc2VuZGVycyA9IHtzLnN0cmlwKCkgZm9yIHMgaW4gcmF3LnNwbGl0KCIsIikgaWYgcy5zdHJpcCgpfQoKICAgIGFsbG93ZWRfbWltZSA9IHNldChjZmcuZ2V0KCJBTExPV0VEX01JTUUiLCAiYXBwbGljYXRpb24vcGRmIikuc3BsaXQoKSkKCiAgICBscF9vcHRpb25zID0gWwogICAgICAgICItbyIsICJtZWRpYT17fSIuZm9ybWF0KGNmZy5nZXQoIkxQX01FRElBIiwgIkxldHRlciIpKSwKICAgICAgICAiLW8iLCAic2lkZXM9e30iLmZvcm1hdChjZmcuZ2V0KCJMUF9TSURFUyIsICJvbmUtc2lkZWQiKSksCiAgICAgICAgIi1vIiwgIkNvbG9yTW9kZWw9e30iLmZvcm1hdChjZmcuZ2V0KCJMUF9DT0xPUiIsICJjb2xvciIpKSwKICAgIF0KCiAgICByZXR1cm4gewogICAgICAgICJpbWFwX2hvc3QiOiAgICAgICBjZmdbIklNQVBfSE9TVCJdLAogICAgICAgICJpbWFwX3BvcnQiOiAgICAgICBpbnQoY2ZnLmdldCgiSU1BUF9QT1JUIiwgOTkzKSksCiAgICAgICAgImltYXBfdXNlciI6ICAgICAgIGNmZ1siSU1BUF9VU0VSIl0sCiAgICAgICAgImltYXBfcGFzcyI6ICAgICAgIGNmZ1siSU1BUF9QQVNTIl0sCiAgICAgICAgImltYXBfbWFpbGJveCI6ICAgIGNmZy5nZXQoIklNQVBfTUFJTEJPWCIsICJJTkJPWCIpLAogICAgICAgICJpbWFwX3NzbCI6ICAgICAgICBjZmcuZ2V0KCJJTUFQX1VTRV9TU0wiLCAidHJ1ZSIpLmxvd2VyKCkgPT0gInRydWUiLAogICAgICAgICJwcmludGVyIjogICAgICAgICBjZmdbIlBSSU5URVJfTkFNRSJdLAogICAgICAgICJwb2xsX2ludGVydmFsIjogICBpbnQoY2ZnLmdldCgiUE9MTF9JTlRFUlZBTCIsIDYwKSksCiAgICAgICAgImFsbG93ZWRfc2VuZGVycyI6IGFsbG93ZWRfc2VuZGVycywKICAgICAgICAiYWxsb3dlZF9taW1lIjogICAgYWxsb3dlZF9taW1lLAogICAgICAgICJhbGxvd2VkX2V4dCI6ICAgICB7Ii5wZGYifSwKICAgICAgICAibHBfb3B0aW9ucyI6ICAgICAgbHBfb3B0aW9ucywKICAgIH0KCgpkZWYgY29ubmVjdF9pbWFwKHM6IGRpY3QpOgogICAgY2xzID0gaW1hcGxpYi5JTUFQNF9TU0wgaWYgc1siaW1hcF9zc2wiXSBlbHNlIGltYXBsaWIuSU1BUDQKICAgIGNvbm4gPSBjbHMoc1siaW1hcF9ob3N0Il0sIHNbImltYXBfcG9ydCJdKQogICAgY29ubi5sb2dpbihzWyJpbWFwX3VzZXIiXSwgc1siaW1hcF9wYXNzIl0pCiAgICBsb2cuaW5mbygiQ29ubmVjdGVkIHRvICVzIGFzICVzIiwgc1siaW1hcF9ob3N0Il0sIHNbImltYXBfdXNlciJdKQogICAgcmV0dXJuIGNvbm4KCgpkZWYgZmV0Y2hfdW5zZWVuKGNvbm4sIG1haWxib3g6IHN0cikgLT4gbGlzdDoKICAgIGNvbm4uc2VsZWN0KCcie30iJy5mb3JtYXQobWFpbGJveCkpCiAgICBzdGF0dXMsIGRhdGEgPSBjb25uLnNlYXJjaChOb25lLCAiVU5TRUVOIikKICAgIGlmIHN0YXR1cyAhPSAiT0siIG9yIG5vdCBkYXRhWzBdOgogICAgICAgIHJldHVybiBbXQogICAgcmV0dXJuIGRhdGFbMF0uc3BsaXQoKQoKCmRlZiBkZWNvZGVfbmFtZShyYXcpIC0+IE9wdGlvbmFsW3N0cl06CiAgICBpZiByYXcgaXMgTm9uZToKICAgICAgICByZXR1cm4gTm9uZQogICAgcGFydHMgPSBkZWNvZGVfaGVhZGVyKHJhdykKICAgIG5hbWUgPSAiIgogICAgZm9yIHBhcnQsIGNoYXJzZXQgaW4gcGFydHM6CiAgICAgICAgaWYgaXNpbnN0YW5jZShwYXJ0LCBieXRlcyk6CiAgICAgICAgICAgIG5hbWUgKz0gcGFydC5kZWNvZGUoY2hhcnNldCBvciAidXRmLTgiLCBlcnJvcnM9InJlcGxhY2UiKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIG5hbWUgKz0gcGFydAogICAgcmV0dXJuIG5hbWUKCgpkZWYgc2VuZGVyX2FsbG93ZWQobXNnLCBhbGxvd2VkOiBzZXQpIC0+IGJvb2w6CiAgICBpZiBub3QgYWxsb3dlZDoKICAgICAgICByZXR1cm4gVHJ1ZQogICAgZnJvbV9oZHIgPSBtc2cuZ2V0KCJGcm9tIiwgIiIpCiAgICByZXR1cm4gYW55KGFkZHIgaW4gZnJvbV9oZHIgZm9yIGFkZHIgaW4gYWxsb3dlZCkKCgpkZWYgcHJpbnRfZmlsZShwYXRoOiBzdHIsIG5hbWU6IHN0ciwgczogZGljdCkgLT4gYm9vbDoKICAgICIiIlNlbmQgZmlsZSBkaXJlY3RseSB0byBwcmludGVyIHZpYSBDVVBTLiIiIgogICAgY21kID0gWyJscCIsICItZCIsIHNbInByaW50ZXIiXV0gKyBzWyJscF9vcHRpb25zIl0gKyBbcGF0aF0KICAgIGxvZy5pbmZvKCIgIFByaW50aW5nICUtNDBzIC0+ICVzIiwgbmFtZSwgc1sicHJpbnRlciJdKQogICAgcmVzdWx0ID0gc3VicHJvY2Vzcy5ydW4oY21kLCBjYXB0dXJlX291dHB1dD1UcnVlLCB0ZXh0PVRydWUpCiAgICBpZiByZXN1bHQucmV0dXJuY29kZSA9PSAwOgogICAgICAgIGxvZy5pbmZvKCIgIE9LICAlcyIsIHJlc3VsdC5zdGRvdXQuc3RyaXAoKSkKICAgICAgICByZXR1cm4gVHJ1ZQogICAgbG9nLmVycm9yKCIgIEZBSUwgICVzIiwgcmVzdWx0LnN0ZGVyci5zdHJpcCgpKQogICAgcmV0dXJuIEZhbHNlCgoKZGVmIHByb2Nlc3NfbWVzc2FnZShjb25uLCBtc2dfaWQ6IGJ5dGVzLCBzOiBkaWN0KToKICAgIHN0YXR1cywgZGF0YSA9IGNvbm4uZmV0Y2gobXNnX2lkLCAiKFJGQzgyMikiKQogICAgaWYgc3RhdHVzICE9ICJPSyI6CiAgICAgICAgbG9nLndhcm5pbmcoIkNvdWxkIG5vdCBmZXRjaCBtZXNzYWdlICVzIiwgbXNnX2lkKQogICAgICAgIHJldHVybgoKICAgIG1zZyA9IGVtYWlsLm1lc3NhZ2VfZnJvbV9ieXRlcyhkYXRhWzBdWzFdKQogICAgcmF3X3N1YmogPSBkZWNvZGVfaGVhZGVyKG1zZy5nZXQoIlN1YmplY3QiLCAiIikpWzBdWzBdCiAgICBzdWJqZWN0ID0gcmF3X3N1YmouZGVjb2RlKGVycm9ycz0icmVwbGFjZSIpIGlmIGlzaW5zdGFuY2UocmF3X3N1YmosIGJ5dGVzKSBlbHNlIHJhd19zdWJqCiAgICBsb2cuaW5mbygiTWVzc2FnZTogJXMgIChmcm9tOiAlcykiLCBzdWJqZWN0LCBtc2cuZ2V0KCJGcm9tIiwgInVua25vd24iKSkKCiAgICBpZiBub3Qgc2VuZGVyX2FsbG93ZWQobXNnLCBzWyJhbGxvd2VkX3NlbmRlcnMiXSk6CiAgICAgICAgbG9nLmluZm8oIiAgU2tpcHBpbmcg4oCUIHNlbmRlciBub3QgaW4gYWxsb3dlZCBsaXN0IikKICAgICAgICBjb25uLnN0b3JlKG1zZ19pZCwgIitGTEFHUyIsICJcXFNlZW4iKQogICAgICAgIHJldHVybgoKICAgIHByaW50ZWQgPSAwCiAgICBmYWlsZWQgID0gMAoKICAgIGZvciBwYXJ0IGluIG1zZy53YWxrKCk6CiAgICAgICAgY29udGVudF90eXBlID0gcGFydC5nZXRfY29udGVudF90eXBlKCkKICAgICAgICBmaWxlbmFtZSA9IGRlY29kZV9uYW1lKHBhcnQuZ2V0X2ZpbGVuYW1lKCkpCiAgICAgICAgZXh0ID0gb3MucGF0aC5zcGxpdGV4dChmaWxlbmFtZSBvciAiIilbMV0ubG93ZXIoKQoKICAgICAgICBpZiBjb250ZW50X3R5cGUgbm90IGluIHNbImFsbG93ZWRfbWltZSJdIGFuZCBleHQgbm90IGluIHNbImFsbG93ZWRfZXh0Il06CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgcGF5bG9hZCA9IHBhcnQuZ2V0X3BheWxvYWQoZGVjb2RlPVRydWUpCiAgICAgICAgaWYgbm90IHBheWxvYWQ6CiAgICAgICAgICAgIGNvbnRpbnVlCgogICAgICAgIHN1ZmZpeCA9IGV4dCBpZiBleHQgZWxzZSAiLnBkZiIKICAgICAgICB3aXRoIHRlbXBmaWxlLk5hbWVkVGVtcG9yYXJ5RmlsZShzdWZmaXg9c3VmZml4LCBkZWxldGU9RmFsc2UpIGFzIHRtcDoKICAgICAgICAgICAgdG1wLndyaXRlKHBheWxvYWQpCiAgICAgICAgICAgIHRtcF9wYXRoID0gdG1wLm5hbWUKICAgICAgICB0cnk6CiAgICAgICAgICAgIGlmIHByaW50X2ZpbGUodG1wX3BhdGgsIGZpbGVuYW1lIG9yICJhdHRhY2htZW50Iiwgcyk6CiAgICAgICAgICAgICAgICBwcmludGVkICs9IDEKICAgICAgICAgICAgZWxzZToKICAgICAgICAgICAgICAgIGZhaWxlZCArPSAxCiAgICAgICAgZmluYWxseToKICAgICAgICAgICAgb3MudW5saW5rKHRtcF9wYXRoKQoKICAgIGlmIGZhaWxlZCA+IDA6CiAgICAgICAgbG9nLndhcm5pbmcoIiAgJWQgYXR0YWNobWVudChzKSBmYWlsZWQg4oCUIGxlYXZpbmcgdW5yZWFkIGZvciByZXRyeSIsIGZhaWxlZCkKICAgIGVsc2U6CiAgICAgICAgaWYgcHJpbnRlZCA9PSAwOgogICAgICAgICAgICBsb2cuaW5mbygiICBObyBwcmludGFibGUgYXR0YWNobWVudHMgZm91bmQiKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIGxvZy5pbmZvKCIgICVkIGF0dGFjaG1lbnQocykgcHJpbnRlZCBzdWNjZXNzZnVsbHkiLCBwcmludGVkKQogICAgICAgIGNvbm4uc3RvcmUobXNnX2lkLCAiK0ZMQUdTIiwgIlxcU2VlbiIpCgoKZGVmIHBvbGxfb25jZShzOiBkaWN0KToKICAgIHRyeToKICAgICAgICBjb25uID0gY29ubmVjdF9pbWFwKHMpCiAgICAgICAgaWRzICA9IGZldGNoX3Vuc2Vlbihjb25uLCBzWyJpbWFwX21haWxib3giXSkKICAgICAgICBpZiBub3QgaWRzOgogICAgICAgICAgICBsb2cuaW5mbygiTm8gdW5yZWFkIG1lc3NhZ2VzIGluICclcyciLCBzWyJpbWFwX21haWxib3giXSkKICAgICAgICBmb3IgbWlkIGluIGlkczoKICAgICAgICAgICAgcHJvY2Vzc19tZXNzYWdlKGNvbm4sIG1pZCwgcykKICAgICAgICBjb25uLmxvZ291dCgpCiAgICBleGNlcHQgaW1hcGxpYi5JTUFQNC5lcnJvciBhcyBleGM6CiAgICAgICAgbG9nLmVycm9yKCJJTUFQIGVycm9yOiAlcyIsIGV4YykKICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZXhjOgogICAgICAgIGxvZy5lcnJvcigiVW5leHBlY3RlZCBlcnJvcjogJXMiLCBleGMsIGV4Y19pbmZvPVRydWUpCgoKZGVmIG1haW4oKToKICAgIGlmIG5vdCBDT05GSUdfRklMRS5leGlzdHMoKToKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KAogICAgICAgICAgICAiQ29uZmlnIGZpbGUgbm90IGZvdW5kOiB7fVxuIgogICAgICAgICAgICAiUnVuIHRoZSBpbnN0YWxsZXI6IHN1ZG8gZW1haWxwcmludC5zaCAtLWluc3RhbGwiLmZvcm1hdChDT05GSUdfRklMRSkKICAgICAgICApCgogICAgIyBPbmUtc2hvdCBwb2xsIG1vZGUKICAgIGlmIGxlbihzeXMuYXJndikgPiAxIGFuZCBzeXMuYXJndlsxXSA9PSAiLS1wb2xsIjoKICAgICAgICBjZmcgPSBsb2FkX2NvbmZpZyhDT05GSUdfRklMRSkKICAgICAgICBzICAgPSBidWlsZF9zZXR0aW5ncyhjZmcpCiAgICAgICAgbG9nLmluZm8oIk9uZS1zaG90IHBvbGwg4oCUIFByaW50ZXI6ICVzICBNYWlsYm94OiAlcyBAICVzIiwKICAgICAgICAgICAgICAgICBzWyJwcmludGVyIl0sIHNbImltYXBfbWFpbGJveCJdLCBzWyJpbWFwX2hvc3QiXSkKICAgICAgICBwb2xsX29uY2UocykKICAgICAgICByZXR1cm4KCiAgICAjIE5vcm1hbCBkYWVtb24gbW9kZQogICAgY2ZnID0gbG9hZF9jb25maWcoQ09ORklHX0ZJTEUpCiAgICBzICAgPSBidWlsZF9zZXR0aW5ncyhjZmcpCiAgICBsb2cuaW5mbygiU3RhcnRlZCAgKHBvbGwgZXZlcnkgJWRzKSIsIHNbInBvbGxfaW50ZXJ2YWwiXSkKICAgIGxvZy5pbmZvKCJQcmludGVyICA6ICVzIiwgc1sicHJpbnRlciJdKQogICAgbG9nLmluZm8oIk1haWxib3ggIDogJXMgIEAgICVzIiwgc1siaW1hcF9tYWlsYm94Il0sIHNbImltYXBfaG9zdCJdKQoKICAgIHdoaWxlIFRydWU6CiAgICAgICAgY2ZnID0gbG9hZF9jb25maWcoQ09ORklHX0ZJTEUpCiAgICAgICAgcyAgID0gYnVpbGRfc2V0dGluZ3MoY2ZnKQogICAgICAgIHBvbGxfb25jZShzKQogICAgICAgIHRpbWUuc2xlZXAoc1sicG9sbF9pbnRlcnZhbCJdKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtYWluKCkK"
 
-RED='\033[0;31m';  GREEN='\033[0;32m';  YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m';  BOLD='\033[1m';  NC='\033[0m'
+RED='[0;31m';  GREEN='[0;32m';  YELLOW='[1;33m'
+BLUE='[0;34m'; CYAN='[0;36m';  BOLD='[1m';  NC='[0m'
 
 info()   { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()     { echo -e "${GREEN}[ OK ]${NC}  $*"; }
 warn()   { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error()  { echo -e "${RED}[ERR ]${NC}  $*" >&2; }
-header() { echo -e "\n${BOLD}${BLUE}── $* ──────────────────────────────────────${NC}"; }
+header() { echo -e "
+${BOLD}${BLUE}── $* ──────────────────────────────────────${NC}"; }
 die()    { error "$*"; exit 1; }
 
 require_root() {
@@ -55,6 +67,34 @@ ensure_service_user() {
         info "System user '${SERVICE_USER}' already exists"
     fi
     usermod -aG lp "$SERVICE_USER" 2>/dev/null || true
+}
+
+# =============================================================================
+#  TIMEZONE SETUP
+# =============================================================================
+configure_timezone() {
+    header "Timezone configuration"
+
+    local current_tz
+    current_tz=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null)
+
+    info "Current timezone: ${current_tz}"
+    echo
+    echo    "  Set the timezone so log timestamps match your local time."
+    echo -e "  Examples: America/Los_Angeles  America/New_York  America/Chicago"
+    echo -e "  Full list: ${CYAN}timedatectl list-timezones${NC}"
+    echo
+    prompt_value "Timezone (Enter to keep current)" "$current_tz"
+    local new_tz="$REPLY"
+
+    if [[ "$new_tz" == "$current_tz" ]]; then
+        info "Timezone unchanged: ${current_tz}"
+    elif timedatectl set-timezone "$new_tz" 2>/dev/null; then
+        ok "Timezone set to ${new_tz}"
+    else
+        warn "Invalid timezone '${new_tz}' — keeping ${current_tz}"
+        warn "Run: sudo timedatectl set-timezone America/Your_Zone"
+    fi
 }
 
 # =============================================================================
@@ -176,20 +216,20 @@ register_printer() {
     info "Adding ${PRINTER_NAME} at socket://${PRINTER_IP}:9100"
 
     local driver
-    driver=$(lpinfo -m 2>/dev/null | grep -i "brother.*l8900\|brother.*8900" | head -1 | awk '{print $1}')
+    driver=$(lpinfo -m 2>/dev/null | grep -i "l8900\|8900" | head -1 | awk '{print $1}')
 
     if [[ -n "$driver" ]]; then
-        info "Using Brother driver: ${driver}"
+        info "Using driver: ${driver}"
         if lpadmin -p "$PRINTER_NAME" -E \
                 -v "socket://${PRINTER_IP}:9100" \
                 -m "$driver" 2>/dev/null; then
-            ok "Printer registered with Brother driver"
+            ok "Printer registered with driver"
             cupsenable "$PRINTER_NAME" 2>/dev/null || true
             cupsaccept "$PRINTER_NAME" 2>/dev/null || true
             _test_printer_reachable
             return
         fi
-        warn "Brother driver registration failed — trying IPP Everywhere"
+        warn "Driver registration failed — trying IPP Everywhere"
     fi
 
     if lpadmin -p "$PRINTER_NAME" -E \
@@ -226,9 +266,10 @@ prompt_config() {
 
     local def_imap_host="imap.gmail.com" def_imap_port="993"
     local def_imap_user="" def_imap_pass="" def_imap_mailbox="INBOX"
-    local def_imap_ssl="true" def_printer_ip="" def_printer="Brother_MFC-L8900CDW"
+    local def_imap_ssl="true" def_printer_ip="" def_printer="PRINTER"
     local def_poll="60" def_senders="" def_lp_media="Letter"
     local def_lp_sides="one-sided" def_lp_color="color"
+    local def_backup_email="" def_smtp_host="smtp.gmail.com" def_smtp_port="587"
 
     if [[ -f "$CONFIG_FILE" ]]; then
         source "$CONFIG_FILE" 2>/dev/null || true
@@ -245,6 +286,9 @@ prompt_config() {
         def_lp_media="${LP_MEDIA:-$def_lp_media}"
         def_lp_sides="${LP_SIDES:-$def_lp_sides}"
         def_lp_color="${LP_COLOR:-$def_lp_color}"
+        def_backup_email="${BACKUP_EMAIL:-$def_backup_email}"
+        def_smtp_host="${SMTP_HOST:-$def_smtp_host}"
+        def_smtp_port="${SMTP_PORT:-$def_smtp_port}"
     fi
 
     echo
@@ -280,6 +324,14 @@ prompt_config() {
     prompt_choice "Paper size" "Letter A4 Legal"                                    "$def_lp_media"; LP_MEDIA="$REPLY"
     prompt_choice "Duplex"     "one-sided two-sided-long-edge two-sided-short-edge" "$def_lp_sides"; LP_SIDES="$REPLY"
     prompt_choice "Colour"     "color monochrome"                                   "$def_lp_color"; LP_COLOR="$REPLY"
+    echo
+
+    echo -e "  ${BOLD}── Backup ──${NC}"
+    echo    "  Config backups can be emailed via --backup. Leave blank to skip email."
+    echo
+    prompt_value "Backup destination email"  "$def_backup_email"; BACKUP_EMAIL="$REPLY"
+    prompt_value "SMTP hostname"             "$def_smtp_host";    SMTP_HOST="$REPLY"
+    prompt_value "SMTP port"                 "$def_smtp_port";    SMTP_PORT="$REPLY"
 
     write_config
 }
@@ -339,7 +391,7 @@ write_config() {
 
     cat > "$CONFIG_FILE" << CONF
 # =============================================================================
-#  Brother Email Print — Configuration
+#  Email-to-Print — Configuration
 #  Edit this file then:  sudo systemctl restart ${SERVICE_NAME}
 # =============================================================================
 
@@ -352,14 +404,18 @@ IMAP_MAILBOX="${IMAP_MAILBOX}"
 IMAP_USE_SSL="${IMAP_USE_SSL}"
 
 # ── Printer ───────────────────────────────────────────────────────────────────
+# IP or hostname of the printer
 PRINTER_IP="${PRINTER_IP}"
+# Name as registered in CUPS — must match:  lpstat -p
 PRINTER_NAME="${PRINTER_NAME}"
 
 # ── Polling ───────────────────────────────────────────────────────────────────
+# Seconds between mailbox checks
 POLL_INTERVAL="${POLL_INTERVAL}"
 
 # ── Security ──────────────────────────────────────────────────────────────────
 # Comma-separated allowed senders. Blank = allow all.
+# Example: ALLOWED_SENDERS="boss@company.com,alice@company.com"
 ALLOWED_SENDERS="${ALLOWED_SENDERS}"
 
 # ── Print options ─────────────────────────────────────────────────────────────
@@ -369,6 +425,13 @@ LP_COLOR="${LP_COLOR}"
 
 # ── Allowed attachment types ──────────────────────────────────────────────────
 ALLOWED_MIME="application/pdf"
+
+# ── Backup ────────────────────────────────────────────────────────────────────
+# Email address to receive config backups (used by --backup). Blank = no email.
+BACKUP_EMAIL="${BACKUP_EMAIL}"
+# SMTP settings for sending backup emails (uses same App Password as IMAP)
+SMTP_HOST="${SMTP_HOST}"
+SMTP_PORT="${SMTP_PORT}"
 CONF
 
     chmod 640 "$CONFIG_FILE"
@@ -377,14 +440,14 @@ CONF
 }
 
 # =============================================================================
-#  INSTALL PYTHON SCRIPT
+#  INSTALL PYTHON DAEMON
 # =============================================================================
 install_python_script() {
     header "Installing Python daemon"
     mkdir -p "$INSTALL_DIR" || die "Cannot create $INSTALL_DIR"
     echo "$PYTHON_B64" | base64 -d > "$PYTHON_SCRIPT" || die "Failed to write Python script"
     chmod 755 "$PYTHON_SCRIPT"
-    ok "Python script installed → ${PYTHON_SCRIPT}"
+    ok "Python daemon installed → ${PYTHON_SCRIPT}"
 }
 
 # =============================================================================
@@ -395,7 +458,7 @@ install_service() {
 
     cat > "$SERVICE_FILE" << SVC
 [Unit]
-Description=Brother Email Print Monitor
+Description=Email-to-Print Monitor
 Documentation=file://${CONFIG_FILE}
 After=network-online.target cups.service
 Wants=network-online.target
@@ -424,19 +487,152 @@ SVC
 }
 
 # =============================================================================
+#  BACKUP
+# =============================================================================
+cmd_backup() {
+    require_root
+    [[ -f "$CONFIG_FILE" ]] || die "No config found. Run: sudo $0 --install"
+
+    header "Config backup"
+
+    # Always save a local copy
+    local backup_file="/tmp/emailprint-backup-$(date +%Y-%m-%d_%H%M%S).conf"
+    cp "$CONFIG_FILE" "$backup_file"
+    ok "Local backup saved → ${backup_file}"
+
+    # Email if BACKUP_EMAIL is configured
+    source "$CONFIG_FILE" 2>/dev/null || true
+
+    if [[ -z "${BACKUP_EMAIL:-}" ]]; then
+        info "BACKUP_EMAIL not set — email skipped."
+        info "Add BACKUP_EMAIL to ${CONFIG_FILE} to enable emailing."
+        return
+    fi
+
+    info "Emailing backup to ${BACKUP_EMAIL} via ${SMTP_HOST}:${SMTP_PORT}..."
+
+    local py_tmp
+    py_tmp=$(mktemp /tmp/emailprint-backup-XXXXXX.py)
+
+    cat > "$py_tmp" << 'PYEOF'
+import smtplib, sys
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+from datetime import datetime
+from pathlib import Path
+
+cfg = {}
+config_path = sys.argv[1]
+with open(config_path) as f:
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        k, _, v = line.partition('=')
+        cfg[k.strip()] = v.strip().strip('"').strip("'")
+
+smtp_host    = cfg.get('SMTP_HOST', 'smtp.gmail.com')
+smtp_port    = int(cfg.get('SMTP_PORT', 587))
+imap_user    = cfg['IMAP_USER']
+imap_pass    = cfg['IMAP_PASS']
+backup_email = cfg['BACKUP_EMAIL']
+timestamp    = datetime.now().strftime('%Y-%m-%d %H:%M')
+
+msg = MIMEMultipart()
+msg['From']    = imap_user
+msg['To']      = backup_email
+msg['Subject'] = 'Email-to-Print Config Backup ({})'.format(timestamp)
+msg.attach(MIMEText(
+    'Email-to-Print configuration backup.
+'
+    'Restore with:  sudo ./emailprint.sh --restore emailprint.conf
+',
+    'plain'
+))
+
+with open(config_path, 'rb') as f:
+    part = MIMEBase('application', 'octet-stream')
+    part.set_payload(f.read())
+    encoders.encode_base64(part)
+    part.add_header('Content-Disposition', 'attachment; filename="emailprint.conf"')
+    msg.attach(part)
+
+server = smtplib.SMTP(smtp_host, smtp_port)
+server.ehlo()
+server.starttls()
+server.login(imap_user, imap_pass)
+server.sendmail(imap_user, backup_email, msg.as_string())
+server.quit()
+print('OK')
+PYEOF
+
+    if python3 "$py_tmp" "$CONFIG_FILE" 2>/dev/null; then
+        ok "Backup emailed to ${BACKUP_EMAIL}"
+    else
+        error "Failed to email backup — check SMTP settings in config"
+        info "Local backup is still available at: ${backup_file}"
+    fi
+
+    rm -f "$py_tmp"
+}
+
+# =============================================================================
+#  RESTORE
+# =============================================================================
+cmd_restore() {
+    require_root
+    local backup_file="${1:-}"
+
+    [[ -n "$backup_file" ]] || die "Usage: sudo $0 --restore /path/to/emailprint.conf"
+    [[ -f "$backup_file" ]]  || die "File not found: ${backup_file}"
+
+    # Validate it looks like our config
+    grep -q "IMAP_HOST" "$backup_file" || die "File does not appear to be a valid emailprint config"
+    grep -q "PRINTER_NAME" "$backup_file" || die "File does not appear to be a valid emailprint config"
+
+    header "Restoring configuration"
+    stop_service_if_running
+    ensure_service_user
+
+    mkdir -p "$CONFIG_DIR"
+    chmod 750 "$CONFIG_DIR"
+    chown "root:${SERVICE_USER}" "$CONFIG_DIR"
+
+    cp "$backup_file" "$CONFIG_FILE"
+    chmod 640 "$CONFIG_FILE"
+    chown "root:${SERVICE_USER}" "$CONFIG_FILE"
+    ok "Config restored from ${backup_file}"
+
+    # Load restored config so register_printer has PRINTER_IP and PRINTER_NAME
+    source "$CONFIG_FILE" 2>/dev/null || true
+
+    install_python_script
+    register_printer
+    install_service
+
+    echo
+    ok "Restore complete."
+    info "Run  sudo $0 --start  when ready."
+}
+
+
+# =============================================================================
 #  COMMANDS
 # =============================================================================
 cmd_install() {
     require_root
     echo
     echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    echo -e "${BOLD}${BLUE}║   Brother Email Print — Installer            ║${NC}"
+    echo -e "${BOLD}${BLUE}║   Email-to-Print — Installer                 ║${NC}"
     echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════╝${NC}"
     echo
 
     stop_service_if_running
     ensure_service_user
     check_dependencies
+    configure_timezone
 
     if [[ -f "$CONFIG_FILE" ]]; then
         info "Config exists — skipping wizard.  Use  sudo $0 --config  to reconfigure."
@@ -479,7 +675,7 @@ cmd_status() {
     header "Configuration: ${CONFIG_FILE}"
     if [[ -f "$CONFIG_FILE" ]]; then
         grep -v '^#' "$CONFIG_FILE" | grep -v '^[[:space:]]*$' \
-            | sed 's/\(IMAP_PASS=\).*/\1"********"/'
+            | sed 's/\(IMAP_PASS=\).*/"********"/'
     else
         warn "Config not found. Run: sudo $0 --install"
     fi
@@ -495,6 +691,15 @@ cmd_status() {
 }
 
 cmd_test()       { test_email_login; }
+cmd_poll() {
+    require_root
+    header "Forcing immediate mailbox poll"
+    info "Running one-shot check — output will appear below..."
+    echo
+    python3 /opt/email-print/email_print_daemon.py --poll 2>&1 || true
+    echo
+    ok "Poll complete."
+}
 cmd_clear_logs() {
     require_root
     header "Clearing logs"
@@ -523,7 +728,7 @@ cmd_uninstall() {
     if [[ -f "$CONFIG_FILE" ]]; then
         source "$CONFIG_FILE" 2>/dev/null || true
         [[ -n "${PRINTER_NAME:-}" ]] && lpadmin -x "$PRINTER_NAME" 2>/dev/null && \
-            info "Removed $PRINTER_NAME from CUPS" || true
+            info "Removed ${PRINTER_NAME} from CUPS" || true
     fi
 
     read -rp "Also delete config ${CONFIG_FILE}? (yes/no): " del_cfg
@@ -539,25 +744,28 @@ cmd_uninstall() {
 
 cmd_help() {
     echo
-    echo -e "${BOLD}Brother Email Print — installer & manager${NC}"
+    echo -e "${BOLD}Email-to-Print — installer & manager${NC}"
     echo
     echo -e "${CYAN}Usage:${NC}"
-    echo    "  sudo $0               First-time install"
-    echo    "  sudo $0 --install     Same as above"
-    echo    "  sudo $0 --config      Re-run configuration wizard"
-    echo    "       $0 --status      Show status, config, email test & recent logs"
-    echo    "       $0 --test        Test email login only"
-    echo    "  sudo $0 --start       Start the service"
-    echo    "  sudo $0 --stop        Stop the service"
-    echo    "  sudo $0 --restart     Restart the service"
-    echo    "       $0 --logs        Live tail of service logs"
-    echo    "  sudo $0 --clear-logs  Clear all journal logs"
-    echo    "  sudo $0 --uninstall   Remove everything"
-    echo    "       $0 --help        Show this help"
+    echo    "  sudo $0                       First-time install"
+    echo    "  sudo $0 --install             Same as above"
+    echo    "  sudo $0 --config              Re-run configuration wizard"
+    echo    "       $0 --status              Show status, config, email test & logs"
+    echo    "       $0 --test                Test email login only"
+    echo    "       $0 --poll                Force an immediate mailbox check"
+    echo    "  sudo $0 --start               Start the service"
+    echo    "  sudo $0 --stop                Stop the service"
+    echo    "  sudo $0 --restart             Restart the service"
+    echo    "       $0 --logs                Live tail of service logs"
+    echo    "  sudo $0 --clear-logs          Clear all journal logs"
+    echo    "  sudo $0 --backup              Save & email a config backup"
+    echo    "  sudo $0 --restore <file>      Restore config from backup file"
+    echo    "  sudo $0 --uninstall           Remove everything"
+    echo    "       $0 --help                Show this help"
     echo
     echo -e "${CYAN}Files after install:${NC}"
     echo    "  Config  ${CONFIG_FILE}"
-    echo    "  Script  ${PYTHON_SCRIPT}"
+    echo    "  Daemon  ${PYTHON_SCRIPT}"
     echo    "  Service ${SERVICE_FILE}"
     echo
     echo -e "${CYAN}Edit settings without the wizard:${NC}"
@@ -570,16 +778,19 @@ cmd_help() {
 #  ENTRYPOINT
 # =============================================================================
 case "${1:-}" in
-    ""|--install)    cmd_install    ;;
-    --config)        cmd_config     ;;
-    --status)        cmd_status     ;;
-    --test)          cmd_test       ;;
-    --logs)          cmd_logs       ;;
-    --clear-logs)    cmd_clear_logs ;;
-    --start)         cmd_start      ;;
-    --stop)          cmd_stop       ;;
-    --restart)       cmd_restart    ;;
-    --uninstall)     cmd_uninstall  ;;
-    --help|-h)       cmd_help       ;;
+    ""|--install)    cmd_install              ;;
+    --config)        cmd_config               ;;
+    --status)        cmd_status               ;;
+    --test)          cmd_test                 ;;
+    --poll)          cmd_poll                 ;;
+    --logs)          cmd_logs                 ;;
+    --clear-logs)    cmd_clear_logs           ;;
+    --backup)        cmd_backup               ;;
+    --restore)       cmd_restore "${2:-}"     ;;
+    --start)         cmd_start                ;;
+    --stop)          cmd_stop                 ;;
+    --restart)       cmd_restart              ;;
+    --uninstall)     cmd_uninstall            ;;
+    --help|-h)       cmd_help                 ;;
     *)  error "Unknown option: ${1}"; cmd_help; exit 1 ;;
 esac
