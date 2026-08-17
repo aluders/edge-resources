@@ -818,7 +818,7 @@ cmd_help() {
     echo    "  sudo $0 --clear-logs          Clear all journal logs"
     echo    "  sudo $0 --backup              Save & email a config backup"
     echo    "  sudo $0 --restore <file>      Restore config from backup file"
-    echo    "  sudo $0 --printer-info         Show printer IPP capabilities"
+    echo    "  sudo $0 --printer-info        Show printer IPP capabilities"
     echo    "  sudo $0 --uninstall           Remove everything"
     echo    "       $0 --help                Show this help"
     echo
