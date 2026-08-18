@@ -8,9 +8,12 @@ set -euo pipefail
 # paired with a Python file server on an
 # Oracle Linux ARM64 instance.
 #
-# VERSION 1.4
+# VERSION 1.5
 #
 # CHANGELOG (newest first):
+#   1.5 - --update now checks the latest GitHub release
+#         tag first; if already current, exits without
+#         stopping the service or downloading anything.
 #   1.4 - Removed DNS lookup from --status (low value,
 #         redundant with tunnel/config/service checks)
 #   1.3 - --status DNS lookup now caps at 3s/1 try
@@ -27,7 +30,7 @@ set -euo pipefail
 #         --restart, --update, --uninstall modes
 ############################################
 
-VERSION="1.4"
+VERSION="1.5"
 
 ############################################
 # CONFIGURATION
@@ -174,6 +177,22 @@ if [[ "${1:-}" == "--update" ]]; then
 
     OLD_VERSION=$(get_cloudflared_version)
     info "Currently installed: $OLD_VERSION"
+
+    info "Checking latest release..."
+    LATEST_VERSION=$(curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest \
+        | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' || true)
+
+    if [[ -z "$LATEST_VERSION" ]]; then
+        warn "Could not determine latest version from GitHub; proceeding with update anyway."
+    elif [[ "$OLD_VERSION" == "$LATEST_VERSION" ]]; then
+        echo
+        echo "=========================================="
+        success "Already on latest ($OLD_VERSION) -- nothing to do."
+        echo "=========================================="
+        exit 0
+    else
+        info "Latest available: $LATEST_VERSION"
+    fi
 
     info "[1/4] Stopping cloudflared service..."
     sudo systemctl stop cloudflared 2>/dev/null || true
