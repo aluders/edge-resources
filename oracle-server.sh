@@ -8,9 +8,13 @@ set -euo pipefail
 # paired with a Python file server on an
 # Oracle Linux ARM64 instance.
 #
-# VERSION 1.5
+# VERSION 1.6
 #
 # CHANGELOG (newest first):
+#   1.6 - Fixed spurious "curl: (23) Failure writing
+#         output" noise in --update: curl | grep -m1
+#         was causing SIGPIPE when grep closed early.
+#         Now captures full response before grepping.
 #   1.5 - --update now checks the latest GitHub release
 #         tag first; if already current, exits without
 #         stopping the service or downloading anything.
@@ -30,7 +34,7 @@ set -euo pipefail
 #         --restart, --update, --uninstall modes
 ############################################
 
-VERSION="1.5"
+VERSION="1.6"
 
 ############################################
 # CONFIGURATION
@@ -179,8 +183,8 @@ if [[ "${1:-}" == "--update" ]]; then
     info "Currently installed: $OLD_VERSION"
 
     info "Checking latest release..."
-    LATEST_VERSION=$(curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest \
-        | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' || true)
+    LATEST_JSON=$(curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest 2>/dev/null || true)
+    LATEST_VERSION=$(echo "$LATEST_JSON" | grep '"tag_name"' | head -n1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' || true)
 
     if [[ -z "$LATEST_VERSION" ]]; then
         warn "Could not determine latest version from GitHub; proceeding with update anyway."
