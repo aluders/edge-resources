@@ -8,9 +8,14 @@ set -euo pipefail
 # paired with a Python file server on an
 # Oracle Linux ARM64 instance.
 #
-# VERSION 1.2
+# VERSION 1.4
 #
 # CHANGELOG (newest first):
+#   1.4 - Removed DNS lookup from --status (low value,
+#         redundant with tunnel/config/service checks)
+#   1.3 - --status DNS lookup now caps at 3s/1 try
+#         instead of hanging on dig's default timeout,
+#         with clear resolved/no-answer output.
 #   1.2 - --update now reports cloudflared version
 #         before/after (old -> new), or "already on
 #         latest" if no change. --status reuses the
@@ -22,7 +27,7 @@ set -euo pipefail
 #         --restart, --update, --uninstall modes
 ############################################
 
-VERSION="1.2"
+VERSION="1.4"
 
 ############################################
 # CONFIGURATION
@@ -75,7 +80,7 @@ Usage: $0 [MODE]
 
 Modes:
   (none)       Install tunnel + file server
-  --status     Show status of tunnel, DNS, and services
+  --status     Show status of tunnel, config, and services
   --logs       Show recent logs for both services
   --restart    Restart both services
   --update     Update the cloudflared binary
@@ -111,10 +116,6 @@ if [[ "${1:-}" == "--status" ]]; then
     else
         error "Missing!"
     fi
-    echo
-
-    info "DNS for $DOMAIN"
-    dig +short "$DOMAIN"
     echo
 
     info "Cloudflared Service"
