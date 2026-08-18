@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# encode.sh — v1.8
+# encode.sh — v1.9
 # =============================================================================
 # WHAT IT DOES
 #   Recursively finds video files in a directory (or encodes a single file)
@@ -23,6 +23,10 @@
 #   - Hardware encoding via Apple VideoToolbox (--hardware flag, Mac only)
 #
 # VERSION HISTORY
+#   1.9   Fixed audio passthrough silently dropping tracks — added
+#         --audio-copy-mask (ac3, eac3, dts, dtshd, truehd, aac, mp3, flac)
+#         and --audio-fallback av_aac so HandBrake knows which codecs to copy
+#         and what to do when passthrough isn't possible
 #   1.8   Fixed eval echo crash on filenames containing parentheses or special
 #         characters — replaced with safe tilde expansion (${var/#\~/$HOME})
 #   1.7   Expanded input format support: m4v, mov, avi, wmv, ts, mts, m2ts, flv
@@ -401,7 +405,12 @@ fi
 # Must be an array — a plain string passed via $() subshell
 # gets treated as a single argument by HandBrakeCLI.
 case "$AUDIO_MODE" in
-    copy) AUDIO_ARGS=(--aencoder copy    --all-audio) ;;
+    copy) AUDIO_ARGS=(
+            --aencoder copy
+            --audio-copy-mask ac3,eac3,dts,dtshd,truehd,aac,mp3,flac
+            --audio-fallback av_aac
+            --all-audio
+          ) ;;
     aac)  AUDIO_ARGS=(--aencoder av_aac  --all-audio) ;;
     opus) AUDIO_ARGS=(--aencoder opus    --all-audio) ;;
 esac
