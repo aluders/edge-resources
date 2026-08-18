@@ -8,9 +8,67 @@ set -euo pipefail
 # paired with a Python file server on an
 # Oracle Linux ARM64 instance.
 #
-# VERSION 1.15
+# VERSION 1.20
 #
 # CHANGELOG (newest first):
+#   1.20 - Simplified v1.19's fix per feedback: instead of
+#          reactively detecting and reinstalling Ookla
+#          speedtest after a pip uninstall took it out as
+#          collateral damage, remove_impostor_speedtest()
+#          (including the pip uninstall) is now called
+#          BEFORE the install/check logic in both the
+#          default install step 11 and --update, not
+#          after. If pip's install record ever references
+#          the same path as $SPEEDTEST_BIN, there's nothing
+#          of ours there yet when it runs, so there's
+#          nothing for it to delete. Prevention instead of
+#          detect-and-repair; the reactive re-check/
+#          reinstall block from v1.19 is removed as
+#          redundant.
+#   1.19 - Fixed a real regression from v1.18: pip
+#          uninstall deletes every path in its own install
+#          record unconditionally, regardless of what's
+#          actually sitting there now. On this box,
+#          speedtest-cli's original console script had
+#          been installed at the same path as
+#          $SPEEDTEST_BIN, long before this script existed
+#          -- so uninstalling the pip package deleted the
+#          real Ookla binary as collateral damage, even
+#          though we'd overwritten that file ourselves.
+#          remove_impostor_speedtest() now re-verifies
+#          $SPEEDTEST_BIN immediately after the pip
+#          uninstall and reinstalls Ookla speedtest if it's
+#          gone or no longer identifies as Ookla.
+#   1.18 - remove_impostor_speedtest() now also uninstalls
+#          a pip-installed speedtest-cli package
+#          (`pip3 show speedtest-cli` / `sudo pip3
+#          uninstall -y speedtest-cli`) regardless of
+#          whether it's currently winning PATH resolution.
+#          It turned out the actual conflict on the box
+#          this was built against wasn't PATH shadowing at
+#          all -- it was a personal shell alias
+#          (`alias speedtest='speedtest-cli --secure'`),
+#          which command -v correctly ignores and which
+#          this script still won't touch (that's dotfiles,
+#          not package management). But the underlying
+#          pip package is dead weight regardless of the
+#          alias, so it's removed on principle.
+#   1.17 - remove_impostor_speedtest() now confirms the
+#          outcome instead of only announcing intent
+#          beforehand: re-checks what `speedtest` resolves
+#          to after the removal attempt and prints a
+#          [+]/[x] line either way.
+#   1.16 - The non-Ookla-impostor check only ever looked
+#          at $SPEEDTEST_BIN itself, so it never caught a
+#          *different* 'speedtest' earlier in PATH (e.g. a
+#          dnf/EPEL speedtest-cli at /usr/bin/speedtest)
+#          shadowing ours for anyone running bare
+#          `speedtest` interactively. New
+#          remove_impostor_speedtest() checks what PATH
+#          actually resolves, and removes it (via dnf if
+#          rpm-owned, else rm) if it isn't ours and isn't
+#          some other Ookla install. Called from both the
+#          default install step 11 and --update.
 #   1.15 - Step 2 was downloading and reinstalling
 #          cloudflared on every default-install run,
 #          unlike fastfetch/speedtest (steps 10/11) which
@@ -128,7 +186,7 @@ set -euo pipefail
 #         --restart, --update, --uninstall modes
 ############################################
 
-VERSION="1.15"
+VERSION="1.20"
 
 ############################################
 # CONFIGURATION
@@ -236,6 +294,48 @@ install_speedtest_binary() {
         error "Static tarball download/extract failed."
     fi
     rm -rf "$tmp"
+}
+
+remove_impostor_speedtest() {
+    # $SPEEDTEST_BIN being correct doesn't mean a bare `speedtest` in an
+    # interactive shell resolves to it -- something earlier in PATH (e.g.
+    # a dnf/EPEL 'speedtest-cli' package at /usr/bin/speedtest) can still
+    # shadow it. Find whatever PATH actually resolves and remove it if
+    # it's not our own binary and not some other Ookla install.
+    local found pkg
+    found=$(command -v speedtest 2>/dev/null || true)
+    if [[ -n "$found" && "$found" != "$SPEEDTEST_BIN" ]] && ! "$found" --version 2>/dev/null | grep -qi ookla; then
+        warn "Found a non-Ookla 'speedtest' shadowing ours in PATH at $found -- removing it."
+        if pkg=$(rpm -qf "$found" 2>/dev/null); then
+            sudo dnf remove -y "$pkg" >/dev/null 2>&1 || sudo rm -f "$found"
+        else
+            sudo rm -f "$found"
+        fi
+        if command -v speedtest >/dev/null 2>&1 && [[ "$(command -v speedtest)" == "$found" ]]; then
+            error "Failed to remove $found -- it's still shadowing $SPEEDTEST_BIN in PATH."
+        else
+            success "Removed impostor speedtest at $found."
+        fi
+    fi
+
+    # Separately, clean up a pip-installed speedtest-cli even if it isn't
+    # currently winning PATH resolution -- e.g. only reachable through a
+    # shell alias, which command -v can't see and this script shouldn't
+    # touch (that's the person's own dotfiles, not ours to edit). The
+    # package itself is still dead weight and a recurring source of
+    # confusion, so pull it regardless. Called before we ever write
+    # $SPEEDTEST_BIN (see step 11 / --update) so that if pip's own
+    # install record happens to reference that same path -- pip
+    # uninstall deletes whatever's on record unconditionally -- there's
+    # nothing of ours there yet for it to take out as collateral damage.
+    if command -v pip3 >/dev/null 2>&1 && pip3 show speedtest-cli >/dev/null 2>&1; then
+        warn "Found pip-installed speedtest-cli package -- uninstalling it."
+        if sudo pip3 uninstall -y speedtest-cli >/dev/null 2>&1; then
+            success "Uninstalled speedtest-cli (pip)."
+        else
+            error "Failed to uninstall speedtest-cli via pip3 -- remove manually with 'sudo pip3 uninstall -y speedtest-cli'."
+        fi
+    fi
 }
 
 ############################################
@@ -438,6 +538,7 @@ if [[ "${1:-}" == "--update" ]]; then
     if [[ ! -x "$SPEEDTEST_BIN" ]]; then
         warn "speedtest not installed -- run without --update first to install it."
     else
+        remove_impostor_speedtest
         OLD_ST=$(get_speedtest_version)
         info "Currently installed: $OLD_ST"
 
@@ -652,6 +753,7 @@ else
 fi
 
 info "[11/11] Installing Ookla speedtest..."
+remove_impostor_speedtest
 if [[ -x "$SPEEDTEST_BIN" ]] && "$SPEEDTEST_BIN" --version 2>/dev/null | grep -qi ookla; then
     success "Ookla speedtest already installed ($(get_speedtest_version))."
 else
