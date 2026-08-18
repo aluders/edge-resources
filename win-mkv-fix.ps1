@@ -1,55 +1,154 @@
 param(
     [string]$Path = $PSScriptRoot,
+    [string]$Remove = "",
     [switch]$Test,
     [switch]$Clean,
+    [switch]$Strip,
     [switch]$Help
 )
+
+# Convert-ToMKV.ps1 - v1.2
+#
+# Batch remuxes .mp4 and .mkv files into language-tagged MKVs using mkvmerge.
+# Picks up external SRT subtitle files automatically.
+#
+# WHAT IT DOES:
+#   - .mp4 files: remuxed to .mkv, video and audio tracks tagged as English
+#   - .mkv files: reprocessed to .BaseName.en.mkv (skips files already ending in .en.mkv)
+#   - Subtitles: searched alongside the video first, then recursively anywhere
+#     under -Path. Folder name doesn't matter. SDH subs are flagged hearing-impaired.
+#     Non-SDH always comes before SDH in track order.
+#   - Subtitle language filter: only .en. or .eng. SRT files are included.
+#     Others (e.g. .fra. .spa.) are ignored.
+#   - Strip mode: remuxes .mkv files keeping only English (and untagged) audio
+#     and subtitle tracks. Outputs as .BaseName.en.mkv. Skips .en.mkv files.
+#     Skips with a warning if the output already exists.
+#   - Remove: strips literal strings from the output filename before writing.
+#     Comma-separated. Cleans up leftover double-dots and leading/trailing dots.
+#
+# USAGE:
+#   .\Convert-ToMKV.ps1 [-Path <folder>] [-Remove <string>] [-Test] [-Clean] [-Strip] [-Help]
+#
+#   -Path      Folder to scan. Defaults to the script's own directory.
+#              Accepts local paths, mapped drives (Z:\Movies), UNC paths,
+#              and paths with special characters like brackets [ ].
+#   -Remove    Comma-separated literal strings to strip from output filenames.
+#              Spaces are preserved inside quoted values.
+#              Example: -Remove ".Rus.Eng"
+#              Example: -Remove ".Rus.Eng,.REPACK,.PROPER"
+#              Example: -Remove '.Rus.Eng'  (include leading dot to avoid double-dot)
+#   -Test      Process only the first file found, then stop.
+#   -Clean     Delete source files where a processed output already exists.
+#   -Strip     Strip non-English audio and subtitle tracks from MKV files.
+#              Outputs as .BaseName.en.mkv. Skips files already ending in .en.mkv.
+#              Untagged tracks are kept. Run -Clean afterward to remove originals.
+#   -Help      Show the built-in help screen.
+#
+# DEPLOY:
+#   irm https://scripts.vcc.net/Convert-ToMKV.ps1 | iex
+#
+# NOTES:
+#   Requires MKVToolNix installed at the default path or available in system PATH.
+#   All path handling uses -LiteralPath to safely support brackets and other
+#   special characters in folder/file names.
+#   -Strip and -Clean work well together: strip first, verify output, then clean.
+#   -Remove can be combined with any mode including -Strip.
+#
+# CHANGELOG (newest first):
+#   1.2 - Added -Remove flag: strips literal strings from output filenames
+#         Supports comma-separated list and quoted strings with spaces
+#         No automatic cleanup - removals are applied exactly as specified
+#   1.1 - Added -Strip mode: removes non-English audio and subtitle tracks from MKVs
+#         Outputs as .BaseName.en.mkv, skips .en.mkv inputs, skips if output exists
+#         Untagged tracks are preserved
+#         Version number shown in -Help banner
+#         Moved param block to line 1 (required by PowerShell)
+#   1.0 - Initial release
+#         Remux mp4 to mkv, retag mkv as .en.mkv
+#         English track tagging for video and audio
+#         External SRT pickup: sibling files first, recursive fallback
+#         SDH detection and hearing-impaired flagging
+#         -Test, -Clean, -Help flags
+#         -LiteralPath throughout for bracket-safe path handling
+
+$VERSION = "1.2"
 
 # --- CONFIGURATION ---
 $mkvmergePath = "C:\Program Files\MKVToolNix\mkvmerge.exe"
 # ---------------------
 
+# --- HELPER: Apply -Remove to a basename ---
+function Invoke-RemoveStrings {
+    param([string]$BaseName, [string[]]$Removals)
+    $result = $BaseName
+    foreach ($r in $Removals) {
+        $result = $result.Replace($r, "")
+    }
+    return $result
+}
+
 # 1. HELP
 if ($Help) {
     Write-Host ""
-    Write-Host "  Convert-ToMKV.ps1 - Batch MKV Processor" -ForegroundColor Cyan
+    Write-Host "  Convert-ToMKV.ps1 v$VERSION - Batch MKV Processor" -ForegroundColor Cyan
     Write-Host "  -------------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  USAGE" -ForegroundColor Yellow
     Write-Host "    .\Convert-ToMKV.ps1 [options]"
     Write-Host ""
     Write-Host "  OPTIONS" -ForegroundColor Yellow
-    Write-Host "    -Path <folder>    Folder to scan. Defaults to the script's own directory."
-    Write-Host "                      Accepts local paths, mapped drives (Z:\Movies),"
-    Write-Host "                      and UNC paths (\\server\share\Movies)."
-    Write-Host "                      Folder names with brackets [ ] are supported."
-    Write-Host "    -Test             Process only the first file found, then stop."
-    Write-Host "    -Clean            Delete source files where a processed output already exists."
-    Write-Host "    -Help             Show this help message."
+    Write-Host "    -Path <folder>      Folder to scan. Defaults to the script's own directory."
+    Write-Host "                        Accepts local paths, mapped drives (Z:\Movies),"
+    Write-Host "                        UNC paths, and names with brackets [ ]."
+    Write-Host "    -Remove <string>    Comma-separated literal strings to strip from output"
+    Write-Host "                        filenames. Quotes preserve spaces."
+    Write-Host "    -Test               Process only the first file found, then stop."
+    Write-Host "    -Clean              Delete source files where a processed output already exists."
+    Write-Host "    -Strip              Strip non-English audio and subtitle tracks from MKV files."
+    Write-Host "                        Outputs as .BaseName.en.mkv. Skips .en.mkv inputs."
+    Write-Host "                        Skips with a warning if output already exists."
+    Write-Host "                        Untagged tracks are preserved."
+    Write-Host "    -Help               Show this help message."
+    Write-Host ""
+    Write-Host "  REMOVE EXAMPLES" -ForegroundColor Yellow
+    Write-Host "    -Remove '.Rus.Eng'"
+    Write-Host "      The.IT.Crowd.S01E01.1080p.Rus.Eng.mkv -> The.IT.Crowd.S01E01.1080p.en.mkv"
+    Write-Host ""
+    Write-Host "    -Remove '.Rus.Eng,.REPACK'"
+    Write-Host "      Show.S01E01.REPACK.1080p.Rus.Eng.mkv  -> Show.S01E01.1080p.en.mkv"
+    Write-Host ""
+    Write-Host "    -Remove '.Rus.Eng'  (include leading dot to avoid double-dot in output)"
+    Write-Host "      Show.S01E01.1080p.Rus.Eng .mkv        -> Show.S01E01.1080p.en.mkv"
     Write-Host ""
     Write-Host "  WHAT IT DOES" -ForegroundColor Yellow
     Write-Host "    - .mp4 files     Remuxed to .mkv, video+audio tracks tagged as English"
-    Write-Host "    - .mkv files     Reprocessed to .BaseName.en.mkv (skips files already ending in .en.mkv)"
-    Write-Host "    - Subtitles      Searched alongside the video first, then recursively under"
-    Write-Host "                     -Path in any subfolder. SDH subs are flagged hearing-impaired."
+    Write-Host "    - .mkv files     Reprocessed to .BaseName.en.mkv (skips *.en.mkv files)"
+    Write-Host "    - Subtitles      Searched alongside the video first, then recursively"
+    Write-Host "                     under -Path in any subfolder. Folder name doesn't matter."
+    Write-Host "                     SDH subs are flagged hearing-impaired."
     Write-Host "                     Non-SDH always comes before SDH in track order."
     Write-Host ""
-    Write-Host "  SUBTITLE SEARCH" -ForegroundColor Yellow
-    Write-Host "    Two strategies are tried in order; first match wins:"
+    Write-Host "  STRIP MODE" -ForegroundColor Yellow
+    Write-Host "    Scans MKV files and drops any audio or subtitle track not tagged as"
+    Write-Host "    English (eng). Untagged tracks are kept. Video tracks are always kept."
+    Write-Host "    Input .en.mkv files are skipped (assumed already processed)."
+    Write-Host "    If the output .en.mkv already exists, the file is skipped with a warning."
+    Write-Host "    Recommended workflow:"
+    Write-Host "      1. .\Convert-ToMKV.ps1 -Path D:\Movies -Strip"
+    Write-Host "      2. Verify the .en.mkv outputs look correct"
+    Write-Host "      3. .\Convert-ToMKV.ps1 -Path D:\Movies -Clean"
     Write-Host ""
-    Write-Host "    1. Sibling files - SRTs in the same folder as the video, named:"
+    Write-Host "  SUBTITLE SEARCH (normal mode)" -ForegroundColor Yellow
+    Write-Host "    Two strategies tried in order; first match wins:"
+    Write-Host ""
+    Write-Host "    1. Sibling files - SRTs in the same folder as the video:"
     Write-Host "         video.srt"
-    Write-Host "         video.en.srt"
-    Write-Host "         video.eng.srt"
+    Write-Host "         video.en.srt / video.eng.srt"
     Write-Host "         video.en.SDH.srt   <- flagged hearing-impaired"
     Write-Host "         video.fra.srt       <- ignored (not en/eng)"
     Write-Host ""
-    Write-Host "    2. Recursive search - looks anywhere under -Path for SRT files"
-    Write-Host "       starting with the video's BaseName. Subfolder name doesn't matter."
-    Write-Host "         D:\Movies\Subs\MovieName.eng.srt"
-    Write-Host "         D:\Movies\Subs\SomeFolder\MovieName.eng.SDH.srt"
-    Write-Host ""
-    Write-Host "    In both cases: non-SDH tracks always come before SDH in the output."
+    Write-Host "    2. Recursive search - any SRT starting with the video's BaseName,"
+    Write-Host "       anywhere under -Path. Subfolder name doesn't matter."
     Write-Host ""
     Write-Host "  CLEAN MODE" -ForegroundColor Yellow
     Write-Host "    Deletes the original source file only if the expected output already exists."
@@ -60,11 +159,14 @@ if ($Help) {
     Write-Host "    0 = Success   1 = Success with warnings   2+ = Failure"
     Write-Host ""
     Write-Host "  EXAMPLES" -ForegroundColor Yellow
-    Write-Host "    .\Convert-ToMKV.ps1"
     Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies"
+    Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies -Remove '.Rus.Eng'"
+    Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies -Remove '.Rus.Eng,.REPACK,.PROPER'"
+    Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies -Strip -Remove '.Rus.Eng'"
     Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies -Test"
+    Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies -Strip"
+    Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies -Strip -Test"
     Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies -Clean"
-    Write-Host "    .\Convert-ToMKV.ps1 -Path D:\Movies -Clean -Test"
     Write-Host "    .\Convert-ToMKV.ps1 -Path Z:\Movies              <- mapped drive"
     Write-Host "    .\Convert-ToMKV.ps1 -Path \\server\share\Movies  <- UNC path"
     Write-Host "    .\Convert-ToMKV.ps1 -Path 'X:\TV\Show [2024]'   <- brackets in name"
@@ -89,6 +191,13 @@ if (-not (Test-Path -LiteralPath $Path)) {
     Exit
 }
 
+# Parse -Remove into an array of literal strings
+$removeList = @()
+if ($Remove -ne "") {
+    $removeList = $Remove -split "," | ForEach-Object { $_ }
+    Write-Host "Remove strings: $($removeList -join ' | ')" -ForegroundColor DarkGray
+}
+
 Write-Host "Scanning folder: $Path" -ForegroundColor Cyan
 $files = Get-ChildItem -LiteralPath $Path -Recurse -Include *.mp4, *.mkv | Sort-Object FullName
 
@@ -98,7 +207,11 @@ if ($files.Count -eq 0) {
 }
 
 # --- MODE ANNOUNCEMENTS ---
-if ($Clean) {
+if ($Strip) {
+    Write-Host "--- STRIP MODE ACTIVE ---" -ForegroundColor Magenta
+    Write-Host "Removing non-English audio and subtitle tracks from MKV files." -ForegroundColor Magenta
+}
+elseif ($Clean) {
     Write-Host "--- CLEAN MODE ACTIVE ---" -ForegroundColor Magenta
     Write-Host "Deleting source files ONLY if a processed version exists." -ForegroundColor Magenta
 }
@@ -111,13 +224,19 @@ else {
 }
 
 foreach ($file in $files) {
+    # --- DETERMINE OUTPUT BASENAME (apply -Remove if set) ---
+    $outBaseName = $file.BaseName
+    if ($removeList.Count -gt 0) {
+        $outBaseName = Invoke-RemoveStrings -BaseName $outBaseName -Removals $removeList
+    }
+
     # --- DETERMINE OUTPUT FILENAME ---
     if ($file.Extension -eq ".mp4") {
-        $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($file.BaseName + ".mkv")
+        $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($outBaseName + ".mkv")
     }
     elseif ($file.Extension -eq ".mkv") {
         if ($file.Name -like "*.en.mkv") { continue }
-        $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($file.BaseName + ".en.mkv")
+        $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($outBaseName + ".en.mkv")
     }
 
     # --- CLEAN LOGIC ---
@@ -136,7 +255,104 @@ foreach ($file in $files) {
         continue
     }
 
+    # --- STRIP LOGIC ---
+    if ($Strip) {
+        if ($file.Extension -ne ".mkv") { continue }
+
+        Write-Host "Stripping: $($file.Name)" -ForegroundColor Yellow
+        if ($outBaseName -ne $file.BaseName) {
+            Write-Host "  Output name: $outBaseName.en.mkv" -ForegroundColor DarkGray
+        }
+
+        # Skip if output already exists
+        if (Test-Path -LiteralPath $outputFile) {
+            Write-Host "  Skipped: $($outBaseName).en.mkv already exists." -ForegroundColor DarkYellow
+            if ($Test) { break }
+            continue
+        }
+
+        # Inspect the file
+        try {
+            $jsonOutput = & $mkvmergePath -J $file.FullName
+            $fileInfo = $jsonOutput | ConvertFrom-Json
+        }
+        catch {
+            Write-Host "  Error reading file info. Skipping." -ForegroundColor Red
+            continue
+        }
+
+        $audioKeep = @()
+        $subsKeep = @()
+        $audioDropped = 0
+        $subsDropped = 0
+
+        foreach ($track in $fileInfo.tracks) {
+            $lang = $track.properties.language
+            $isEnglish = ($lang -eq "eng" -or $lang -eq "en")
+            $isUntagged = ([string]::IsNullOrWhiteSpace($lang) -or $lang -eq "und")
+
+            if ($track.type -eq "audio") {
+                if ($isEnglish -or $isUntagged) {
+                    $audioKeep += $track.id
+                } else {
+                    Write-Host "  - Dropping audio track $($track.id): $lang" -ForegroundColor DarkGray
+                    $audioDropped++
+                }
+            }
+            elseif ($track.type -eq "subtitles") {
+                if ($isEnglish -or $isUntagged) {
+                    $subsKeep += $track.id
+                } else {
+                    Write-Host "  - Dropping subtitle track $($track.id): $lang" -ForegroundColor DarkGray
+                    $subsDropped++
+                }
+            }
+        }
+
+        $stripArgs = @("-o", "$outputFile")
+
+        if ($audioKeep.Count -gt 0) {
+            $stripArgs += "--audio-tracks"
+            $stripArgs += ($audioKeep -join ",")
+        } else {
+            $stripArgs += "--no-audio"
+        }
+
+        if ($subsKeep.Count -gt 0) {
+            $stripArgs += "--subtitle-tracks"
+            $stripArgs += ($subsKeep -join ",")
+        } else {
+            $stripArgs += "--no-subtitles"
+        }
+
+        $stripArgs += "$($file.FullName)"
+
+        $mergeResult = & $mkvmergePath $stripArgs 2>&1
+
+        if ($LASTEXITCODE -le 1) {
+            $summary = "  Done: dropped $audioDropped audio, $subsDropped subtitle track(s)"
+            if ($LASTEXITCODE -eq 1) {
+                Write-Host "$summary (with warnings)" -ForegroundColor Green
+            } else {
+                Write-Host "$summary" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "  Failed (Exit Code $LASTEXITCODE)" -ForegroundColor Red
+            $mergeResult | Select-Object -Last 5 | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+        }
+
+        if ($Test) {
+            Write-Host "Test complete. Stopping." -ForegroundColor Magenta
+            break
+        }
+        continue
+    }
+
+    # --- NORMAL PROCESSING ---
     Write-Host "Processing: $($file.Name)" -ForegroundColor Yellow
+    if ($outBaseName -ne $file.BaseName) {
+        Write-Host "  Output name: $outBaseName.en.mkv" -ForegroundColor DarkGray
+    }
 
     # --- STEP A: INSPECT VIDEO FILE ---
     try {
@@ -163,11 +379,6 @@ foreach ($file in $files) {
     }
 
     # --- STEP B: LOOK FOR EXTERNAL SUBS ---
-    # Strategy 1: SRT files sitting alongside the video in the same directory.
-    # Accept: <BaseName>.srt, <BaseName>.en.srt, <BaseName>.eng.srt, <BaseName>.en.SDH.srt, etc.
-    # Reject: any other language tag (e.g. .fra. .spa.)
-    # Note: Get-ChildItem -Filter does not support wildcards in LiteralPath mode, so we
-    # use -LiteralPath with -Filter for the directory, then match filenames manually.
     $srtArgs = @()
 
     $srtSource = Get-ChildItem -LiteralPath $file.DirectoryName -Filter "*.srt" |
@@ -179,8 +390,6 @@ foreach ($file in $files) {
         Write-Host "  Subs: found alongside video" -ForegroundColor DarkGray
     }
     else {
-        # Strategy 2: recursive search anywhere under $Path for SRTs starting with the
-        # video's BaseName. Subfolder name doesn't matter.
         $srtSource = Get-ChildItem -LiteralPath $Path -Recurse -Filter "*.srt" |
             Where-Object { $_.BaseName -like "$($file.BaseName)*" } |
             Where-Object { $_.Name -eq "$($file.BaseName).srt" -or $_.Name -match '\.(eng|en)[\.\-]' } |
@@ -209,10 +418,8 @@ foreach ($file in $files) {
     # --- STEP C: EXECUTE MERGE ---
     $argumentList = @("-o", "$outputFile") + $videoArgs + @("$($file.FullName)") + $srtArgs
 
-    # Run command and capture output
     $mergeResult = & $mkvmergePath $argumentList 2>&1
 
-    # Check for Success (0) or Warning (1)
     if ($LASTEXITCODE -le 1) {
         if ($LASTEXITCODE -eq 1) {
             Write-Host "  Success (with Warnings): $outputFile" -ForegroundColor Green
