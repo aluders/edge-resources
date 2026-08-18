@@ -8,9 +8,13 @@ set -euo pipefail
 # paired with a Python file server on an
 # Oracle Linux ARM64 instance.
 #
-# VERSION 1.1
+# VERSION 1.2
 #
 # CHANGELOG (newest first):
+#   1.2 - --update now reports cloudflared version
+#         before/after (old -> new), or "already on
+#         latest" if no change. --status reuses the
+#         same version helper.
 #   1.1 - Added versioned header block
 #         Added colorized [+]/[*]/[!]/[x] status output
 #         Added --version and --help flags
@@ -18,7 +22,7 @@ set -euo pipefail
 #         --restart, --update, --uninstall modes
 ############################################
 
-VERSION="1.1"
+VERSION="1.2"
 
 ############################################
 # CONFIGURATION
@@ -46,11 +50,20 @@ success() { echo -e "${COLOR_GREEN}[+]${COLOR_RESET} $1"; }
 warn()    { echo -e "${COLOR_YELLOW}[!]${COLOR_RESET} $1"; }
 error()   { echo -e "${COLOR_RED}[x]${COLOR_RESET} $1"; }
 
+get_cloudflared_version() {
+    if [[ -x "$CLOUDFLARED_BIN" ]]; then
+        "$CLOUDFLARED_BIN" --version 2>/dev/null | awk '{print $3}'
+    else
+        echo "not installed"
+    fi
+}
+
 ############################################
 # VERSION / HELP MODE
 ############################################
 if [[ "${1:-}" == "--version" ]]; then
     echo "oracle-fileserver.sh v$VERSION"
+
     exit 0
 fi
 
@@ -83,10 +96,11 @@ if [[ "${1:-}" == "--status" ]]; then
     echo
 
     info "cloudflared version"
-    if [[ -f "$CLOUDFLARED_BIN" ]]; then
-        "$CLOUDFLARED_BIN" --version || error "Error reading version"
-    else
+    CF_VERSION=$(get_cloudflared_version)
+    if [[ "$CF_VERSION" == "not installed" ]]; then
         error "cloudflared not installed"
+    else
+        success "$CF_VERSION"
     fi
     echo
 
@@ -157,6 +171,9 @@ if [[ "${1:-}" == "--update" ]]; then
     echo "=========================================="
     echo
 
+    OLD_VERSION=$(get_cloudflared_version)
+    info "Currently installed: $OLD_VERSION"
+
     info "[1/4] Stopping cloudflared service..."
     sudo systemctl stop cloudflared 2>/dev/null || true
 
@@ -172,9 +189,15 @@ if [[ "${1:-}" == "--update" ]]; then
     info "[4/4] Restarting cloudflared..."
     sudo systemctl start cloudflared
 
+    NEW_VERSION=$(get_cloudflared_version)
+
     echo
     echo "=========================================="
-    success "UPDATE COMPLETE"
+    if [[ "$OLD_VERSION" == "$NEW_VERSION" ]]; then
+        success "UPDATE COMPLETE -- already on latest ($NEW_VERSION)"
+    else
+        success "UPDATE COMPLETE -- $OLD_VERSION -> $NEW_VERSION"
+    fi
     echo "=========================================="
     exit 0
 fi
