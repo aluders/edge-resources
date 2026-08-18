@@ -2,12 +2,13 @@ param(
     [string]$Path = $PSScriptRoot,
     [string]$Remove = "",
     [switch]$Test,
+    [string]$CleanSearch = "",
     [switch]$Clean,
     [switch]$Strip,
     [switch]$Help
 )
 
-# Convert-ToMKV.ps1 - v1.2
+# Convert-ToMKV.ps1 - v1.3
 #
 # Batch remuxes .mp4 and .mkv files into language-tagged MKVs using mkvmerge.
 # Picks up external SRT subtitle files automatically.
@@ -24,10 +25,12 @@ param(
 #     and subtitle tracks. Outputs as .BaseName.en.mkv. Skips .en.mkv files.
 #     Skips with a warning if the output already exists.
 #   - Remove: strips literal strings from the output filename before writing.
-#     Comma-separated. Cleans up leftover double-dots and leading/trailing dots.
+#     Comma-separated.
+#   - CleanSearch: deletes source files whose name contains a given string, if a
+#     corresponding output (with that string removed) exists in the same folder.
 #
 # USAGE:
-#   .\Convert-ToMKV.ps1 [-Path <folder>] [-Remove <string>] [-Test] [-Clean] [-Strip] [-Help]
+#   .\Convert-ToMKV.ps1 [-Path <folder>] [-Remove <string>] [-CleanSearch <string>] [-Test] [-Clean] [-Strip] [-Help]
 #
 #   -Path      Folder to scan. Defaults to the script's own directory.
 #              Accepts local paths, mapped drives (Z:\Movies), UNC paths,
@@ -38,7 +41,10 @@ param(
 #              Example: -Remove ".Rus.Eng,.REPACK,.PROPER"
 #              Example: -Remove '.Rus.Eng'  (include leading dot to avoid double-dot)
 #   -Test      Process only the first file found, then stop.
-#   -Clean     Delete source files where a processed output already exists.
+#   -Clean        Delete source files where a processed output already exists.
+#   -CleanSearch  Delete source files containing a given string, if the expected
+#                 output (with that string removed) exists alongside it.
+#                 Example: -CleanSearch '.Rus.Eng'
 #   -Strip     Strip non-English audio and subtitle tracks from MKV files.
 #              Outputs as .BaseName.en.mkv. Skips files already ending in .en.mkv.
 #              Untagged tracks are kept. Run -Clean afterward to remove originals.
@@ -55,6 +61,9 @@ param(
 #   -Remove can be combined with any mode including -Strip.
 #
 # CHANGELOG (newest first):
+#   1.3 - Added -CleanSearch flag: deletes source files by search string match
+#         Looks for matching output (string removed) in the same folder
+#         Same safety check as -Clean (never deletes if source equals output)
 #   1.2 - Added -Remove flag: strips literal strings from output filenames
 #         Supports comma-separated list and quoted strings with spaces
 #         No automatic cleanup - removals are applied exactly as specified
@@ -71,7 +80,7 @@ param(
 #         -Test, -Clean, -Help flags
 #         -LiteralPath throughout for bracket-safe path handling
 
-$VERSION = "1.2"
+$VERSION = "1.3"
 
 # --- CONFIGURATION ---
 $mkvmergePath = "C:\Program Files\MKVToolNix\mkvmerge.exe"
@@ -104,6 +113,9 @@ if ($Help) {
     Write-Host "                        filenames. Quotes preserve spaces."
     Write-Host "    -Test               Process only the first file found, then stop."
     Write-Host "    -Clean              Delete source files where a processed output already exists."
+    Write-Host "    -CleanSearch <str>  Delete source files whose name contains <str>, if the"
+    Write-Host "                        expected output (with <str> removed) exists alongside it."
+    Write-Host "                        Example: -CleanSearch '.Rus.Eng'"
     Write-Host "    -Strip              Strip non-English audio and subtitle tracks from MKV files."
     Write-Host "                        Outputs as .BaseName.en.mkv. Skips .en.mkv inputs."
     Write-Host "                        Skips with a warning if output already exists."
@@ -211,6 +223,10 @@ if ($Strip) {
     Write-Host "--- STRIP MODE ACTIVE ---" -ForegroundColor Magenta
     Write-Host "Removing non-English audio and subtitle tracks from MKV files." -ForegroundColor Magenta
 }
+elseif ($CleanSearch -ne "") {
+    Write-Host "--- CLEANSEARCH MODE ACTIVE ---" -ForegroundColor Magenta
+    Write-Host "Deleting source files containing: $CleanSearch" -ForegroundColor Magenta
+}
 elseif ($Clean) {
     Write-Host "--- CLEAN MODE ACTIVE ---" -ForegroundColor Magenta
     Write-Host "Deleting source files ONLY if a processed version exists." -ForegroundColor Magenta
@@ -250,6 +266,32 @@ foreach ($file in $files) {
             }
         } else {
             Write-Host "Skipped delete: $($file.Name) (No processed version found)" -ForegroundColor Red
+        }
+        if ($Test) { break }
+        continue
+    }
+
+    # --- CLEANSEARCH LOGIC ---
+    if ($CleanSearch -ne "") {
+        # Only process files whose name contains the search string
+        if ($file.Name -notlike "*$CleanSearch*") { continue }
+
+        # Build the expected output name by removing the search string from the basename
+        $searchOutBase = $file.BaseName.Replace($CleanSearch, "")
+        $searchOutFile = Join-Path -Path $file.DirectoryName -ChildPath ($searchOutBase + ".en.mkv")
+
+        Write-Host "CleanSearch: $($file.Name)" -ForegroundColor Yellow
+        Write-Host "  Looking for: $($searchOutBase).en.mkv" -ForegroundColor DarkGray
+
+        if (Test-Path -LiteralPath $searchOutFile) {
+            if ($file.FullName -eq $searchOutFile) {
+                Write-Host "  Safety Check: Source and Output are identical. Skipping delete." -ForegroundColor Red
+            } else {
+                Remove-Item -LiteralPath $file.FullName -Force
+                Write-Host "  Deleted: $($file.Name)" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "  Skipped: output not found ($($searchOutBase).en.mkv)" -ForegroundColor Red
         }
         if ($Test) { break }
         continue
