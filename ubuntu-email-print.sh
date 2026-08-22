@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v3.0
+#  emailprint.sh  —  Email-to-Print  v3.1
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer via IPP (driverless).
@@ -24,6 +24,7 @@
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    3.1  — Disable cups-browsed during install to prevent auto-discovery of unwanted printers
 #    3.0  — Prefer PWG-Raster over URF to prevent garbled output on Brother firmware
 #    2.9  — Removed ineffective document-format=application/pdf option (printer uses URF natively)
 #    2.8  — Force PDF passthrough to printer (prevent CUPS URF raster conversion)
@@ -180,6 +181,17 @@ stop_service_if_running() {
         info "Stopping existing service..."
         systemctl stop "$SERVICE_NAME" 2>/dev/null || true
         ok "Service stopped"
+    fi
+}
+
+disable_cups_browsed() {
+    if systemctl is-enabled --quiet cups-browsed 2>/dev/null; then
+        info "Disabling cups-browsed (prevents auto-discovery of unwanted printers)..."
+        systemctl stop    cups-browsed 2>/dev/null || true
+        systemctl disable cups-browsed 2>/dev/null || true
+        ok "cups-browsed disabled"
+    else
+        info "cups-browsed already disabled"
     fi
 }
 
@@ -699,6 +711,7 @@ cmd_install() {
     stop_service_if_running
     ensure_service_user
     check_dependencies
+    disable_cups_browsed
     configure_timezone
 
     if [[ -f "$CONFIG_FILE" ]]; then
