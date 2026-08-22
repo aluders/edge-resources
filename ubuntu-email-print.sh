@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v2.9
+#  emailprint.sh  —  Email-to-Print  v3.0
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer via IPP (driverless).
@@ -24,6 +24,7 @@
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    3.0  — Prefer PWG-Raster over URF to prevent garbled output on Brother firmware
 #    2.9  — Removed ineffective document-format=application/pdf option (printer uses URF natively)
 #    2.8  — Force PDF passthrough to printer (prevent CUPS URF raster conversion)
 #    2.7  — Backup file uses .txt extension for Gmail preview compatibility
@@ -262,6 +263,12 @@ register_printer() {
 
     cupsenable  "$PRINTER_NAME" 2>/dev/null || true
     cupsaccept  "$PRINTER_NAME" 2>/dev/null || true
+
+    # Prefer PWG-Raster over URF for more reliable driverless output
+    # URF (Apple Raster) can produce garbled output with some Brother firmware
+    lpadmin -p "$PRINTER_NAME" -o urf-supported="" 2>/dev/null || true
+    info "PWG-Raster preferred over URF for print rendering"
+
     _test_printer_reachable
 }
 
