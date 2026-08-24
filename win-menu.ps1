@@ -17,6 +17,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   1.6  - Launcher invocations now use -ExecutionPolicy Bypass (fixes "running scripts is disabled" on default-policy machines)
 #   1.5  - Populated with the actual tool list (8 tools)
 #   1.4  - Launcher's status output no longer implies the tool acts "against" the folder
 #   1.3  - admin=true now replaces the entry (elevated) instead of adding a second one
@@ -28,7 +29,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "1.5"
+$ScriptVersion = "1.6"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -44,9 +45,9 @@ $Config = @{
         'Drive\Background\shell'
     )
     Tools = @(
+        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
         @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
         @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
-        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
         @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
         @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true  }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
@@ -138,12 +139,12 @@ function Install-EdgeToolsMenu {
                 # it embeds a literal quote inside the single-quoted
                 # -ArgumentList string without breaking out of the outer
                 # -Command string. Tested with paths containing spaces.
-                $adminCmd = "powershell.exe -Command `"Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit -File \`"$($Config.LauncherPath)\`" -ToolUrl \`"$($tool.url)\`" -Path \`"%V\`"'`""
+                $adminCmd = "powershell.exe -Command `"Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit -ExecutionPolicy Bypass -File \`"$($Config.LauncherPath)\`" -ToolUrl \`"$($tool.url)\`" -Path \`"%V\`"'`""
                 Set-Item -Path $cmdKey -Value $adminCmd
             }
             else {
                 Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value "Run $($tool.name)"
-                $normalCmd = "powershell.exe -NoExit -File `"$($Config.LauncherPath)`" -ToolUrl `"$($tool.url)`" -Path `"%V`""
+                $normalCmd = "powershell.exe -NoExit -ExecutionPolicy Bypass -File `"$($Config.LauncherPath)`" -ToolUrl `"$($tool.url)`" -Path `"%V`""
                 Set-Item -Path $cmdKey -Value $normalCmd
             }
         }
