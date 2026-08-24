@@ -42,8 +42,14 @@ $Config = @{
         'Drive\Background\shell'
     )
     Tools = @(
-        @{ name = 'PDF Tool'; url = 'https://pdf.vcc.net'; admin = $false }
-        @{ name = 'DNS Tool'; url = 'https://dns.vcc.net'; admin = $true  }
+        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true }
+        @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false  }
+        @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true }
+        @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
+        @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true }
+        @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
+        @{ name = 'QB Entitlement Reset'; url = 'https://qb-reset.vcc.net'; admin = $true  }
+        @{ name = 'Print Spooler Clear'; url = 'https://spooler.vcc.net'; admin = $true  }
         # Add more tools here. Push to GitHub, then click "Refresh Tool
         # List" (or re-run the installer) on each machine to pick it up.
     )
