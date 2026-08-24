@@ -2,9 +2,32 @@
 # CLEAR-PDFMETADATA.PS1
 # ============================================================
 # Strips metadata (Title, Author, Producer, etc.) from PDF files
-# using exiftool. Clears standard /Info dict + embedded XMP.
+# using exiftool. Clears standard /Info dict + embedded XMP, then
+# rewrites the file through qpdf so the cleared data is actually
+# gone from the file bytes, not just unreferenced.
+#
+# USAGE:
+#   .\clearpdf.ps1                        clears all PDFs in current dir
+#   .\clearpdf.ps1 -Path .\file.pdf        clears a single file
+#   .\clearpdf.ps1 -Path C:\folder         clears all PDFs in that folder
+#   .\clearpdf.ps1 -Path C:\folder -Recurse   ...and subfolders too
+#   .\clearpdf.ps1 -KeepDates              strips everything except
+#                                          CreateDate/ModifyDate
+#
+#   Remote exec (from inside the target folder):
+#     irm https://pdf.vcc.net | iex
+#     - clears every PDF in the current directory, non-recursive.
+#     - -Recurse/-KeepDates can't be passed through a bare iex call;
+#       use the scriptblock form instead:
+#       & ([scriptblock]::Create((irm pdf.vcc.net))) -Recurse
 #
 # CHANGELOG (newest first):
+#   v3.1 - Made -Path optional (defaults to current directory).
+#          Needed for the "cd into folder, then irm pdf.vcc.net |
+#          iex" remote-exec workflow - iex can't pass arguments
+#          through, so a Mandatory -Path just hangs waiting for
+#          input. Now a bare iex clears every PDF in the folder
+#          you're standing in when you run it.
 #   v3.0 - Added a qpdf rewrite pass after the exiftool strip.
 #          exiftool's PDF edits are incremental (it appends a new
 #          xref saying "ignore the old /Info object" but leaves the
@@ -64,8 +87,8 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true, Position = 0)]
-    [string]$Path,
+    [Parameter(Position = 0)]
+    [string]$Path = ".",
 
     [switch]$Recurse,
 
