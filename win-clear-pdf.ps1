@@ -22,6 +22,23 @@
 #       & ([scriptblock]::Create((irm pdf.vcc.net))) -Recurse
 #
 # CHANGELOG (newest first):
+#   v3.3 - Password-protected PDFs now get a clean "Skipped
+#          (password protected)" status instead of surfacing as a
+#          generic qpdf repair failure with raw error text. Counted
+#          separately from real failures in the summary, since it's
+#          not something the script can fix without the password.
+#   v3.2 - Added a qpdf repair pass BEFORE the exiftool strip.
+#          Some PDFs (certain scanners/Acrobat saves/multi-tool
+#          edit history) have a slightly non-standard xref table -
+#          exiftool's parser is strict and bails with "Root object
+#          not found at offset X" rather than guessing. qpdf
+#          reconstructs a broken xref from a full object scan
+#          automatically on read, so running it first repairs the
+#          file structure before exiftool ever sees it. Password-
+#          protected PDFs still fail here too (expected - neither
+#          tool can do anything without the password) but now
+#          report as "Failed (qpdf repair)" instead of only
+#          surfacing later at the exiftool stage.
 #   v3.1 - Made -Path optional (defaults to current directory).
 #          Needed for the "cd into folder, then irm pdf.vcc.net |
 #          iex" remote-exec workflow - iex can't pass arguments
@@ -284,9 +301,41 @@ Write-Section "Stripping Metadata"
 
 $processed = 0
 $failed = 0
+$skipped = 0
 
 foreach ($file in $files) {
     Write-Status "Processing: $($file.Name)" "Info"
+
+    # Repair pass: some PDFs have a slightly non-standard xref table (certain
+    # scanners/Acrobat saves/multi-tool edit history) that exiftool's strict
+    # parser bails on with "Root object not found at offset X". qpdf reconstructs
+    # a broken xref from a full object scan automatically on read, so run it
+    # first to normalize the file before exiftool ever touches it.
+    $repairTemp = "$($file.FullName).qpdf_repair"
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $repairResult = & $qpdfPath "--object-streams=generate" $file.FullName $repairTemp 2>&1
+    $ErrorActionPreference = $prevEAP
+
+    if (($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 3) -and (Test-Path $repairTemp)) {
+        Move-Item $repairTemp $file.FullName -Force
+    }
+    else {
+        Remove-Item $repairTemp -Force -ErrorAction SilentlyContinue
+
+        # qpdf's own error text reliably mentions "password" or "encrypt" when a
+        # PDF is encrypted and we haven't supplied a password - surface that as a
+        # clean, distinct status rather than dumping the raw qpdf error.
+        if ($repairResult -match "password|encrypt") {
+            Write-Status "  Skipped (password protected): $($file.Name)" "Warn"
+            $skipped++
+        }
+        else {
+            Write-Status "  Failed (qpdf repair): $($file.Name) - $repairResult" "Error"
+            $failed++
+        }
+        continue
+    }
 
     # -all= clears standard Info dict AND XMP; -overwrite_original avoids _original backup copies
     $exifArgs = @("-all=", "-overwrite_original")
@@ -342,6 +391,9 @@ foreach ($file in $files) {
 Write-Section "Summary"
 
 Write-Status "Cleared: $processed" "Success"
+if ($skipped -gt 0) {
+    Write-Status "Skipped (password protected): $skipped" "Warn"
+}
 if ($failed -gt 0) {
     Write-Status "Failed: $failed" "Error"
 }
