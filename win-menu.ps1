@@ -48,8 +48,8 @@ $Config = @{
         @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
         @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
-        @{ name = 'QB Entitlement Reset'; url = 'https://qb-reset.vcc.net'; admin = $true  }
         @{ name = 'Print Spooler Clear'; url = 'https://spooler.vcc.net'; admin = $true  }
+        @{ name = 'QB Entitlement Reset'; url = 'https://qb-reset.vcc.net'; admin = $true  }
         # Add more tools here. Push to GitHub, then click "Refresh Tool
         # List" (or re-run the installer) on each machine to pick it up.
     )
