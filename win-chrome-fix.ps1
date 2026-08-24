@@ -1,79 +1,78 @@
-<#
-    Chrome Default Search Engine Repair Tool v2.3
-    =================================================
-    Sets Google as the default search engine and removes the others by
-    driving Chrome's own Settings UI through Windows UI Automation - the
-    same accessibility API screen readers use. Not file edits.
-
-    VERSION HISTORY
-    ----------------
-    2.3 - Also removes inactive/dormant shortcuts (same Delete menu as the active list)
-    2.2 - Dump specifically tests an inactive row's menu contents
-    2.1 - Dump also reveals inactive shortcuts if present
-    2.0 - UI Automation rewrite; supports both old and new Chrome settings layouts
-    1.x - Registry policy, then file edits, then UI Automation (classic layout only) - see "HOW WE GOT HERE" below
-
-    NOTES
-    -----
-    - Run this from a normal PowerShell window, NOT "Run as Administrator" -
-      elevation can block the automation's clicks entirely (UIPI stops a
-      higher-integrity process from sending input to a lower one), and
-      Chrome usually won't run elevated in the first place.
-    - Must run in an active, logged-in desktop session - UI Automation has
-      nothing to click if there's no visible desktop.
-    - Uses whatever Chrome window is already open if there is one. Its
-      active tab gets navigated to the settings page rather than opening
-      a separate new tab - a minor courtesy trade-off, not a functional one.
-    - Doesn't touch Web Data, Preferences, or the registry at all.
-    - No persistent lock/enforcement - a hijacker can still change it again
-      later. The only way to actually prevent that is enrolling the device
-      in (free) Chrome Enterprise Core so DefaultSearchProviderEnabled
-      becomes an honored policy - a bigger setup, not attempted here.
-    - If this keeps recurring on the same machine even after a clean run,
-      that points to an active hijacker (extension or background program)
-      re-asserting itself, not a one-time corrupted setting - worth checking
-      chrome://extensions and installed programs/Task Scheduler at that point.
-
-    USAGE
-    -----
-    Normal remote run:
-        irm chrome.vcc.net | iex
-
-    Diagnostic dump instead of clicking anything (use this first if the
-    normal run doesn't fully work):
-        & ([ScriptBlock]::Create((irm chrome.vcc.net))) -DumpUITree
-
-    HOW WE GOT HERE (v1.x, abandoned)
-    ----------------------------------
-    Three earlier approaches were tried and abandoned before landing on
-    this one:
-    1. Registry policy (DefaultSearchProvider* keys) - Chrome only honors
-       this on AD/Entra-joined or Chrome Enterprise Core-enrolled devices.
-       Blocked by design everywhere else, since it's the same registry
-       trick hijacker malware uses.
-    2. Editing Web Data / Preferences directly - Chrome signs sensitive
-       settings (like the default search engine) with an HMAC and reverts
-       anything that doesn't carry a valid signature. External file edits
-       can't produce a valid one without reverse-engineering Chrome's
-       internal seed - not worth building, since that's genuinely what
-       hijacker-cleanup malware does.
-    3. UI Automation against only the classic settings layout - worked,
-       until Chrome shipped a redesign of chrome://settings/search mid-
-       development that moved and partially hid the same controls.
-
-    The one thing Chrome inherently trusts is real interaction with its
-    own UI, so the current approach drives the actual Settings page via
-    Windows UI Automation - genuine OS-level input Chrome can't tell apart
-    from a person clicking - which sidesteps the tamper protections above
-    entirely rather than fighting them.
-#>
+#    Chrome Default Search Engine Repair Tool v2.4
+#    =================================================
+#    Sets Google as the default search engine and removes the others by
+#    driving Chrome's own Settings UI through Windows UI Automation - the
+#    same accessibility API screen readers use. Not file edits.
+#
+#    VERSION HISTORY
+#    ----------------
+#    2.4 - Handles multi-profile machines (lists profiles, launches the chosen one)
+#    2.3 - Also removes inactive/dormant shortcuts (same Delete menu as the active list)
+#    2.2 - Dump specifically tests an inactive row's menu contents
+#    2.1 - Dump also reveals inactive shortcuts if present
+#    2.0 - UI Automation rewrite; supports both old and new Chrome settings layouts
+#    1.x - Registry policy, then file edits, then UI Automation (classic layout only) - see "HOW WE GOT HERE" below
+#
+#    NOTES
+#    -----
+#    - Run this from a normal PowerShell window, NOT "Run as Administrator" -
+#      elevation can block the automation's clicks entirely (UIPI stops a
+#      higher-integrity process from sending input to a lower one), and
+#      Chrome usually won't run elevated in the first place.
+#    - Must run in an active, logged-in desktop session - UI Automation has
+#      nothing to click if there's no visible desktop.
+#    - Uses whatever Chrome window is already open if there is one. Its
+#      active tab gets navigated to the settings page rather than opening
+#      a separate new tab - a minor courtesy trade-off, not a functional one.
+#    - Doesn't touch Web Data, Preferences, or the registry at all.
+#    - No persistent lock/enforcement - a hijacker can still change it again
+#      later. The only way to actually prevent that is enrolling the device
+#      in (free) Chrome Enterprise Core so DefaultSearchProviderEnabled
+#      becomes an honored policy - a bigger setup, not attempted here.
+#    - If this keeps recurring on the same machine even after a clean run,
+#      that points to an active hijacker (extension or background program)
+#      re-asserting itself, not a one-time corrupted setting - worth checking
+#      chrome://extensions and installed programs/Task Scheduler at that point.
+#
+#    USAGE
+#    -----
+#    Normal remote run:
+#        irm chrome.vcc.net | iex
+#
+#    Diagnostic dump instead of clicking anything (use this first if the
+#    normal run doesn't fully work):
+#        & ([ScriptBlock]::Create((irm chrome.vcc.net))) -DumpUITree
+#
+#    HOW WE GOT HERE (v1.x, abandoned)
+#    ----------------------------------
+#    Three earlier approaches were tried and abandoned before landing on
+#    this one:
+#    1. Registry policy (DefaultSearchProvider* keys) - Chrome only honors
+#       this on AD/Entra-joined or Chrome Enterprise Core-enrolled devices.
+#       Blocked by design everywhere else, since it's the same registry
+#       trick hijacker malware uses.
+#    2. Editing Web Data / Preferences directly - Chrome signs sensitive
+#       settings (like the default search engine) with an HMAC and reverts
+#       anything that doesn't carry a valid signature. External file edits
+#       can't produce a valid one without reverse-engineering Chrome's
+#       internal seed - not worth building, since that's genuinely what
+#       hijacker-cleanup malware does.
+#    3. UI Automation against only the classic settings layout - worked,
+#       until Chrome shipped a redesign of chrome://settings/search mid-
+#       development that moved and partially hid the same controls.
+#
+#    The one thing Chrome inherently trusts is real interaction with its
+#    own UI, so the current approach drives the actual Settings page via
+#    Windows UI Automation - genuine OS-level input Chrome can't tell apart
+#    from a person clicking - which sidesteps the tamper protections above
+#    entirely rather than fighting them.
 
 [CmdletBinding()]
 param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "2.3"
+$ScriptVersion = "2.4"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -163,8 +162,47 @@ if ($ChromeWindow) {
     Write-Ok "Chrome is already running - using the existing window"
 }
 else {
+    # A bare launch with multiple profiles configured shows the profile
+    # picker instead of an actual browser window - no address bar for the
+    # rest of this to find. Read the real profile list straight from
+    # Chrome's own Local State file and let the person pick, then launch
+    # directly into that one via --profile-directory instead of guessing.
+    $profileArg = $null
+    $localStatePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
+    if (Test-Path $localStatePath) {
+        try {
+            $cache = (Get-Content $localStatePath -Raw | ConvertFrom-Json).profile.info_cache
+            $profiles = @($cache.PSObject.Properties | ForEach-Object {
+                [pscustomobject]@{ Dir = $_.Name; Name = $_.Value.name; User = $_.Value.user_name }
+            })
+
+            if ($profiles.Count -gt 1) {
+                Write-Warn2 "Multiple Chrome profiles found on this machine:"
+                for ($p = 0; $p -lt $profiles.Count; $p++) {
+                    $label = $profiles[$p].Name
+                    if ($profiles[$p].User) { $label += " ($($profiles[$p].User))" }
+                    Write-Host "  [$($p + 1)] $label" -ForegroundColor Cyan
+                }
+                $choice = Read-Host "Which profile should this fix? (1-$($profiles.Count))"
+                $idx = 0
+                if ([int]::TryParse($choice, [ref]$idx) -and $idx -ge 1 -and $idx -le $profiles.Count) {
+                    $profileArg = $profiles[$idx - 1].Dir
+                } else {
+                    Write-Warn2 "Didn't get a valid choice - Chrome's own profile picker will show instead"
+                }
+            }
+        }
+        catch {
+            Write-Warn2 "Couldn't read the profile list - Chrome's own profile picker will show if there's more than one"
+        }
+    }
+
     Write-Info "Launching Chrome..."
-    Start-Process -FilePath $chromeExe
+    if ($profileArg) {
+        Start-Process -FilePath $chromeExe -ArgumentList "--profile-directory=`"$profileArg`""
+    } else {
+        Start-Process -FilePath $chromeExe
+    }
 
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt 20 -and -not $ChromeWindow) {
@@ -191,7 +229,7 @@ $omnibox = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendan
     Where-Object { $_.Current.Name -match "Address and search bar|Address bar" } | Select-Object -First 1
 
 if (-not $omnibox) {
-    Write-Err2 "Couldn't find the address bar - stopping. Run with -DumpUITree to see what's actually there"
+    Write-Err2 "Couldn't find the address bar - stopping. This can happen if Chrome's showing its profile picker rather than a browser window - run with -DumpUITree to check, or open a profile manually and re-run"
     return
 }
 
