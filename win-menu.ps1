@@ -17,6 +17,8 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   1.5  - Populated with the actual tool list (8 tools)
+#   1.4  - Launcher's status output no longer implies the tool acts "against" the folder
 #   1.3  - admin=true now replaces the entry (elevated) instead of adding a second one
 #   1.2  - Tool list folded back into the script (no separate manifest)
 #   1.1  - Tools pulled from a JSON manifest
@@ -26,7 +28,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "1.3"
+$ScriptVersion = "1.5"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -42,11 +44,11 @@ $Config = @{
         'Drive\Background\shell'
     )
     Tools = @(
-        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true }
-        @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false  }
-        @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true }
+        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
+        @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
+        @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
         @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
-        @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true }
+        @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true  }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
         @{ name = 'Print Spooler Clear'; url = 'https://spooler.vcc.net'; admin = $true  }
         @{ name = 'QB Entitlement Reset'; url = 'https://qb-reset.vcc.net'; admin = $true  }
@@ -79,7 +81,8 @@ param(
     [Parameter(Mandatory)][string]$Path
 )
 Set-Location -LiteralPath $Path
-Write-Host "[*] Running $ToolUrl against $Path" -ForegroundColor Cyan
+Write-Host "[*] Path: $Path" -ForegroundColor Cyan
+Write-Host "[*] Running $ToolUrl ..." -ForegroundColor Cyan
 Invoke-RestMethod $ToolUrl | Invoke-Expression
 '@
 
