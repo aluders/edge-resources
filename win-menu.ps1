@@ -1,33 +1,32 @@
-<#
-=====================================================================
- Edge Tools Context Menu Installer
- Builds a cascading "Edge Tools" right-click menu in Windows Explorer.
- The tool list lives right in this script (see CONFIG below), which
- you host on GitHub - so "refresh" just means re-pulling this file.
-
- Adds entries to:
-   - Directory\Background\shell   (right-click empty space in a folder)
-   - Directory\shell               (right-click a folder itself)
-   - Drive\Background\shell        (right-click empty space at a drive root)
-
- Install / refresh (per-user, no admin required):
-   irm https://menu.vcc.net | iex
-
- Uninstall:
-   .\install-edge-tools-context-menu.ps1 -Uninstall
-=====================================================================
-
-CHANGELOG (newest first)
-  1.2  - Tool list folded back into the script (no separate manifest)
-  1.1  - Tools pulled from a JSON manifest
-  1.0  - Initial release (static tool list)
-#>
+# =====================================================================
+# Edge Tools Context Menu Installer
+# Builds a cascading "Edge Tools" right-click menu in Windows Explorer.
+# The tool list lives right in this script (see CONFIG below), which
+# you host on GitHub - so "refresh" just means re-pulling this file.
+#
+# Adds entries to:
+#   - Directory\Background\shell   (right-click empty space in a folder)
+#   - Directory\shell               (right-click a folder itself)
+#   - Drive\Background\shell        (right-click empty space at a drive root)
+#
+# Install / refresh (per-user, no admin required):
+#   irm https://menu.vcc.net | iex
+#
+# Uninstall:
+#   .\install-edge-tools-context-menu.ps1 -Uninstall
+# =====================================================================
+#
+# CHANGELOG (newest first)
+#   1.3  - admin=true now replaces the entry (elevated) instead of adding a second one
+#   1.2  - Tool list folded back into the script (no separate manifest)
+#   1.1  - Tools pulled from a JSON manifest
+#   1.0  - Initial release (static tool list)
 
 param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "1.2"
+$ScriptVersion = "1.3"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -116,34 +115,27 @@ function Install-EdgeToolsMenu {
 
         foreach ($tool in $Tools) {
             $safeName = ($tool.name -replace '[^a-zA-Z0-9]', '')
-
-            # --- normal entry ---
             $itemKey = "$shellKey\$safeName"
             New-Item -Path $itemKey -Force | Out-Null
-            Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value "Run $($tool.name)"
             Set-ItemProperty -Path $itemKey -Name 'Icon' -Value $Config.Icon
 
             $cmdKey = "$itemKey\command"
             New-Item -Path $cmdKey -Force | Out-Null
-            $normalCmd = "powershell.exe -NoExit -File `"$($Config.LauncherPath)`" -ToolUrl `"$($tool.url)`" -Path `"%V`""
-            Set-Item -Path $cmdKey -Value $normalCmd
 
-            # --- admin entry, only if manifest says so ---
             if ($tool.admin -eq $true) {
-                $adminItemKey = "$shellKey\${safeName}Admin"
-                New-Item -Path $adminItemKey -Force | Out-Null
-                Set-ItemProperty -Path $adminItemKey -Name 'MUIVerb' -Value "Run $($tool.name) (Admin)"
-                Set-ItemProperty -Path $adminItemKey -Name 'Icon' -Value $Config.Icon
-                Set-ItemProperty -Path $adminItemKey -Name 'HasLUAShield' -Value ''
-
-                $adminCmdKey = "$adminItemKey\command"
-                New-Item -Path $adminCmdKey -Force | Out-Null
+                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value "Run $($tool.name)"
+                Set-ItemProperty -Path $itemKey -Name 'HasLUAShield' -Value ''
                 # NB: \`" (backslash + quote) below is deliberate, not a typo -
                 # it embeds a literal quote inside the single-quoted
                 # -ArgumentList string without breaking out of the outer
                 # -Command string. Tested with paths containing spaces.
                 $adminCmd = "powershell.exe -Command `"Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit -File \`"$($Config.LauncherPath)\`" -ToolUrl \`"$($tool.url)\`" -Path \`"%V\`"'`""
-                Set-Item -Path $adminCmdKey -Value $adminCmd
+                Set-Item -Path $cmdKey -Value $adminCmd
+            }
+            else {
+                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value "Run $($tool.name)"
+                $normalCmd = "powershell.exe -NoExit -File `"$($Config.LauncherPath)`" -ToolUrl `"$($tool.url)`" -Path `"%V`""
+                Set-Item -Path $cmdKey -Value $normalCmd
             }
         }
         Write-Status "Installed $($Tools.Count) tool(s) under $root" '+'
