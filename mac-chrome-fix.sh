@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool    v3.11
+# Chrome Default Search Engine Repair Tool    v3.13
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,6 +9,21 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.13 - Also dropped the count from dump mode's "Found N 'More actions'
+#        button(s)" message - same class of tree-walk count as the
+#        inactive-shortcuts one, so same potential for the exact
+#        duplication issue that made that one unreliable.
+# 3.12 - v3.11's "raw count" fix was ALSO wrong, in the opposite
+#        direction: a real run showed "Found 4" then only 2 real removals
+#        (previously it was "Found 1" then 3 removals). Two wrong guesses
+#        in a row - stopped guessing and dropped the specific number from
+#        the message entirely rather than ship a third. The removal loop
+#        itself doesn't depend on this count and has been correct both
+#        times even while the displayed number was wrong. Suspected real
+#        cause (not confirmed against either run): an "Additional
+#        inactive sites" overflow container, seen holding duplicate
+#        entries in the very first dump captured for this section months
+#        ago - worth a fresh --dump-ui-tree next time to confirm properly.
 # 3.11 - Two real bugs from a real run. (1) The search-engine removal
 #        loop excluded anything named "Google," not just the entry
 #        actually marked (Default) - a leftover duplicate "Google" entry
@@ -86,7 +101,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.11"
+SCRIPT_VERSION="3.13"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -758,7 +773,7 @@ if dumpMode {
     if seButtons == nil {
         warn("Could not find a \"Search engines\" heading on this page at all")
     } else {
-        info("Found \(seButtons!.count) \"More actions\" button(s) under the Search engines heading")
+        info("Found \"More actions\" button(s) under the Search engines heading")
     }
 
     let addBtn = findFirst(pageRoot, { roleOf($0) == "AXButton" && $0.axNameContainsIgnoreCase("add site search") })
@@ -959,18 +974,23 @@ func inactiveShortcutRows() -> [AXUIElement] {
     return findAllIn(scoped, { roleOf($0) == "AXButton" && $0.titleStartsWithIgnoreCase("Click to activate ") })
 }
 
+// v3.8's name-deduped count and v3.11's raw count have both now been
+// proven wrong by real runs, in opposite directions ("Found 1" then 3
+// removed; "Found 4" then 2 removed). Likely cause, based on the very
+// first real dump ever captured for this section: an "Additional
+// inactive sites" overflow container that appears to hold a duplicate
+// copy of at least some entries in the tree - but that's from a
+// different context months earlier, not confirmed against either of
+// these specific runs, so it's a lead, not an answer. Given two wrong
+// guesses in a row, dropping the specific number rather than shipping a
+// third - the removal loop itself doesn't depend on this count at all
+// (it re-queries fresh and stops cleanly once nothing real is left) and
+// has been correct both times even while this message was wrong.
 var inactiveRows = inactiveShortcutRows()
 if inactiveRows.isEmpty {
     info("No inactive shortcuts present")
 } else {
-    // CONFIRMED via a real run to be WRONG: v3.8 deduped this count by
-    // display name, on the theory that Chrome's accessibility tree
-    // duplicates rows as two nodes for the same entry. A real run showed
-    // "Found 1" followed by three separate GitHub removals - these are
-    // genuinely distinct entries (different underlying URLs) that just
-    // happen to share a display name, not duplicate nodes for one entry.
-    // Reverted to a raw, honest count.
-    ok("Found \(inactiveRows.count) inactive shortcut(s)")
+    ok("Found inactive shortcuts - cleaning up...")
     var removedInactive = 0
     for _ in 0..<200 {
         let scoped = inactiveShortcutsElements(pageRoot)
