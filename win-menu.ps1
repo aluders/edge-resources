@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   1.10 - Removed the "existing Explorer windows need a refresh" note; testing shows every right-click re-queries the registry
 #   1.9  - Tools array reordered alphabetically by name
 #   1.8  - Header now notes tools run in the right-clicked folder, not the script's own location
 #   1.7  - Added a "Remove Edge Tools" self-uninstall menu entry
@@ -37,7 +38,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "1.9"
+$ScriptVersion = "1.10"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -197,4 +198,3 @@ Remove-EdgeToolsMenu
 Install-EdgeToolsMenu -Tools $Config.Tools
 
 Write-Status "Done. Right-click a folder or its background to see 'Edge Tools'." '+'
-Write-Status "New Explorer windows pick it up immediately; existing ones may need a refresh (F5)." '!'
