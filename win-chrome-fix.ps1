@@ -4,6 +4,11 @@
 #    driving Chrome's own Settings UI through Windows UI Automation - the
 #    same accessibility API screen readers use. Not file edits.
 #
+#    Looking for the Mac version? chrome.vcc.net now serves this Windows
+#    script or the Mac one depending on how it's invoked (PowerShell vs.
+#    curl/wget) - the Mac source lives at:
+#    https://github.com/aluders/edge-resources/blob/main/mac-chrome-fix.sh
+#
 #    VERSION HISTORY
 #    ----------------
 #    2.6 - Removal loop now cleans up duplicate Google entries instead of protecting all of them
