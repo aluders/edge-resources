@@ -1,4 +1,4 @@
-#    Chrome Default Search Engine Repair Tool v2.4
+#    Chrome Default Search Engine Repair Tool v2.5
 #    =================================================
 #    Sets Google as the default search engine and removes the others by
 #    driving Chrome's own Settings UI through Windows UI Automation - the
@@ -6,6 +6,7 @@
 #
 #    VERSION HISTORY
 #    ----------------
+#    2.5 - Fixed a false-negative on longer search engine lists; cleaner Add-dialog backout
 #    2.4 - Handles multi-profile machines (lists profiles, launches the chosen one)
 #    2.3 - Also removes inactive/dormant shortcuts (same Delete menu as the active list)
 #    2.2 - Dump specifically tests an inactive row's menu contents
@@ -72,7 +73,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "2.4"
+$ScriptVersion = "2.5"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -632,6 +633,20 @@ if (-not $SearchEngineTable) {
 #     labeled for search engines - genuinely odd, but that's Chrome's UI. ---
 $nameCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "name-column")
+
+# Wait for the row count to stop changing before checking anything below -
+# a table that's still populating rows (more likely on profiles with
+# longer lists) can otherwise cause a false "Google not found" if this
+# runs against a still-loading snapshot, one immediate check isn't enough
+$lastCount = -1
+$stableCount = -2
+$settleSw = [Diagnostics.Stopwatch]::StartNew()
+while ($settleSw.Elapsed.TotalSeconds -lt 5 -and $stableCount -ne $lastCount) {
+    $lastCount = $stableCount
+    $stableCount = @($RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond)).Count
+    Start-Sleep -Milliseconds 400
+}
+
 $googleExists = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nameCond) |
     Where-Object { $_.Current.Name -match "Google" }
 
@@ -713,7 +728,11 @@ if (-not $googleExists) {
                     }
 
                     if (-not $addSubmitBtn) {
-                        Write-Warn2 "Add button never became enabled - run with -DumpUITree to check the filled-in fields"
+                        Write-Warn2 "Add button never became enabled - Google may already exist with that shortcut. Backing out of the dialog."
+                        $cancelCond = New-Object System.Windows.Automation.PropertyCondition(
+                            [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "cancel")
+                        $cancelBtn = $RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cancelCond)
+                        if ($cancelBtn) { Invoke-UIA $cancelBtn }
                     }
                     else {
                         Invoke-UIA $addSubmitBtn
