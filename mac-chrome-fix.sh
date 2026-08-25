@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool    v3.13
+# Chrome Default Search Engine Repair Tool    v3.14
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,6 +9,15 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.14 - Renamed the cache-directory identifier from com.vcc.* to
+#        com.edge.* - "vcc" is just a domain, not a business name, so it
+#        shouldn't have been baked into the binary's path. Actual domain
+#        references (chrome.vcc.net) are untouched, since that one's
+#        real. Added one-time cleanup of the old com.vcc.* cache
+#        directory. NOTE: the compiled helper's Accessibility permission
+#        grant is per-executable-path, so this rename means it needs to
+#        be re-granted once at the new path even though nothing else
+#        about the tool changed.
 # 3.13 - Also dropped the count from dump mode's "Found N 'More actions'
 #        button(s)" message - same class of tree-walk count as the
 #        inactive-shortcuts one, so same potential for the exact
@@ -71,7 +80,7 @@
 #   Chrome's own OS-level profile picker if either is missing.
 # - Requires 3 permission grants: Accessibility (this script's app),
 #   Automation (Chrome), Accessibility (compiled helper - separate grant,
-#   cached at ~/Library/Caches/com.vcc.chrome-search-repair)
+#   cached at ~/Library/Caches/com.edge.chrome-search-repair)
 # - Needs an active GUI login session - not SSH, root, or launchd
 # - Doesn't touch Preferences/Web Data - HMAC-signed, same as Windows
 # - No persistent lock - Chrome Enterprise Core is the only real fix
@@ -101,7 +110,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.13"
+SCRIPT_VERSION="3.14"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -137,7 +146,7 @@ Requires: swiftc (Xcode Command Line Tools - `xcode-select --install` if
 missing), Accessibility + Automation permission (for Chrome) granted to
 whatever app runs this SCRIPT, AND a separate Accessibility grant for the
 compiled helper binary itself (cached at
-~/Library/Caches/com.vcc.chrome-search-repair/chrome-search-repair-helper) -
+~/Library/Caches/com.edge.chrome-search-repair/chrome-search-repair-helper) -
 that grant is per-executable, not per-user, so it needs its own entry in
 System Settings even though it's launched by this already-trusted script.
 See the NOTES block at the top of the script file for details.
@@ -451,11 +460,23 @@ sep
 #    source), so normal runs skip straight to a fast, already-built
 #    binary.
 # ---------------------------------------------------------------------------
-HELPER_DIR="$HOME/Library/Caches/com.vcc.chrome-search-repair"
+HELPER_DIR="$HOME/Library/Caches/com.edge.chrome-search-repair"
 mkdir -p "$HELPER_DIR"
 HELPER_SRC="$HELPER_DIR/chrome-search-repair-helper.swift"
 HELPER_BIN="$HELPER_DIR/chrome-search-repair-helper"
 HELPER_HASH_FILE="$HELPER_DIR/chrome-search-repair-helper.hash"
+
+# One-time cleanup: the cache directory used to be named com.vcc.* before
+# v3.14 - "vcc" was just a domain, not an identifier worth keeping, so it
+# got renamed. The old directory (and whatever binary was cached in it)
+# is now orphaned; remove it rather than leave it sitting around unused.
+# The new binary at the new path needs its own fresh Accessibility grant
+# regardless - permission is per-executable-path, not per-user, so this
+# rename means re-granting once even though nothing else changed.
+OLD_HELPER_DIR="$HOME/Library/Caches/com.vcc.chrome-search-repair"
+if [[ -d "$OLD_HELPER_DIR" ]]; then
+  rm -rf "$OLD_HELPER_DIR"
+fi
 
 NEW_SRC_TMP="$(mktemp /tmp/chrome-search-repair-helper.XXXXXX.swift)"
 trap 'rm -f "$NEW_SRC_TMP"' EXIT
