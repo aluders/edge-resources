@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool - macOS port    v3.9
+# Chrome Default Search Engine Repair Tool    v3.10
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,20 +9,17 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.10 - Updated USAGE domain to chrome.vcc.net (now shares the same
+#        Cloudflare Worker as the Windows version instead of a separate
+#        chrome-mac.vcc.net). Dropped "- macOS port" from the title -
+#        this is its own tool at this point, not a straight port anymore.
 # 3.9 - Multi-profile support, ported from the Windows v2.4 approach:
 #       reads Chrome's Local State (via python3, since Xcode CLT is
 #       already required) and prompts which profile to fix when >1 exists
 #       and a fresh launch is needed. Reads from /dev/tty explicitly, not
 #       bare stdin - required because curl|bash's stdin IS the download
-#       pipe, unlike PowerShell's Read-Host. NOT independently tested on
-#       a real multi-profile machine.
-# 3.9 - Added multi-profile handling, ported from the Windows v2.4
-#       approach: reads Chrome's Local State file for the real profile
-#       list, prompts if more than one, launches into the chosen one via
-#       --profile-directory. Reads the prompt from /dev/tty explicitly,
-#       since under `curl | bash` a plain read would consume the piped
-#       script instead of the keyboard - PowerShell's Read-Host doesn't
-#       have that problem, so this needed a real fix, not a straight port.
+#       pipe, unlike PowerShell's Read-Host. NOT independently tested when
+#       first shipped; confirmed working on a real multi-profile machine.
 # 3.8 - Fixed "Found N inactive shortcut(s)" overcounting - Chrome's
 #       accessibility tree duplicates rows as two nodes per site
 #       (confirmed repeatedly since early JXA dumps), so the raw count
@@ -56,10 +53,10 @@
 # USAGE
 # -----
 # Normal run:
-#     curl -fsSL https://chrome-mac.vcc.net | bash
+#     curl -fsSL https://chrome.vcc.net | bash
 #
 # Dump instead of clicking (use first on any new machine):
-#     curl -fsSL https://chrome-mac.vcc.net | bash -s -- --dump-ui-tree
+#     curl -fsSL https://chrome.vcc.net | bash -s -- --dump-ui-tree
 #
 # HOW WE GOT HERE
 # -----------------
@@ -76,7 +73,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.9"
+SCRIPT_VERSION="3.10"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
