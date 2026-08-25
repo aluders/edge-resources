@@ -17,6 +17,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   1.7  - Added a "Remove Edge Tools" self-uninstall menu entry
 #   1.6  - Launcher invocations now use -ExecutionPolicy Bypass (fixes "running scripts is disabled" on default-policy machines)
 #   1.5  - Populated with the actual tool list (8 tools)
 #   1.4  - Launcher's status output no longer implies the tool acts "against" the folder
@@ -29,7 +30,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "1.6"
+$ScriptVersion = "1.7"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -45,9 +46,9 @@ $Config = @{
         'Drive\Background\shell'
     )
     Tools = @(
+        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
         @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
         @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
-        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
         @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
         @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true  }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
@@ -122,6 +123,19 @@ function Install-EdgeToolsMenu {
         New-Item -Path $refreshCmdKey -Force | Out-Null
         $refreshCmd = "powershell.exe -NoExit -Command `"irm $($Config.InstallerUrl) | iex`""
         Set-Item -Path $refreshCmdKey -Value $refreshCmd
+
+        # --- self-uninstall entry, always second ---
+        # Fetches this same installer and invokes it as a scriptblock with
+        # -Uninstall, so the menu can remove itself without anyone needing
+        # a local copy of the script.
+        $removeKey = "$shellKey\_Remove"
+        New-Item -Path $removeKey -Force | Out-Null
+        Set-ItemProperty -Path $removeKey -Name 'MUIVerb' -Value 'Remove Edge Tools'
+        Set-ItemProperty -Path $removeKey -Name 'Icon' -Value $Config.Icon
+        $removeCmdKey = "$removeKey\command"
+        New-Item -Path $removeCmdKey -Force | Out-Null
+        $removeCmd = "powershell.exe -NoExit -Command `"& ([ScriptBlock]::Create((irm $($Config.InstallerUrl)))) -Uninstall`""
+        Set-Item -Path $removeCmdKey -Value $removeCmd
 
         foreach ($tool in $Tools) {
             $safeName = ($tool.name -replace '[^a-zA-Z0-9]', '')
