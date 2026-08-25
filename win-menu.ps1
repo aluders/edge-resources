@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   1.9  - Tools array reordered alphabetically by name
 #   1.8  - Header now notes tools run in the right-clicked folder, not the script's own location
 #   1.7  - Added a "Remove Edge Tools" self-uninstall menu entry
 #   1.6  - Launcher invocations now use -ExecutionPolicy Bypass (fixes "running scripts is disabled" on default-policy machines)
@@ -36,7 +37,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "1.8"
+$ScriptVersion = "1.9"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -52,9 +53,9 @@ $Config = @{
         'Drive\Background\shell'
     )
     Tools = @(
-        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
         @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
         @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
+        @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
         @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
         @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true  }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
