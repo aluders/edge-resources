@@ -1,5 +1,40 @@
 #!/usr/bin/env bash
-# netscan — Network device discovery for macOS
+#    Network Scanner  (macOS)  v1.0
+#    ================================
+#    Discovers every device on the local subnet using a layered approach:
+#    ICMP ping sweep, ARP cache, reverse DNS, OUI vendor lookup,
+#    /dev/tcp port scan, mDNS, SSDP, and HTTP title scraping.
+#
+#    Looking for the Windows version? netscan.vcc.net serves this macOS
+#    script or the Windows one automatically depending on how it's invoked
+#    (curl/bash vs. PowerShell irm) — the Windows source lives at:
+#    https://github.com/aluders/edge-resources/blob/main/netscan.ps1
+#
+#    VERSION HISTORY
+#    ---------------
+#    1.0 - Initial release
+#
+#    NOTES
+#    -----
+#    - No elevated privileges required; all discovery uses standard macOS tools.
+#    - Vendor cache lives at ~/.cache/netscan/ — delete to force fresh lookups.
+#      Only successful API results are cached; transient failures are retried
+#      automatically on the next run.
+#    - Device identity (mDNS/SSDP/HTTP title) is cached by MAC address at
+#      ~/.cache/netscan/devices/ and survives IP changes between runs.
+#    - macvendors.com API is rate-limited; the script waits 1.5s between
+#      uncached lookups. A /24 with 20 unique OUIs takes ~30s on first run,
+#      then instant from cache on every subsequent run.
+#
+#    USAGE
+#    -----
+#    Normal remote run (auto-detects network):
+#        curl -fsSL netscan.vcc.net | bash
+#
+#    With flags (use bash -s -- to pass parameters):
+#        curl -fsSL netscan.vcc.net | bash -s -- -n 10.1.0.0/24
+#        curl -fsSL netscan.vcc.net | bash -s -- -t 2 -v
+#        curl -fsSL netscan.vcc.net | bash -s -- -h
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RESET=$'\033[0m'
