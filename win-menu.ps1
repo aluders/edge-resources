@@ -9,6 +9,11 @@
 #   - Directory\shell               (right-click a folder itself)
 #   - Drive\Background\shell        (right-click empty space at a drive root)
 #
+# Each tool runs with its working directory set to whichever folder you
+# right-clicked from - so a tool that acts on files in the current
+# folder (e.g. PDFs) will operate on that folder, not wherever the
+# script itself lives.
+#
 # Install / refresh (per-user, no admin required):
 #   irm https://menu.vcc.net | iex
 #
@@ -17,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   1.8  - Header now notes tools run in the right-clicked folder, not the script's own location
 #   1.7  - Added a "Remove Edge Tools" self-uninstall menu entry
 #   1.6  - Launcher invocations now use -ExecutionPolicy Bypass (fixes "running scripts is disabled" on default-policy machines)
 #   1.5  - Populated with the actual tool list (8 tools)
@@ -30,7 +36,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "1.7"
+$ScriptVersion = "1.8"
 
 # ---------------------------------------------------------------------
 # CONFIG
