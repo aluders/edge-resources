@@ -65,7 +65,7 @@
 $ScriptVersion = "1.3"
 
 Write-Host "------------------------------------" -ForegroundColor Gray
-Write-Host " KILLING OUTLOOK ROAMING SIGNATURES (v$ScriptVersion) " -ForegroundColor Black -BackgroundColor Cyan
+Write-Host " DISABLING OUTLOOK ROAMING SIGNATURES (v$ScriptVersion) " -ForegroundColor Black -BackgroundColor Cyan
 Write-Host "------------------------------------" -ForegroundColor Gray
 
 # Dynamically detect installed Office version(s) from registry
