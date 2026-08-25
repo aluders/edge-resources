@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool    v3.10
+# Chrome Default Search Engine Repair Tool    v3.11
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,6 +9,19 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.11 - Two real bugs from a real run. (1) The search-engine removal
+#        loop excluded anything named "Google," not just the entry
+#        actually marked (Default) - a leftover duplicate "Google" entry
+#        was permanently protected instead of cleaned up like everything
+#        else. Now only "not currently (Default)" is excluded. (2) v3.8's
+#        dedup-by-name count was WRONG, proven by a run showing "Found 1"
+#        then three separate GitHub removals - those are genuinely
+#        distinct entries sharing a display name, not duplicate AX nodes
+#        for one entry as guessed. Reverted to a raw count. Also replaced
+#        blind sleeps in both removal loops with wait-for-confirmation
+#        that the list actually shrank - the likely real explanation for
+#        the original "found 2, removed 1, no warning" mystery was a
+#        timing race, not a duplicate-node problem.
 # 3.10 - Updated USAGE domain to chrome.vcc.net (now shares the same
 #        Cloudflare Worker as the Windows version instead of a separate
 #        chrome-mac.vcc.net). Dropped "- macOS port" from the title -
@@ -73,7 +86,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.10"
+SCRIPT_VERSION="3.11"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -879,15 +892,22 @@ sep()
 // --- Remove every other search engine (re-scoped and re-queried fresh
 //     each loop, same reasoning as the JXA version: the list re-renders
 //     after each removal) ---
+// CONFIRMED via a real run: excluding anything named "Google" (not just
+// the entry actually marked "(Default)") was wrong - it permanently
+// protected duplicate/leftover non-default Google entries from ever
+// being cleaned up. By this point Google is already confirmed default,
+// so "not currently marked (Default)" is the only condition that
+// actually matters - everything else, including extra Google entries,
+// should go.
 var removed = 0
 for _ in 0..<30 {
     guard let currentButtons = searchEngineButtons(pageRoot) else { break }
+    let countBefore = currentButtons.count
     var target: AXUIElement? = nil
     for btn in currentButtons {
         let n = nameOf(btn)
-        let isGoogle = n.range(of: "google", options: .caseInsensitive) != nil
         let isDefault = n.range(of: "(default)", options: .caseInsensitive) != nil
-        if !isGoogle && !isDefault { target = btn; break }
+        if !isDefault { target = btn; break }
     }
     guard let target = target else { break }
 
@@ -911,7 +931,16 @@ for _ in 0..<30 {
         break
     }
     press(confirmDelete)
-    usleep(200_000)
+
+    // Wait for the list to actually shrink instead of guessing a fixed
+    // delay is enough - a likely explanation for an earlier bug (a run
+    // that silently stopped after one removal when more were left) was
+    // exactly this kind of race: re-querying before Chrome finished
+    // re-rendering the page after a delete.
+    _ = waitFor(3.0) { () -> Bool? in
+        let stillThere = searchEngineButtons(pageRoot)?.count ?? countBefore
+        return stillThere < countBefore ? true : nil
+    }
     ok("Removed: \(targetLabel)")
     removed += 1
 }
@@ -934,17 +963,19 @@ var inactiveRows = inactiveShortcutRows()
 if inactiveRows.isEmpty {
     info("No inactive shortcuts present")
 } else {
-    // Chrome's accessibility tree duplicates rows as two separate nodes
-    // for the same underlying element (confirmed repeatedly in real
-    // dumps throughout this project) - inactiveRows.count is raw node
-    // matches, not distinct sites, so it can overcount. Dedupe by name
-    // for a count that actually matches what gets removed.
-    let uniqueNames = Set(inactiveRows.map { nameOf($0).replacingOccurrences(of: "Click to activate ", with: "", options: .caseInsensitive) })
-    ok("Found \(uniqueNames.count) inactive shortcut(s)")
+    // CONFIRMED via a real run to be WRONG: v3.8 deduped this count by
+    // display name, on the theory that Chrome's accessibility tree
+    // duplicates rows as two nodes for the same entry. A real run showed
+    // "Found 1" followed by three separate GitHub removals - these are
+    // genuinely distinct entries (different underlying URLs) that just
+    // happen to share a display name, not duplicate nodes for one entry.
+    // Reverted to a raw, honest count.
+    ok("Found \(inactiveRows.count) inactive shortcut(s)")
     var removedInactive = 0
     for _ in 0..<200 {
         let scoped = inactiveShortcutsElements(pageRoot)
         let rows = findAllIn(scoped, { roleOf($0) == "AXButton" && $0.titleStartsWithIgnoreCase("Click to activate ") })
+        let countBefore = rows.count
         guard let firstRow = rows.first else { break }
         let rawName = nameOf(firstRow)
         let siteName = rawName.replacingOccurrences(of: "Click to activate ", with: "", options: .caseInsensitive)
@@ -969,7 +1000,16 @@ if inactiveRows.isEmpty {
         }
         if let confirm2 = confirm2 { press(confirm2) }
 
-        usleep(100_000)
+        // Wait for the list to actually shrink instead of guessing a
+        // fixed delay is enough - a likely explanation for the original
+        // "found 2, removed 1, no warning" mystery was exactly this kind
+        // of race: re-querying before Chrome finished re-rendering the
+        // page after a delete, not a genuine duplicate-entry problem.
+        _ = waitFor(3.0) { () -> Bool? in
+            let stillScoped = inactiveShortcutsElements(pageRoot)
+            let stillRows = findAllIn(stillScoped, { roleOf($0) == "AXButton" && $0.titleStartsWithIgnoreCase("Click to activate ") })
+            return stillRows.count < countBefore ? true : nil
+        }
         ok("Removed inactive shortcut: \(siteName)")
         removedInactive += 1
     }
