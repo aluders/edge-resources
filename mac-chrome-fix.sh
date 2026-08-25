@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool - macOS port    v3.8
+# Chrome Default Search Engine Repair Tool - macOS port    v3.9
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,6 +9,20 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.9 - Multi-profile support, ported from the Windows v2.4 approach:
+#       reads Chrome's Local State (via python3, since Xcode CLT is
+#       already required) and prompts which profile to fix when >1 exists
+#       and a fresh launch is needed. Reads from /dev/tty explicitly, not
+#       bare stdin - required because curl|bash's stdin IS the download
+#       pipe, unlike PowerShell's Read-Host. NOT independently tested on
+#       a real multi-profile machine.
+# 3.9 - Added multi-profile handling, ported from the Windows v2.4
+#       approach: reads Chrome's Local State file for the real profile
+#       list, prompts if more than one, launches into the chosen one via
+#       --profile-directory. Reads the prompt from /dev/tty explicitly,
+#       since under `curl | bash` a plain read would consume the piped
+#       script instead of the keyboard - PowerShell's Read-Host doesn't
+#       have that problem, so this needed a real fix, not a straight port.
 # 3.8 - Fixed "Found N inactive shortcut(s)" overcounting - Chrome's
 #       accessibility tree duplicates rows as two nodes per site
 #       (confirmed repeatedly since early JXA dumps), so the raw count
@@ -27,6 +41,9 @@
 # NOTES
 # -----
 # - Requires swiftc (Xcode Command Line Tools: `xcode-select --install`)
+# - Multi-profile picker needs python3 (also comes with Xcode CLT) and an
+#   interactive terminal (reads from /dev/tty) - degrades gracefully to
+#   Chrome's own OS-level profile picker if either is missing.
 # - Requires 3 permission grants: Accessibility (this script's app),
 #   Automation (Chrome), Accessibility (compiled helper - separate grant,
 #   cached at ~/Library/Caches/com.vcc.chrome-search-repair)
@@ -59,7 +76,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.8"
+SCRIPT_VERSION="3.9"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -234,6 +251,85 @@ quit_chrome_and_wait() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# 2c. Multi-profile handling, ported from the Windows v2.4 approach: a bare
+#     launch with multiple Chrome profiles configured shows the profile
+#     picker instead of an actual browser window - nothing for the rest of
+#     this script to find. Reads the real profile list from Chrome's own
+#     Local State file and lets the person pick, then launches directly
+#     into that profile via --profile-directory instead of guessing.
+#
+#     Uses python3 (guaranteed present once Xcode Command Line Tools are
+#     installed, which is already a hard requirement here for swiftc) for
+#     the JSON parsing rather than a hand-rolled JXA/ObjC file-reading
+#     snippet - python3's json module is well-understood and low-risk,
+#     unlike guessing at ObjC bridge method signatures I can't test.
+#     Degrades gracefully if python3 or the Local State file aren't found:
+#     no picker shown, Chrome's own OS-level picker takes over instead,
+#     same fallback the Windows version uses.
+#
+#     IMPORTANT DIFFERENCE FROM THE WINDOWS VERSION: PowerShell's
+#     Read-Host reads from the real console no matter how the script
+#     arrived, but under `curl -fsSL ... | bash` (this project's
+#     equivalent of `irm | iex`), bash's own stdin IS the pipe from curl,
+#     not the keyboard - a plain `read` here would silently get nothing
+#     instead of prompting. Fixed by reading explicitly from /dev/tty,
+#     with the same graceful fallback if no tty is available at all.
+# ---------------------------------------------------------------------------
+get_chrome_profiles() {
+  local local_state="$HOME/Library/Application Support/Google/Chrome/Local State"
+  [[ -f "$local_state" ]] || return
+  command -v python3 >/dev/null 2>&1 || return
+  python3 - "$local_state" <<'PYEOF' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    cache = data.get('profile', {}).get('info_cache', {})
+    for dir_name, info in cache.items():
+        name = info.get('name', dir_name)
+        user = info.get('user_name', '')
+        print(dir_name + '|' + name + '|' + user)
+except Exception:
+    pass
+PYEOF
+}
+
+pick_chrome_profile() {
+  PROFILE_ARG=""
+  local profile_list
+  profile_list="$(get_chrome_profiles)"
+  [[ -n "$profile_list" ]] || return
+
+  local profile_count
+  profile_count="$(echo "$profile_list" | grep -c '.')"
+  [[ "$profile_count" -gt 1 ]] || return
+
+  warn "Multiple Chrome profiles found on this machine:"
+  local profile_dirs=()
+  local i=1
+  local p_dir p_name p_user label
+  while IFS='|' read -r p_dir p_name p_user; do
+    label="$p_name"
+    [[ -n "$p_user" ]] && label="$label ($p_user)"
+    echo "  [$i] $label"
+    profile_dirs+=("$p_dir")
+    i=$((i + 1))
+  done <<< "$profile_list"
+
+  if [[ -r /dev/tty ]]; then
+    local choice
+    read -r -p "Which profile should this fix? (1-${#profile_dirs[@]}): " choice < /dev/tty
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#profile_dirs[@]} )); then
+      PROFILE_ARG="${profile_dirs[$((choice - 1))]}"
+    else
+      warn "Didn't get a valid choice - Chrome's own profile picker will show instead"
+    fi
+  else
+    warn "No terminal available for profile selection - Chrome's own profile picker will show instead"
+  fi
+}
+
 info "Making sure Chrome is running with --force-renderer-accessibility..."
 if [[ -n "$(chrome_running_pid)" ]]; then
   if chrome_has_flag; then
@@ -247,8 +343,14 @@ if [[ -n "$(chrome_running_pid)" ]]; then
 fi
 
 if [[ -z "$(chrome_running_pid)" ]]; then
+  PROFILE_ARG=""
+  pick_chrome_profile
   info "Launching Chrome with --force-renderer-accessibility..."
-  open -a "Google Chrome" --args --force-renderer-accessibility
+  if [[ -n "$PROFILE_ARG" ]]; then
+    open -a "Google Chrome" --args --force-renderer-accessibility --profile-directory="$PROFILE_ARG"
+  else
+    open -a "Google Chrome" --args --force-renderer-accessibility
+  fi
   waited=0
   while [[ -z "$(chrome_running_pid)" ]] && [[ $waited -lt 15 ]]; do
     sleep 0.5
