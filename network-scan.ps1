@@ -1,5 +1,48 @@
-# elevated powershell
-# irm netscan.vcc.net | iex
+#    Network Scanner  (Windows)  v1.4
+#    ===================================
+#    Discovers every device on the local subnet using a layered approach:
+#    ICMP ping sweep, ARP/neighbor cache, reverse DNS, OUI vendor lookup,
+#    TCP port scan, mDNS, SSDP, and HTTP title scraping — all running in
+#    parallel via PowerShell runspace pools.
+#
+#    Looking for the Mac version? netscan.vcc.net serves this Windows
+#    script or the Mac one automatically depending on how it's invoked
+#    (PowerShell irm vs. curl/bash) — the Mac source lives at:
+#    https://github.com/aluders/edge-resources/blob/main/netscan.sh
+#
+#    VERSION HISTORY
+#    ---------------
+#    1.4 - Unicode symbol safety: auto-detects terminal capability and falls
+#          back to ASCII in classic conhost; tightened column widths to
+#          prevent line wrapping; IP column changed from Blue to Cyan
+#    1.3 - OUI vendor lookup via macvendors.com API with persistent disk cache;
+#          removed hardcoded OUI table (was causing wrong vendor assignments)
+#    1.2 - 3-pass MAC resolution: Get-NetNeighbor + arp -a + SendARP p/invoke
+#    1.1 - RunspacePool ping sweep (parallel, much faster than Start-Job)
+#    1.0 - Initial PowerShell port from the Mac bash version
+#
+#    NOTES
+#    -----
+#    - Run from an elevated PowerShell window (required for SendARP and
+#      Get-NetNeighbor to resolve MACs reliably across all device types).
+#    - Vendor cache lives at %LOCALAPPDATA%\netscan\oui\ — delete it to
+#      force a fresh lookup. Only successful API results are cached, so
+#      transient failures are retried automatically on the next run.
+#    - Device identity (mDNS/SSDP/HTTP title) is cached by MAC address at
+#      %LOCALAPPDATA%\netscan\devices\ and survives IP changes between runs.
+#    - macvendors.com API is rate-limited; the script waits 1.5s between
+#      uncached lookups. A /24 with 20 unique OUIs takes ~30s on first run,
+#      then instant from cache on every subsequent run.
+#
+#    USAGE
+#    -----
+#    Normal remote run (auto-detects network):
+#        irm netscan.vcc.net | iex
+#
+#    With flags (wrap in a scriptblock to pass parameters):
+#        & ([scriptblock]::Create((irm netscan.vcc.net))) -Network 10.1.0.0/24
+#        & ([scriptblock]::Create((irm netscan.vcc.net))) -Timeout 500 -Verbose
+#        & ([scriptblock]::Create((irm netscan.vcc.net))) -Help
 
 # netscan.ps1 — Network device discovery for Windows
 # Usage:  .\netscan.ps1 [-Interface NIC] [-Network CIDR] [-Timeout MS] [-Verbose] [-Help]
