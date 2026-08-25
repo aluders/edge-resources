@@ -1,4 +1,4 @@
-#    Chrome Default Search Engine Repair Tool v2.5
+#    Chrome Default Search Engine Repair Tool v2.6
 #    =================================================
 #    Sets Google as the default search engine and removes the others by
 #    driving Chrome's own Settings UI through Windows UI Automation - the
@@ -6,6 +6,7 @@
 #
 #    VERSION HISTORY
 #    ----------------
+#    2.6 - Removal loop now cleans up duplicate Google entries instead of protecting all of them
 #    2.5 - Fixed a false-negative on longer search engine lists; cleaner Add-dialog backout
 #    2.4 - Handles multi-profile machines (lists profiles, launches the chosen one)
 #    2.3 - Also removes inactive/dormant shortcuts (same Delete menu as the active list)
@@ -73,7 +74,7 @@ param(
     [switch]$DumpUITree   # don't click anything - just print every element the automation can see, for calibration
 )
 
-$ScriptVersion = "2.5"
+$ScriptVersion = "2.6"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -799,6 +800,26 @@ else {
 
 Write-Sep
 
+# --- Figure out exactly which row to protect from removal. Only the row
+#     that's currently default should be kept - matching on "contains
+#     Google" instead would also protect a duplicate Google entry (e.g.
+#     one left over from an earlier add attempt), which is exactly the
+#     kind of leftover this loop should be cleaning up, not preserving.
+#     Falls back to the first Google-named row only if nothing's marked
+#     default yet (shouldn't normally happen this late, but avoids
+#     deleting the only Google entry if the earlier default-setting step
+#     failed). ---
+$btnCond0 = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Button)
+$allMenuButtons = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond0) |
+    Where-Object { $_.Current.Name -match "More actions" }
+$protectedButton = $allMenuButtons | Where-Object { $_.Current.Name -match "\(Default\)" } | Select-Object -First 1
+if (-not $protectedButton) {
+    $protectedButton = $allMenuButtons | Where-Object { $_.Current.Name -match "Google" } | Select-Object -First 1
+}
+$protectedName = if ($protectedButton) { $protectedButton.Current.Name } else { $null }
+
 # --- Remove every other entry, one at a time (list re-renders after each
 #     removal, so elements get re-queried fresh each loop rather than
 #     cached, which would go stale as soon as the DOM changes) ---
@@ -811,8 +832,8 @@ for ($i = 0; $i -lt 30; $i++) {
         $menuButtons = $SearchEngineTable.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
             Where-Object { $_.Current.Name -match "More actions" }
 
-        $target = $menuButtons | Where-Object { $_.Current.Name -notmatch "Google" -and $_.Current.Name -notmatch "\(Default\)" } | Select-Object -First 1
-        if (-not $target) { break }   # nothing removable left (Google, or whatever's currently default, may still be sitting there)
+        $target = $menuButtons | Where-Object { $_.Current.Name -ne $protectedName } | Select-Object -First 1
+        if (-not $target) { break }   # nothing removable left besides the protected row
 
         $targetLabel = $target.Current.Name -replace "More actions,?\s*(for)?\s*", ""
         Invoke-UIA $target
