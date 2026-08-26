@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool    v3.14
+# Chrome Default Search Engine Repair Tool    v3.15
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,6 +9,14 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.15 - Switched the helper's Accessibility check from a bare
+#        AXIsProcessTrusted() to AXIsProcessTrustedWithOptions with the
+#        prompt flag - triggers macOS's own native permission dialog and
+#        pre-populates the Accessibility list entry automatically,
+#        instead of leaving the person to manually browse to a binary
+#        buried in ~/Library/Caches via Finder. The toggle itself still
+#        needs a manual click, by design. NOT independently verified
+#        whether this re-prompts every denied run or just the first time.
 # 3.14 - Renamed the cache-directory identifier from com.vcc.* to
 #        com.edge.* - "vcc" is just a domain, not a business name, so it
 #        shouldn't have been baked into the binary's path. Actual domain
@@ -110,7 +118,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.14"
+SCRIPT_VERSION="3.15"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -709,10 +717,27 @@ func waitFor<T>(_ timeoutSeconds: Double, _ fn: () -> T?) -> T? {
 // etc.), so it needs its own entry in System Settings > Privacy &
 // Security > Accessibility even if the wrapper's own osascript-based
 // preflight already passed for the shell.
-guard AXIsProcessTrusted() else {
+//
+// Uses AXIsProcessTrustedWithOptions with the prompt option instead of a
+// bare AXIsProcessTrusted() check - this triggers macOS's own native
+// permission dialog automatically and pre-populates the Accessibility
+// list entry for this binary, instead of leaving the person to manually
+// browse to it (awkward, since it's a compiled binary buried in
+// ~/Library/Caches, not a normal .app). The toggle itself still needs a
+// manual click - no API can silently flip that, by design - but this
+// removes the "go find the file yourself" step. NOT independently
+// verified whether this re-prompts on every subsequent denied run or
+// only the first time the binary is added to the list - documented,
+// standard API, but the exact repeat-prompt behavior isn't something I
+// could test without real hardware.
+let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+let axOptions = [promptKey: true] as CFDictionary
+guard AXIsProcessTrustedWithOptions(axOptions) else {
     errl("This helper binary doesn't have Accessibility permission yet.")
-    errl("It's a separate executable from whatever ran the bash script, so it needs its")
-    errl("own grant: System Settings > Privacy & Security > Accessibility > add it, then re-run.")
+    errl("macOS should have just shown a permission prompt for it - if you granted")
+    errl("it there, just re-run this. If no prompt appeared (or you dismissed it),")
+    errl("it's a separate executable from whatever ran the bash script, so check")
+    errl("System Settings > Privacy & Security > Accessibility for it directly.")
     exit(1)
 }
 
