@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool    v3.18
+# Chrome Default Search Engine Repair Tool    v4.9
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,18 +9,22 @@
 #
 # VERSION HISTORY
 # ----------------
-# 3.18 - Tightened VERSION HISTORY back down to one-liners - several
-#        entries (3.8-3.17) had crept back into multi-line explanations
-# 3.17 - Cache path now on its own line in compile/cache-hit messages
-# 3.16 - Widened startup wait ceilings (5s/8s -> 20s) for cold Chrome launches
-# 3.15 - Accessibility check now prompts natively instead of just failing
-# 3.14 - Renamed cache identifier com.vcc.* -> com.edge.* (domain, not a business name)
-# 3.13 - Dropped count from dump mode's "More actions" button message too
-# 3.12 - v3.11's raw count was ALSO wrong (opposite direction) - dropped the number entirely
-# 3.11 - Fixed: removal loop wrongly protected ALL Google-named entries, not just (Default); wait-for-confirmation instead of blind sleeps
-# 3.10 - USAGE domain updated to chrome.vcc.net; dropped "- macOS port" from title
+# 4.9 - Switched to two-digit minor versions - after .9 the next release
+#       is X+1.0, not X.10. Renumbered 3.10-3.18 to 4.0-4.8 accordingly
+#       (3.0-3.9 unchanged) and fixed the internal cross-references that
+#       pointed at the old numbers.
+# 4.8 - Tightened VERSION HISTORY back down to one-liners - several
+#        entries (3.8-4.7) had crept back into multi-line explanations
+# 4.7 - Cache path now on its own line in compile/cache-hit messages
+# 4.6 - Widened startup wait ceilings (5s/8s -> 20s) for cold Chrome launches
+# 4.5 - Accessibility check now prompts natively instead of just failing
+# 4.4 - Renamed cache identifier com.vcc.* -> com.edge.* (domain, not a business name)
+# 4.3 - Dropped count from dump mode's "More actions" button message too
+# 4.2 - v4.1's raw count was ALSO wrong (opposite direction) - dropped the number entirely
+# 4.1 - Fixed: removal loop wrongly protected ALL Google-named entries, not just (Default); wait-for-confirmation instead of blind sleeps
+# 4.0 - USAGE domain updated to chrome.vcc.net; dropped "- macOS port" from title
 # 3.9 - Multi-profile support, ported from the Windows v2.4 approach
-# 3.8 - Fixed inactive-shortcut count overcounting (later found to be wrong - see 3.12)
+# 3.8 - Fixed inactive-shortcut count overcounting (later found to be wrong - see 4.2)
 # 3.7 - Cut VERSION HISTORY/NOTES/HOW WE GOT HERE down to bare facts
 # 3.6 - Dropped "via direct AXPress activation" from inactive-shortcut messages
 # 3.5 - Removed per-step timing breakdown from inactive-shortcut messages
@@ -69,7 +73,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.18"
+SCRIPT_VERSION="4.9"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -426,7 +430,7 @@ HELPER_BIN="$HELPER_DIR/chrome-search-repair-helper"
 HELPER_HASH_FILE="$HELPER_DIR/chrome-search-repair-helper.hash"
 
 # One-time cleanup: the cache directory used to be named com.vcc.* before
-# v3.14 - "vcc" was just a domain, not an identifier worth keeping, so it
+# v4.4 - "vcc" was just a domain, not an identifier worth keeping, so it
 # got renamed. The old directory (and whatever binary was cached in it)
 # is now orphaned; remove it rather than leave it sitting around unused.
 # The new binary at the new path needs its own fresh Accessibility grant
@@ -978,7 +982,7 @@ func inactiveShortcutRows() -> [AXUIElement] {
     return findAllIn(scoped, { roleOf($0) == "AXButton" && $0.titleStartsWithIgnoreCase("Click to activate ") })
 }
 
-// v3.8's name-deduped count and v3.11's raw count have both now been
+// v3.8's name-deduped count and v4.1's raw count have both now been
 // proven wrong by real runs, in opposite directions ("Found 1" then 3
 // removed; "Found 4" then 2 removed). Likely cause, based on the very
 // first real dump ever captured for this section: an "Additional
