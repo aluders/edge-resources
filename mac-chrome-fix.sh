@@ -9,12 +9,8 @@
 #
 # VERSION HISTORY
 # ----------------
-# 4.9 - Switched to two-digit minor versions - after .9 the next release
-#       is X+1.0, not X.10. Renumbered 3.10-3.18 to 4.0-4.8 accordingly
-#       (3.0-3.9 unchanged) and fixed the internal cross-references that
-#       pointed at the old numbers.
-# 4.8 - Tightened VERSION HISTORY back down to one-liners - several
-#        entries (3.8-4.7) had crept back into multi-line explanations
+# 4.9 - Renumbered 3.10-3.18 to 4.0-4.8 (two-digit minor versions: .9 -> X+1.0, not .10)
+# 4.8 - Tightened VERSION HISTORY back down to one-liners
 # 4.7 - Cache path now on its own line in compile/cache-hit messages
 # 4.6 - Widened startup wait ceilings (5s/8s -> 20s) for cold Chrome launches
 # 4.5 - Accessibility check now prompts natively instead of just failing
