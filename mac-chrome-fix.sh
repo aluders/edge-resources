@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool    v3.15
+# Chrome Default Search Engine Repair Tool    v3.17
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,6 +9,21 @@
 #
 # VERSION HISTORY
 # ----------------
+# 3.17 - Put the cache path on its own indented line for the "Helper
+#        compiled and cached at" / "Using cached helper binary" messages
+#        instead of appending it to an already-long single line - cleaner
+#        column-wise in a narrow terminal.
+# 3.16 - v3.15's permission prompt (kept - it's a real improvement
+#        regardless) turned out NOT to be the fix for the "Could not find
+#        Search engines heading" failure it was added for - a plain
+#        re-run succeeded with no code change, pointing at a timing
+#        issue, not a permissions one: likely a cold Chrome launch (first
+#        window ever, extensions loading) compounded by the profile
+#        picker adding another wait-on-the-user step before Chrome even
+#        starts. Widened the two startup waitFor ceilings (pageRoot 5s->
+#        20s, initial Search engines lookup 8s->20s) - both are already
+#        polling waits, so the higher ceiling costs nothing when Chrome's
+#        warm and only matters on a genuinely slow cold start.
 # 3.15 - Switched the helper's Accessibility check from a bare
 #        AXIsProcessTrusted() to AXIsProcessTrustedWithOptions with the
 #        prompt flag - triggers macOS's own native permission dialog and
@@ -118,7 +133,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.15"
+SCRIPT_VERSION="3.17"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
@@ -755,10 +770,16 @@ let cliArgs = CommandLine.arguments
 let dumpMode = cliArgs.contains("--dump-ui-tree")
 
 // Performance: scope everything to the AXWebArea instead of the whole
-// window - same reasoning as the JXA version's pageRoot. Waits briefly
-// in case the page is still loading right after navigation, falling
-// back to the window itself if it genuinely never appears.
-let pageRoot: AXUIElement = waitFor(5.0, { findFirst(win, { roleOf($0) == "AXWebArea" }) }) ?? win
+// window - same reasoning as the JXA version's pageRoot. Waits for the
+// page to load rather than a fixed sleep, falling back to the window
+// itself if it genuinely never appears. Widened from 5s to 20s after a
+// real run showed this timing out on a cold Chrome launch (first-ever
+// window, extensions loading, right after the profile picker added
+// another wait-on-the-user step before Chrome even started) - since this
+// is a polling wait, not a fixed delay, the longer ceiling costs nothing
+// when Chrome's already warm and responds in under a second, and only
+// matters on the genuinely slow case this was meant to cover.
+let pageRoot: AXUIElement = waitFor(20.0, { findFirst(win, { roleOf($0) == "AXWebArea" }) }) ?? win
 
 // MARK: - Section scoping (mirrors searchEngineButtons() from the JXA version)
 func searchEngineButtons(_ root: AXUIElement) -> [AXUIElement]? {
@@ -837,8 +858,9 @@ if dumpMode {
 // Navigation to chrome://settings/searchEngines happens once in the bash
 // wrapper before this binary is invoked - waiting here (rather than
 // checking once immediately) absorbs any residual page-load lag between
-// that navigation and this binary starting up.
-guard var seButtons = waitFor(8.0, { searchEngineButtons(pageRoot) }) else {
+// that navigation and this binary starting up. Widened from 8s to 20s
+// for the same cold-launch reasoning as pageRoot's wait above.
+guard var seButtons = waitFor(20.0, { searchEngineButtons(pageRoot) }) else {
     fail("Could not find a \"Search engines\" heading on this page at all - stopping. Re-run with --dump-ui-tree")
 }
 
@@ -1101,9 +1123,11 @@ if [[ ! -x "$HELPER_BIN" || "$NEW_HASH" != "$OLD_HASH" ]]; then
     exit 1
   fi
   echo "$NEW_HASH" > "$HELPER_HASH_FILE"
-  ok "Helper compiled and cached at $HELPER_BIN"
+  ok "Helper compiled and cached at:
+      $HELPER_BIN"
 else
-  ok "Using cached helper binary (source unchanged) - $HELPER_BIN"
+  ok "Using cached helper binary (source unchanged):
+      $HELPER_BIN"
 fi
 sep
 
