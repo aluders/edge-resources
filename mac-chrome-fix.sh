@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Chrome Default Search Engine Repair Tool    v3.17
+# Chrome Default Search Engine Repair Tool    v3.18
 # ================================================================
 # Sets Google as the default search engine and removes the others by
 # driving Chrome's Settings UI via macOS Accessibility (AXUIElement) -
@@ -9,83 +9,19 @@
 #
 # VERSION HISTORY
 # ----------------
-# 3.17 - Put the cache path on its own indented line for the "Helper
-#        compiled and cached at" / "Using cached helper binary" messages
-#        instead of appending it to an already-long single line - cleaner
-#        column-wise in a narrow terminal.
-# 3.16 - v3.15's permission prompt (kept - it's a real improvement
-#        regardless) turned out NOT to be the fix for the "Could not find
-#        Search engines heading" failure it was added for - a plain
-#        re-run succeeded with no code change, pointing at a timing
-#        issue, not a permissions one: likely a cold Chrome launch (first
-#        window ever, extensions loading) compounded by the profile
-#        picker adding another wait-on-the-user step before Chrome even
-#        starts. Widened the two startup waitFor ceilings (pageRoot 5s->
-#        20s, initial Search engines lookup 8s->20s) - both are already
-#        polling waits, so the higher ceiling costs nothing when Chrome's
-#        warm and only matters on a genuinely slow cold start.
-# 3.15 - Switched the helper's Accessibility check from a bare
-#        AXIsProcessTrusted() to AXIsProcessTrustedWithOptions with the
-#        prompt flag - triggers macOS's own native permission dialog and
-#        pre-populates the Accessibility list entry automatically,
-#        instead of leaving the person to manually browse to a binary
-#        buried in ~/Library/Caches via Finder. The toggle itself still
-#        needs a manual click, by design. NOT independently verified
-#        whether this re-prompts every denied run or just the first time.
-# 3.14 - Renamed the cache-directory identifier from com.vcc.* to
-#        com.edge.* - "vcc" is just a domain, not a business name, so it
-#        shouldn't have been baked into the binary's path. Actual domain
-#        references (chrome.vcc.net) are untouched, since that one's
-#        real. Added one-time cleanup of the old com.vcc.* cache
-#        directory. NOTE: the compiled helper's Accessibility permission
-#        grant is per-executable-path, so this rename means it needs to
-#        be re-granted once at the new path even though nothing else
-#        about the tool changed.
-# 3.13 - Also dropped the count from dump mode's "Found N 'More actions'
-#        button(s)" message - same class of tree-walk count as the
-#        inactive-shortcuts one, so same potential for the exact
-#        duplication issue that made that one unreliable.
-# 3.12 - v3.11's "raw count" fix was ALSO wrong, in the opposite
-#        direction: a real run showed "Found 4" then only 2 real removals
-#        (previously it was "Found 1" then 3 removals). Two wrong guesses
-#        in a row - stopped guessing and dropped the specific number from
-#        the message entirely rather than ship a third. The removal loop
-#        itself doesn't depend on this count and has been correct both
-#        times even while the displayed number was wrong. Suspected real
-#        cause (not confirmed against either run): an "Additional
-#        inactive sites" overflow container, seen holding duplicate
-#        entries in the very first dump captured for this section months
-#        ago - worth a fresh --dump-ui-tree next time to confirm properly.
-# 3.11 - Two real bugs from a real run. (1) The search-engine removal
-#        loop excluded anything named "Google," not just the entry
-#        actually marked (Default) - a leftover duplicate "Google" entry
-#        was permanently protected instead of cleaned up like everything
-#        else. Now only "not currently (Default)" is excluded. (2) v3.8's
-#        dedup-by-name count was WRONG, proven by a run showing "Found 1"
-#        then three separate GitHub removals - those are genuinely
-#        distinct entries sharing a display name, not duplicate AX nodes
-#        for one entry as guessed. Reverted to a raw count. Also replaced
-#        blind sleeps in both removal loops with wait-for-confirmation
-#        that the list actually shrank - the likely real explanation for
-#        the original "found 2, removed 1, no warning" mystery was a
-#        timing race, not a duplicate-node problem.
-# 3.10 - Updated USAGE domain to chrome.vcc.net (now shares the same
-#        Cloudflare Worker as the Windows version instead of a separate
-#        chrome-mac.vcc.net). Dropped "- macOS port" from the title -
-#        this is its own tool at this point, not a straight port anymore.
-# 3.9 - Multi-profile support, ported from the Windows v2.4 approach:
-#       reads Chrome's Local State (via python3, since Xcode CLT is
-#       already required) and prompts which profile to fix when >1 exists
-#       and a fresh launch is needed. Reads from /dev/tty explicitly, not
-#       bare stdin - required because curl|bash's stdin IS the download
-#       pipe, unlike PowerShell's Read-Host. NOT independently tested when
-#       first shipped; confirmed working on a real multi-profile machine.
-# 3.8 - Fixed "Found N inactive shortcut(s)" overcounting - Chrome's
-#       accessibility tree duplicates rows as two nodes per site
-#       (confirmed repeatedly since early JXA dumps), so the raw count
-#       could show 2 for what's actually 1 site. Now deduped by name.
-# 3.7 - Cut VERSION HISTORY/NOTES/HOW WE GOT HERE down to bare facts -
-#       fragments over sentences, no more multi-line explanations per entry.
+# 3.18 - Tightened VERSION HISTORY back down to one-liners - several
+#        entries (3.8-3.17) had crept back into multi-line explanations
+# 3.17 - Cache path now on its own line in compile/cache-hit messages
+# 3.16 - Widened startup wait ceilings (5s/8s -> 20s) for cold Chrome launches
+# 3.15 - Accessibility check now prompts natively instead of just failing
+# 3.14 - Renamed cache identifier com.vcc.* -> com.edge.* (domain, not a business name)
+# 3.13 - Dropped count from dump mode's "More actions" button message too
+# 3.12 - v3.11's raw count was ALSO wrong (opposite direction) - dropped the number entirely
+# 3.11 - Fixed: removal loop wrongly protected ALL Google-named entries, not just (Default); wait-for-confirmation instead of blind sleeps
+# 3.10 - USAGE domain updated to chrome.vcc.net; dropped "- macOS port" from title
+# 3.9 - Multi-profile support, ported from the Windows v2.4 approach
+# 3.8 - Fixed inactive-shortcut count overcounting (later found to be wrong - see 3.12)
+# 3.7 - Cut VERSION HISTORY/NOTES/HOW WE GOT HERE down to bare facts
 # 3.6 - Dropped "via direct AXPress activation" from inactive-shortcut messages
 # 3.5 - Removed per-step timing breakdown from inactive-shortcut messages
 # 3.4 - Removed pre-3.0 changelog entries (see HOW WE GOT HERE)
@@ -133,7 +69,7 @@
 #
 set -euo pipefail
 
-SCRIPT_VERSION="3.17"
+SCRIPT_VERSION="3.18"
 
 # ---------------------------------------------------------------------------
 # Output helpers - same [+]/[*]/[!]/[x] convention as the rest of the script
