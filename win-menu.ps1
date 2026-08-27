@@ -22,6 +22,8 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   2.8  - Separators rebuilt using .NET registry APIs directly - Set-Item wasn't reliably writing a truly empty default value, which is why "02_Sep" text kept showing through
+#   2.7  - Removed separator entries entirely - CommandFlags separators aren't honored for static cascading subcommands on this Explorer build, confirmed by testing two variations
 #   2.6  - Separator keys now show as actual dividers instead of literal "02_Sep"-style text (missing empty default value)
 #   2.5  - Reordered to PowerShell entries, tools, then Refresh/Remove at the bottom; added separators between each group
 #   2.4  - Ordering now forced via zero-padded numeric key-name prefixes; MenuIndex wasn't actually respected for cascading subcommands
@@ -44,7 +46,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "2.6"
+$ScriptVersion = "2.8"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -120,10 +122,16 @@ function Install-EdgeToolsMenu {
 
     function New-EdgeMenuSeparator {
         param([string]$ShellKey, [int]$Index)
-        $sepKey = "$ShellKey\{0:D2}_Sep" -f $Index
-        New-Item -Path $sepKey -Force | Out-Null
-        Set-Item -Path $sepKey -Value ''
-        Set-ItemProperty -Path $sepKey -Name 'CommandFlags' -Value 0x20
+        $sepName = "{0:D2}_Sep" -f $Index
+        # Bypass the PS registry provider for this one - Set-Item has been
+        # unreliable at writing a truly empty default (REG_SZ) value here,
+        # which caused the separator to fall back to showing its raw key
+        # name instead of collapsing into a blank divider line.
+        $subKeyPath = $ShellKey -replace '^Registry::HKEY_CURRENT_USER\\', ''
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("$subKeyPath\$sepName")
+        $key.SetValue('', '', [Microsoft.Win32.RegistryValueKind]::String)
+        $key.SetValue('CommandFlags', 0x20, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.Close()
     }
 
     foreach ($root in $Config.Roots) {
