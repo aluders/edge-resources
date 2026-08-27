@@ -22,6 +22,13 @@
 #       & ([scriptblock]::Create((irm pdf.vcc.net))) -Recurse
 #
 # CHANGELOG (newest first):
+#   v3.4 - Moved tool storage from %LOCALAPPDATA%\edge-tools to
+#          %LOCALAPPDATA%\EdgeTools, matching the location used by
+#          install-edge-tools-context-menu.ps1 (Invoke-EdgeTool.ps1,
+#          Uninstall-EdgeTools.ps1) - all Edge Tools scripts now
+#          share one root instead of two differently-cased folders.
+#          exiftool and qpdf still live in their own subfolders
+#          underneath it, so nothing collides with the launcher files.
 #   v3.3 - Password-protected PDFs now get a clean "Skipped
 #          (password protected)" status instead of surfacing as a
 #          generic qpdf repair failure with raw error text. Counted
@@ -138,7 +145,7 @@ function Write-Section {
 # ============================================================
 Write-Section "Exiftool Bootstrap"
 
-$toolsDir  = Join-Path $env:LOCALAPPDATA "edge-tools"
+$toolsDir  = Join-Path $env:LOCALAPPDATA "EdgeTools"
 $exifDir   = Join-Path $toolsDir "exiftool"
 $exifPath  = Join-Path $exifDir "exiftool.exe"
 
