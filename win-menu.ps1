@@ -22,7 +22,9 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
-#   1.10 - Removed the "existing Explorer windows need a refresh" note; testing shows every right-click re-queries the registry
+#   2.2  - Versioning scheme changed to major.minor, minor rolling to next major after .9
+#   2.1  - Added plain PowerShell / PowerShell (Admin) entries at the top; dropped the "Run " prefix from tool labels
+#   2.0  - Removed the "existing Explorer windows need a refresh" note; testing shows every right-click re-queries the registry
 #   1.9  - Tools array reordered alphabetically by name
 #   1.8  - Header now notes tools run in the right-clicked folder, not the script's own location
 #   1.7  - Added a "Remove Edge Tools" self-uninstall menu entry
@@ -38,7 +40,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "1.10"
+$ScriptVersion = "2.2"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -122,7 +124,29 @@ function Install-EdgeToolsMenu {
         $shellKey = "$rootKey\shell"
         New-Item -Path $shellKey -Force | Out-Null
 
-        # --- self-refresh entry, always first ---
+        # --- plain PowerShell prompts, always first ---
+        $psKey = "$shellKey\_PowerShell"
+        New-Item -Path $psKey -Force | Out-Null
+        Set-ItemProperty -Path $psKey -Name 'MUIVerb' -Value 'PowerShell'
+        Set-ItemProperty -Path $psKey -Name 'Icon' -Value $Config.Icon
+        $psCmdKey = "$psKey\command"
+        New-Item -Path $psCmdKey -Force | Out-Null
+        $psCmd = "powershell.exe -NoExit -Command `"Set-Location -LiteralPath '%V'`""
+        Set-Item -Path $psCmdKey -Value $psCmd
+
+        $psAdminKey = "$shellKey\_PowerShellAdmin"
+        New-Item -Path $psAdminKey -Force | Out-Null
+        Set-ItemProperty -Path $psAdminKey -Name 'MUIVerb' -Value 'PowerShell (Admin)'
+        Set-ItemProperty -Path $psAdminKey -Name 'Icon' -Value $Config.Icon
+        Set-ItemProperty -Path $psAdminKey -Name 'HasLUAShield' -Value ''
+        $psAdminCmdKey = "$psAdminKey\command"
+        New-Item -Path $psAdminCmdKey -Force | Out-Null
+        # NB: doubled single-quotes ('') around %V escape a literal quote
+        # inside the single-quoted -ArgumentList string - not a typo.
+        $psAdminCmd = "powershell.exe -Command `"Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit -Command Set-Location -LiteralPath ''%V'''`""
+        Set-Item -Path $psAdminCmdKey -Value $psAdminCmd
+
+        # --- self-refresh entry ---
         $refreshKey = "$shellKey\_Refresh"
         New-Item -Path $refreshKey -Force | Out-Null
         Set-ItemProperty -Path $refreshKey -Name 'MUIVerb' -Value 'Refresh Tool List'
@@ -132,7 +156,7 @@ function Install-EdgeToolsMenu {
         $refreshCmd = "powershell.exe -NoExit -Command `"irm $($Config.InstallerUrl) | iex`""
         Set-Item -Path $refreshCmdKey -Value $refreshCmd
 
-        # --- self-uninstall entry, always second ---
+        # --- self-uninstall entry ---
         # Fetches this same installer and invokes it as a scriptblock with
         # -Uninstall, so the menu can remove itself without anyone needing
         # a local copy of the script.
@@ -155,7 +179,7 @@ function Install-EdgeToolsMenu {
             New-Item -Path $cmdKey -Force | Out-Null
 
             if ($tool.admin -eq $true) {
-                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value "Run $($tool.name)"
+                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $tool.name
                 Set-ItemProperty -Path $itemKey -Name 'HasLUAShield' -Value ''
                 # NB: \`" (backslash + quote) below is deliberate, not a typo -
                 # it embeds a literal quote inside the single-quoted
@@ -165,7 +189,7 @@ function Install-EdgeToolsMenu {
                 Set-Item -Path $cmdKey -Value $adminCmd
             }
             else {
-                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value "Run $($tool.name)"
+                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $tool.name
                 $normalCmd = "powershell.exe -NoExit -ExecutionPolicy Bypass -File `"$($Config.LauncherPath)`" -ToolUrl `"$($tool.url)`" -Path `"%V`""
                 Set-Item -Path $cmdKey -Value $normalCmd
             }
