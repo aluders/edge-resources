@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   2.6  - Separator keys now show as actual dividers instead of literal "02_Sep"-style text (missing empty default value)
 #   2.5  - Reordered to PowerShell entries, tools, then Refresh/Remove at the bottom; added separators between each group
 #   2.4  - Ordering now forced via zero-padded numeric key-name prefixes; MenuIndex wasn't actually respected for cascading subcommands
 #   2.3  - Added explicit MenuIndex to every entry so PowerShell/PowerShell (Admin) actually display at the top (key-name sort order was putting them last)
@@ -43,7 +44,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "2.5"
+$ScriptVersion = "2.6"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -121,6 +122,7 @@ function Install-EdgeToolsMenu {
         param([string]$ShellKey, [int]$Index)
         $sepKey = "$ShellKey\{0:D2}_Sep" -f $Index
         New-Item -Path $sepKey -Force | Out-Null
+        Set-Item -Path $sepKey -Value ''
         Set-ItemProperty -Path $sepKey -Name 'CommandFlags' -Value 0x20
     }
 
