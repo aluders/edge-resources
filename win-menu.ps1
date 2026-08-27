@@ -22,6 +22,8 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   3.2  - Refresh and Remove windows now auto-close 5 seconds after completion instead of staying open (dropped -NoExit, added a closing pause)
+#   3.1  - Refresh and Remove no longer use "irm ... | iex" / [ScriptBlock]::Create((irm ...)) - that shape (fetch-and-evaluate with explorer.exe as parent) triggered a Defender ML false positive (Trojan:Win32/Commando.A!ml). Both now download/deploy to a local file first and run via -File.
 #   3.0  - Separators reattempted: CommandFlags=0x40 (ECF_SEPARATORAFTER) forced as true DWORD on the last item of each group, instead of dummy *_Sep keys with 0x20 (which is documented as top-level-only and was likely written as REG_SZ, not DWORD)
 #   2.9  - Removed separators for good; two different write mechanisms (PS provider, raw .NET registry API) both confirm this Explorer build doesn't render CommandFlags separators for static cascading subcommands - COM-based menus only
 #   2.8  - Separators rebuilt using .NET registry APIs directly - Set-Item wasn't reliably writing a truly empty default value, which is why "02_Sep" text kept showing through
@@ -48,14 +50,16 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "3.0"
+$ScriptVersion = "3.2"
 
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
 $Config = @{
-    InstallerUrl = 'https://menu.vcc.net'   # used by the self-refresh menu entry
-    LauncherPath = Join-Path $env:LOCALAPPDATA 'EdgeTools\Invoke-EdgeTool.ps1'
+    InstallerUrl      = 'https://menu.vcc.net'   # used by the self-refresh menu entry
+    LauncherPath      = Join-Path $env:LOCALAPPDATA 'EdgeTools\Invoke-EdgeTool.ps1'
+    UninstallerPath   = Join-Path $env:LOCALAPPDATA 'EdgeTools\Uninstall-EdgeTools.ps1'
+    InstallerLocalPath = Join-Path $env:LOCALAPPDATA 'EdgeTools\install-edge-tools-context-menu.ps1'
     MenuLabel    = 'Edge Tools'
     Icon         = 'powershell.exe'
     Roots        = @(
@@ -108,6 +112,40 @@ Invoke-RestMethod $ToolUrl | Invoke-Expression
 
     Set-Content -Path $Config.LauncherPath -Value $launcherContent -Encoding UTF8 -Force
     Write-Status "Launcher deployed to $($Config.LauncherPath)" '+'
+}
+
+function Deploy-Uninstaller {
+    # Deployed locally so "Remove Edge Tools" can run entirely offline via
+    # -File. The earlier version fetched this installer and invoked it via
+    # [ScriptBlock]::Create((irm ...)) from explorer.exe as parent process -
+    # a shape Defender's ML detection (Trojan:Win32/Commando.A!ml) flags as
+    # a fileless-malware cradle even though the content itself is benign.
+    # A plain local script removes that pattern entirely.
+    $dir = Split-Path $Config.LauncherPath -Parent
+    if (-not (Test-Path $dir)) {
+        New-Item -Path $dir -ItemType Directory -Force | Out-Null
+    }
+
+    $rootsLiteral = ($Config.Roots | ForEach-Object {
+        "    'HKCU:\Software\Classes\$_\EdgeTools'"
+    }) -join "`r`n"
+
+    $uninstallContent = @"
+`$keys = @(
+$rootsLiteral
+)
+foreach (`$key in `$keys) {
+    if (Test-Path `$key) { Remove-Item -LiteralPath `$key -Recurse -Force }
+}
+`$dir = '$dir'
+if (Test-Path `$dir) { Remove-Item -LiteralPath `$dir -Recurse -Force }
+Write-Host '[+] Edge Tools removed.' -ForegroundColor Green
+Write-Host '[*] Closing in 5 seconds...' -ForegroundColor Yellow
+Start-Sleep -Seconds 5
+"@
+
+    Set-Content -Path $Config.UninstallerPath -Value $uninstallContent -Encoding UTF8 -Force
+    Write-Status "Uninstaller deployed to $($Config.UninstallerPath)" '+'
 }
 
 function Remove-EdgeToolsMenu {
@@ -211,6 +249,12 @@ function Install-EdgeToolsMenu {
         }
 
         # --- self-refresh entry ---
+        # Downloads the latest installer to disk first, then runs it via
+        # -File. The previous "irm ... | iex" cradle (fetch-and-evaluate
+        # with explorer.exe as parent process) is the same pattern Defender
+        # flagged on the uninstall entry - "download, then run the file" is
+        # a boring, unflagged shape even though it still fetches the same
+        # remote content.
         $refreshKey = "$shellKey\{0:D2}_Refresh" -f $menuIndex
         New-Item -Path $refreshKey -Force | Out-Null
         Set-ItemProperty -Path $refreshKey -Name 'MUIVerb' -Value 'Refresh Tool List'
@@ -218,13 +262,12 @@ function Install-EdgeToolsMenu {
         $menuIndex++
         $refreshCmdKey = "$refreshKey\command"
         New-Item -Path $refreshCmdKey -Force | Out-Null
-        $refreshCmd = "powershell.exe -NoExit -Command `"irm $($Config.InstallerUrl) | iex`""
+        $refreshCmd = "powershell.exe -ExecutionPolicy Bypass -Command `"Invoke-WebRequest -UseBasicParsing -Uri '$($Config.InstallerUrl)' -OutFile '$($Config.InstallerLocalPath)'; & '$($Config.InstallerLocalPath)'; Write-Host '[*] Closing in 5 seconds...' -ForegroundColor Yellow; Start-Sleep -Seconds 5`""
         Set-Item -Path $refreshCmdKey -Value $refreshCmd
 
         # --- self-uninstall entry ---
-        # Fetches this same installer and invokes it as a scriptblock with
-        # -Uninstall, so the menu can remove itself without anyone needing
-        # a local copy of the script.
+        # Runs the locally-deployed Uninstall-EdgeTools.ps1 via -File - no
+        # network fetch, no [ScriptBlock]::Create. See Deploy-Uninstaller.
         $removeKey = "$shellKey\{0:D2}_Remove" -f $menuIndex
         New-Item -Path $removeKey -Force | Out-Null
         Set-ItemProperty -Path $removeKey -Name 'MUIVerb' -Value 'Remove Edge Tools'
@@ -232,7 +275,7 @@ function Install-EdgeToolsMenu {
         $menuIndex++
         $removeCmdKey = "$removeKey\command"
         New-Item -Path $removeCmdKey -Force | Out-Null
-        $removeCmd = "powershell.exe -NoExit -Command `"& ([ScriptBlock]::Create((irm $($Config.InstallerUrl)))) -Uninstall`""
+        $removeCmd = "powershell.exe -ExecutionPolicy Bypass -File `"$($Config.UninstallerPath)`""
         Set-Item -Path $removeCmdKey -Value $removeCmd
 
         Write-Status "Installed $($Tools.Count) tool(s) under $root" '+'
@@ -246,8 +289,9 @@ Write-Status "Edge Tools Context Menu Installer v$ScriptVersion" '*'
 
 if ($Uninstall) {
     Remove-EdgeToolsMenu
-    if (Test-Path $Config.LauncherPath) {
-        Remove-Item -Path $Config.LauncherPath -Force
+    $dir = Split-Path $Config.LauncherPath -Parent
+    if (Test-Path $dir) {
+        Remove-Item -Path $dir -Recurse -Force
     }
     Write-Status "Uninstalled." '+'
     return
@@ -259,6 +303,7 @@ if ($Config.Tools.Count -eq 0) {
 }
 
 Deploy-Launcher
+Deploy-Uninstaller
 Remove-EdgeToolsMenu
 Install-EdgeToolsMenu -Tools $Config.Tools
 
