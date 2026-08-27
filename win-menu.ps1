@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   2.4  - Ordering now forced via zero-padded numeric key-name prefixes; MenuIndex wasn't actually respected for cascading subcommands
 #   2.3  - Added explicit MenuIndex to every entry so PowerShell/PowerShell (Admin) actually display at the top (key-name sort order was putting them last)
 #   2.2  - Versioning scheme changed to major.minor, minor rolling to next major after .9
 #   2.1  - Added plain PowerShell / PowerShell (Admin) entries at the top; dropped the "Run " prefix from tool labels
@@ -41,7 +42,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "2.3"
+$ScriptVersion = "2.4"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -125,30 +126,27 @@ function Install-EdgeToolsMenu {
         $shellKey = "$rootKey\shell"
         New-Item -Path $shellKey -Force | Out-Null
 
-        # MenuIndex forces display order explicitly (lower = higher up).
-        # Relying on key-name sort order is unreliable - registry
-        # enumeration order isn't guaranteed alphabetical, and underscore-
-        # prefixed keys sort *after* plain letters anyway.
+        # Cascading subcommand order follows alphabetical key-name sort,
+        # not MenuIndex (that only reliably applies to top-level entries).
+        # Zero-padded numeric prefixes force the order we want.
         $menuIndex = 0
 
         # --- plain PowerShell prompts, always first ---
-        $psKey = "$shellKey\_PowerShell"
+        $psKey = "$shellKey\{0:D2}_PowerShell" -f $menuIndex
         New-Item -Path $psKey -Force | Out-Null
         Set-ItemProperty -Path $psKey -Name 'MUIVerb' -Value 'PowerShell'
         Set-ItemProperty -Path $psKey -Name 'Icon' -Value $Config.Icon
-        Set-ItemProperty -Path $psKey -Name 'MenuIndex' -Value $menuIndex
         $menuIndex++
         $psCmdKey = "$psKey\command"
         New-Item -Path $psCmdKey -Force | Out-Null
         $psCmd = "powershell.exe -NoExit -Command `"Set-Location -LiteralPath '%V'`""
         Set-Item -Path $psCmdKey -Value $psCmd
 
-        $psAdminKey = "$shellKey\_PowerShellAdmin"
+        $psAdminKey = "$shellKey\{0:D2}_PowerShellAdmin" -f $menuIndex
         New-Item -Path $psAdminKey -Force | Out-Null
         Set-ItemProperty -Path $psAdminKey -Name 'MUIVerb' -Value 'PowerShell (Admin)'
         Set-ItemProperty -Path $psAdminKey -Name 'Icon' -Value $Config.Icon
         Set-ItemProperty -Path $psAdminKey -Name 'HasLUAShield' -Value ''
-        Set-ItemProperty -Path $psAdminKey -Name 'MenuIndex' -Value $menuIndex
         $menuIndex++
         $psAdminCmdKey = "$psAdminKey\command"
         New-Item -Path $psAdminCmdKey -Force | Out-Null
@@ -158,11 +156,10 @@ function Install-EdgeToolsMenu {
         Set-Item -Path $psAdminCmdKey -Value $psAdminCmd
 
         # --- self-refresh entry ---
-        $refreshKey = "$shellKey\_Refresh"
+        $refreshKey = "$shellKey\{0:D2}_Refresh" -f $menuIndex
         New-Item -Path $refreshKey -Force | Out-Null
         Set-ItemProperty -Path $refreshKey -Name 'MUIVerb' -Value 'Refresh Tool List'
         Set-ItemProperty -Path $refreshKey -Name 'Icon' -Value $Config.Icon
-        Set-ItemProperty -Path $refreshKey -Name 'MenuIndex' -Value $menuIndex
         $menuIndex++
         $refreshCmdKey = "$refreshKey\command"
         New-Item -Path $refreshCmdKey -Force | Out-Null
@@ -173,11 +170,10 @@ function Install-EdgeToolsMenu {
         # Fetches this same installer and invokes it as a scriptblock with
         # -Uninstall, so the menu can remove itself without anyone needing
         # a local copy of the script.
-        $removeKey = "$shellKey\_Remove"
+        $removeKey = "$shellKey\{0:D2}_Remove" -f $menuIndex
         New-Item -Path $removeKey -Force | Out-Null
         Set-ItemProperty -Path $removeKey -Name 'MUIVerb' -Value 'Remove Edge Tools'
         Set-ItemProperty -Path $removeKey -Name 'Icon' -Value $Config.Icon
-        Set-ItemProperty -Path $removeKey -Name 'MenuIndex' -Value $menuIndex
         $menuIndex++
         $removeCmdKey = "$removeKey\command"
         New-Item -Path $removeCmdKey -Force | Out-Null
@@ -186,10 +182,9 @@ function Install-EdgeToolsMenu {
 
         foreach ($tool in $Tools) {
             $safeName = ($tool.name -replace '[^a-zA-Z0-9]', '')
-            $itemKey = "$shellKey\$safeName"
+            $itemKey = "$shellKey\{0:D2}_{1}" -f $menuIndex, $safeName
             New-Item -Path $itemKey -Force | Out-Null
             Set-ItemProperty -Path $itemKey -Name 'Icon' -Value $Config.Icon
-            Set-ItemProperty -Path $itemKey -Name 'MenuIndex' -Value $menuIndex
             $menuIndex++
 
             $cmdKey = "$itemKey\command"
