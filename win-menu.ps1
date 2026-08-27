@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   2.5  - Reordered to PowerShell entries, tools, then Refresh/Remove at the bottom; added separators between each group
 #   2.4  - Ordering now forced via zero-padded numeric key-name prefixes; MenuIndex wasn't actually respected for cascading subcommands
 #   2.3  - Added explicit MenuIndex to every entry so PowerShell/PowerShell (Admin) actually display at the top (key-name sort order was putting them last)
 #   2.2  - Versioning scheme changed to major.minor, minor rolling to next major after .9
@@ -42,7 +43,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "2.4"
+$ScriptVersion = "2.5"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -116,6 +117,13 @@ function Remove-EdgeToolsMenu {
 function Install-EdgeToolsMenu {
     param([array]$Tools)
 
+    function New-EdgeMenuSeparator {
+        param([string]$ShellKey, [int]$Index)
+        $sepKey = "$ShellKey\{0:D2}_Sep" -f $Index
+        New-Item -Path $sepKey -Force | Out-Null
+        Set-ItemProperty -Path $sepKey -Name 'CommandFlags' -Value 0x20
+    }
+
     foreach ($root in $Config.Roots) {
         $rootKey = "Registry::HKEY_CURRENT_USER\Software\Classes\$root\EdgeTools"
         New-Item -Path $rootKey -Force | Out-Null
@@ -155,31 +163,11 @@ function Install-EdgeToolsMenu {
         $psAdminCmd = "powershell.exe -Command `"Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit -Command Set-Location -LiteralPath ''%V'''`""
         Set-Item -Path $psAdminCmdKey -Value $psAdminCmd
 
-        # --- self-refresh entry ---
-        $refreshKey = "$shellKey\{0:D2}_Refresh" -f $menuIndex
-        New-Item -Path $refreshKey -Force | Out-Null
-        Set-ItemProperty -Path $refreshKey -Name 'MUIVerb' -Value 'Refresh Tool List'
-        Set-ItemProperty -Path $refreshKey -Name 'Icon' -Value $Config.Icon
+        # --- separator: PowerShell prompts | tools ---
+        New-EdgeMenuSeparator -ShellKey $shellKey -Index $menuIndex
         $menuIndex++
-        $refreshCmdKey = "$refreshKey\command"
-        New-Item -Path $refreshCmdKey -Force | Out-Null
-        $refreshCmd = "powershell.exe -NoExit -Command `"irm $($Config.InstallerUrl) | iex`""
-        Set-Item -Path $refreshCmdKey -Value $refreshCmd
 
-        # --- self-uninstall entry ---
-        # Fetches this same installer and invokes it as a scriptblock with
-        # -Uninstall, so the menu can remove itself without anyone needing
-        # a local copy of the script.
-        $removeKey = "$shellKey\{0:D2}_Remove" -f $menuIndex
-        New-Item -Path $removeKey -Force | Out-Null
-        Set-ItemProperty -Path $removeKey -Name 'MUIVerb' -Value 'Remove Edge Tools'
-        Set-ItemProperty -Path $removeKey -Name 'Icon' -Value $Config.Icon
-        $menuIndex++
-        $removeCmdKey = "$removeKey\command"
-        New-Item -Path $removeCmdKey -Force | Out-Null
-        $removeCmd = "powershell.exe -NoExit -Command `"& ([ScriptBlock]::Create((irm $($Config.InstallerUrl)))) -Uninstall`""
-        Set-Item -Path $removeCmdKey -Value $removeCmd
-
+        # --- tools, alphabetical ---
         foreach ($tool in $Tools) {
             $safeName = ($tool.name -replace '[^a-zA-Z0-9]', '')
             $itemKey = "$shellKey\{0:D2}_{1}" -f $menuIndex, $safeName
@@ -206,6 +194,36 @@ function Install-EdgeToolsMenu {
                 Set-Item -Path $cmdKey -Value $normalCmd
             }
         }
+
+        # --- separator: tools | management entries ---
+        New-EdgeMenuSeparator -ShellKey $shellKey -Index $menuIndex
+        $menuIndex++
+
+        # --- self-refresh entry ---
+        $refreshKey = "$shellKey\{0:D2}_Refresh" -f $menuIndex
+        New-Item -Path $refreshKey -Force | Out-Null
+        Set-ItemProperty -Path $refreshKey -Name 'MUIVerb' -Value 'Refresh Tool List'
+        Set-ItemProperty -Path $refreshKey -Name 'Icon' -Value $Config.Icon
+        $menuIndex++
+        $refreshCmdKey = "$refreshKey\command"
+        New-Item -Path $refreshCmdKey -Force | Out-Null
+        $refreshCmd = "powershell.exe -NoExit -Command `"irm $($Config.InstallerUrl) | iex`""
+        Set-Item -Path $refreshCmdKey -Value $refreshCmd
+
+        # --- self-uninstall entry ---
+        # Fetches this same installer and invokes it as a scriptblock with
+        # -Uninstall, so the menu can remove itself without anyone needing
+        # a local copy of the script.
+        $removeKey = "$shellKey\{0:D2}_Remove" -f $menuIndex
+        New-Item -Path $removeKey -Force | Out-Null
+        Set-ItemProperty -Path $removeKey -Name 'MUIVerb' -Value 'Remove Edge Tools'
+        Set-ItemProperty -Path $removeKey -Name 'Icon' -Value $Config.Icon
+        $menuIndex++
+        $removeCmdKey = "$removeKey\command"
+        New-Item -Path $removeCmdKey -Force | Out-Null
+        $removeCmd = "powershell.exe -NoExit -Command `"& ([ScriptBlock]::Create((irm $($Config.InstallerUrl)))) -Uninstall`""
+        Set-Item -Path $removeCmdKey -Value $removeCmd
+
         Write-Status "Installed $($Tools.Count) tool(s) under $root" '+'
     }
 }
