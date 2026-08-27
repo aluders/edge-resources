@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   2.9  - Removed separators for good; two different write mechanisms (PS provider, raw .NET registry API) both confirm this Explorer build doesn't render CommandFlags separators for static cascading subcommands - COM-based menus only
 #   2.8  - Separators rebuilt using .NET registry APIs directly - Set-Item wasn't reliably writing a truly empty default value, which is why "02_Sep" text kept showing through
 #   2.7  - Removed separator entries entirely - CommandFlags separators aren't honored for static cascading subcommands on this Explorer build, confirmed by testing two variations
 #   2.6  - Separator keys now show as actual dividers instead of literal "02_Sep"-style text (missing empty default value)
@@ -46,7 +47,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "2.8"
+$ScriptVersion = "2.9"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -120,20 +121,6 @@ function Remove-EdgeToolsMenu {
 function Install-EdgeToolsMenu {
     param([array]$Tools)
 
-    function New-EdgeMenuSeparator {
-        param([string]$ShellKey, [int]$Index)
-        $sepName = "{0:D2}_Sep" -f $Index
-        # Bypass the PS registry provider for this one - Set-Item has been
-        # unreliable at writing a truly empty default (REG_SZ) value here,
-        # which caused the separator to fall back to showing its raw key
-        # name instead of collapsing into a blank divider line.
-        $subKeyPath = $ShellKey -replace '^Registry::HKEY_CURRENT_USER\\', ''
-        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("$subKeyPath\$sepName")
-        $key.SetValue('', '', [Microsoft.Win32.RegistryValueKind]::String)
-        $key.SetValue('CommandFlags', 0x20, [Microsoft.Win32.RegistryValueKind]::DWord)
-        $key.Close()
-    }
-
     foreach ($root in $Config.Roots) {
         $rootKey = "Registry::HKEY_CURRENT_USER\Software\Classes\$root\EdgeTools"
         New-Item -Path $rootKey -Force | Out-Null
@@ -173,10 +160,6 @@ function Install-EdgeToolsMenu {
         $psAdminCmd = "powershell.exe -Command `"Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit -Command Set-Location -LiteralPath ''%V'''`""
         Set-Item -Path $psAdminCmdKey -Value $psAdminCmd
 
-        # --- separator: PowerShell prompts | tools ---
-        New-EdgeMenuSeparator -ShellKey $shellKey -Index $menuIndex
-        $menuIndex++
-
         # --- tools, alphabetical ---
         foreach ($tool in $Tools) {
             $safeName = ($tool.name -replace '[^a-zA-Z0-9]', '')
@@ -204,10 +187,6 @@ function Install-EdgeToolsMenu {
                 Set-Item -Path $cmdKey -Value $normalCmd
             }
         }
-
-        # --- separator: tools | management entries ---
-        New-EdgeMenuSeparator -ShellKey $shellKey -Index $menuIndex
-        $menuIndex++
 
         # --- self-refresh entry ---
         $refreshKey = "$shellKey\{0:D2}_Refresh" -f $menuIndex
