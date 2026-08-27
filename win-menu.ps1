@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   3.0  - Separators reattempted: CommandFlags=0x40 (ECF_SEPARATORAFTER) forced as true DWORD on the last item of each group, instead of dummy *_Sep keys with 0x20 (which is documented as top-level-only and was likely written as REG_SZ, not DWORD)
 #   2.9  - Removed separators for good; two different write mechanisms (PS provider, raw .NET registry API) both confirm this Explorer build doesn't render CommandFlags separators for static cascading subcommands - COM-based menus only
 #   2.8  - Separators rebuilt using .NET registry APIs directly - Set-Item wasn't reliably writing a truly empty default value, which is why "02_Sep" text kept showing through
 #   2.7  - Removed separator entries entirely - CommandFlags separators aren't honored for static cascading subcommands on this Explorer build, confirmed by testing two variations
@@ -47,7 +48,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "2.9"
+$ScriptVersion = "3.0"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -121,6 +122,16 @@ function Remove-EdgeToolsMenu {
 function Install-EdgeToolsMenu {
     param([array]$Tools)
 
+    function Set-RegDword {
+        # Set-ItemProperty has been unreliable at writing numeric values as
+        # true REG_DWORD (sometimes lands as REG_SZ instead), which silently
+        # breaks CommandFlags since Explorer ignores the flag if it isn't a
+        # real DWORD. New-ItemProperty with an explicit -PropertyType avoids
+        # that ambiguity.
+        param([string]$Path, [string]$Name, [int]$Value)
+        New-ItemProperty -Path $Path -Name $Name -PropertyType DWord -Value $Value -Force | Out-Null
+    }
+
     foreach ($root in $Config.Roots) {
         $rootKey = "Registry::HKEY_CURRENT_USER\Software\Classes\$root\EdgeTools"
         New-Item -Path $rootKey -Force | Out-Null
@@ -152,6 +163,9 @@ function Install-EdgeToolsMenu {
         Set-ItemProperty -Path $psAdminKey -Name 'MUIVerb' -Value 'PowerShell (Admin)'
         Set-ItemProperty -Path $psAdminKey -Name 'Icon' -Value $Config.Icon
         Set-ItemProperty -Path $psAdminKey -Name 'HasLUAShield' -Value ''
+        # ECF_SEPARATORAFTER (0x40) draws a divider below this item, i.e.
+        # between the PowerShell entries and the tools list.
+        Set-RegDword -Path $psAdminKey -Name 'CommandFlags' -Value 0x40
         $menuIndex++
         $psAdminCmdKey = "$psAdminKey\command"
         New-Item -Path $psAdminCmdKey -Force | Out-Null
@@ -161,12 +175,14 @@ function Install-EdgeToolsMenu {
         Set-Item -Path $psAdminCmdKey -Value $psAdminCmd
 
         # --- tools, alphabetical ---
+        $lastToolKey = $null
         foreach ($tool in $Tools) {
             $safeName = ($tool.name -replace '[^a-zA-Z0-9]', '')
             $itemKey = "$shellKey\{0:D2}_{1}" -f $menuIndex, $safeName
             New-Item -Path $itemKey -Force | Out-Null
             Set-ItemProperty -Path $itemKey -Name 'Icon' -Value $Config.Icon
             $menuIndex++
+            $lastToolKey = $itemKey
 
             $cmdKey = "$itemKey\command"
             New-Item -Path $cmdKey -Force | Out-Null
@@ -186,6 +202,12 @@ function Install-EdgeToolsMenu {
                 $normalCmd = "powershell.exe -NoExit -ExecutionPolicy Bypass -File `"$($Config.LauncherPath)`" -ToolUrl `"$($tool.url)`" -Path `"%V`""
                 Set-Item -Path $cmdKey -Value $normalCmd
             }
+        }
+
+        # ECF_SEPARATORAFTER on the last tool - divider between the tools
+        # and the Refresh/Remove management entries.
+        if ($lastToolKey) {
+            Set-RegDword -Path $lastToolKey -Name 'CommandFlags' -Value 0x40
         }
 
         # --- self-refresh entry ---
