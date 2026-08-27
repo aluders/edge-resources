@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   2.3  - Added explicit MenuIndex to every entry so PowerShell/PowerShell (Admin) actually display at the top (key-name sort order was putting them last)
 #   2.2  - Versioning scheme changed to major.minor, minor rolling to next major after .9
 #   2.1  - Added plain PowerShell / PowerShell (Admin) entries at the top; dropped the "Run " prefix from tool labels
 #   2.0  - Removed the "existing Explorer windows need a refresh" note; testing shows every right-click re-queries the registry
@@ -40,7 +41,7 @@ param(
     [switch]$Uninstall
 )
 
-$ScriptVersion = "2.2"
+$ScriptVersion = "2.3"
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -124,11 +125,19 @@ function Install-EdgeToolsMenu {
         $shellKey = "$rootKey\shell"
         New-Item -Path $shellKey -Force | Out-Null
 
+        # MenuIndex forces display order explicitly (lower = higher up).
+        # Relying on key-name sort order is unreliable - registry
+        # enumeration order isn't guaranteed alphabetical, and underscore-
+        # prefixed keys sort *after* plain letters anyway.
+        $menuIndex = 0
+
         # --- plain PowerShell prompts, always first ---
         $psKey = "$shellKey\_PowerShell"
         New-Item -Path $psKey -Force | Out-Null
         Set-ItemProperty -Path $psKey -Name 'MUIVerb' -Value 'PowerShell'
         Set-ItemProperty -Path $psKey -Name 'Icon' -Value $Config.Icon
+        Set-ItemProperty -Path $psKey -Name 'MenuIndex' -Value $menuIndex
+        $menuIndex++
         $psCmdKey = "$psKey\command"
         New-Item -Path $psCmdKey -Force | Out-Null
         $psCmd = "powershell.exe -NoExit -Command `"Set-Location -LiteralPath '%V'`""
@@ -139,6 +148,8 @@ function Install-EdgeToolsMenu {
         Set-ItemProperty -Path $psAdminKey -Name 'MUIVerb' -Value 'PowerShell (Admin)'
         Set-ItemProperty -Path $psAdminKey -Name 'Icon' -Value $Config.Icon
         Set-ItemProperty -Path $psAdminKey -Name 'HasLUAShield' -Value ''
+        Set-ItemProperty -Path $psAdminKey -Name 'MenuIndex' -Value $menuIndex
+        $menuIndex++
         $psAdminCmdKey = "$psAdminKey\command"
         New-Item -Path $psAdminCmdKey -Force | Out-Null
         # NB: doubled single-quotes ('') around %V escape a literal quote
@@ -151,6 +162,8 @@ function Install-EdgeToolsMenu {
         New-Item -Path $refreshKey -Force | Out-Null
         Set-ItemProperty -Path $refreshKey -Name 'MUIVerb' -Value 'Refresh Tool List'
         Set-ItemProperty -Path $refreshKey -Name 'Icon' -Value $Config.Icon
+        Set-ItemProperty -Path $refreshKey -Name 'MenuIndex' -Value $menuIndex
+        $menuIndex++
         $refreshCmdKey = "$refreshKey\command"
         New-Item -Path $refreshCmdKey -Force | Out-Null
         $refreshCmd = "powershell.exe -NoExit -Command `"irm $($Config.InstallerUrl) | iex`""
@@ -164,6 +177,8 @@ function Install-EdgeToolsMenu {
         New-Item -Path $removeKey -Force | Out-Null
         Set-ItemProperty -Path $removeKey -Name 'MUIVerb' -Value 'Remove Edge Tools'
         Set-ItemProperty -Path $removeKey -Name 'Icon' -Value $Config.Icon
+        Set-ItemProperty -Path $removeKey -Name 'MenuIndex' -Value $menuIndex
+        $menuIndex++
         $removeCmdKey = "$removeKey\command"
         New-Item -Path $removeCmdKey -Force | Out-Null
         $removeCmd = "powershell.exe -NoExit -Command `"& ([ScriptBlock]::Create((irm $($Config.InstallerUrl)))) -Uninstall`""
@@ -174,6 +189,8 @@ function Install-EdgeToolsMenu {
             $itemKey = "$shellKey\$safeName"
             New-Item -Path $itemKey -Force | Out-Null
             Set-ItemProperty -Path $itemKey -Name 'Icon' -Value $Config.Icon
+            Set-ItemProperty -Path $itemKey -Name 'MenuIndex' -Value $menuIndex
+            $menuIndex++
 
             $cmdKey = "$itemKey\command"
             New-Item -Path $cmdKey -Force | Out-Null
