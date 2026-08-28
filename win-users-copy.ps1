@@ -6,124 +6,34 @@
 # <Source>:\Users to <Destination>:\Users using VSSCopy.exe (VSS-aware,
 # handles open/locked files).
 #
-# CHANGELOG:
-#   v1.0 - Initial release.
-#          - Prompts for source/destination drive letters.
-#          - Enumerates users under <Source>:\Users, copies Documents/
-#            Desktop/Pictures to <Destination>:\Users via VSSCopy -s -v.
-#          - Skips (does not fail) folders missing on source.
-#          - Admin + VSSCopy.exe existence checks, confirm-before-run.
-#          - Final success/skip/fail summary.
-#   v1.1 - Live progress + logging overhaul.
-#          - Streams VSSCopy output line-by-line instead of dumping the
-#            full transcript only on failure.
-#          - Rolling single-line status shows current file being copied.
-#          - Error/fatal/"cannot find"/access-denied lines print
-#            immediately in red as they occur, instead of only at the end.
-#          - Full verbose output for every folder now logged to
-#            C:\VSSCopyLogs\<timestamp>\<user>-<folder>.log for later
-#            review (e.g. drives with SMART caution status / bad sectors).
-#   v1.2 - Prerequisite auto-install (superseded by v1.3 -- see below).
-#   v1.3 - Corrected .NET prerequisite.
-#          - VSSCopy actually requires .NET Framework 3.5 (includes 2.0/3.0),
-#            confirmed via the "Windows Features" prompt it triggers on
-#            first run -- NOT .NET Framework 4.8 as v1.2 assumed.
-#          - .NET 3.5 is a Windows Optional Feature (DISM/Windows Update
-#            based), not a standalone redistributable, so detection/install
-#            now uses Get-/Enable-WindowsOptionalFeature -FeatureName NetFx3
-#            instead of downloading Microsoft's 4.8 offline installer.
-#   v1.4 - NetFx3 enable resilience.
-#          - Enable-WindowsOptionalFeature can fail with "Access is denied"
-#            in some sessions (observed over SSH/remote PowerShell) even
-#            when running as Administrator. Now checks/starts the
-#            TrustedInstaller (Windows Modules Installer) service first,
-#            since DISM/CBS operations depend on it.
-#          - Falls back to calling dism.exe directly if the cmdlet fails,
-#            since that has succeeded in cases where the cmdlet did not.
-#          - dism.exe attempt logs to %TEMP%\netfx3-dism.log for diagnosis.
-#   v1.6 - Switched to standalone .NET 3.5 installer (later confirmed to be
-#          a thin WU-based wrapper with no bundled payload -- see v1.7).
-#   v1.7 - SYSTEM-interactive scheduled task workaround (root cause found
-#          to be incomplete -- SYSTEM's "Interactive" logon type doesn't
-#          behave like a real user's; see v1.8).
-#   v1.8 - Root cause confirmed and fixed.
-#          - Manually running Enable-WindowsOptionalFeature directly in the
-#            real console/RDP session (as the actual logged-in user)
-#            succeeded immediately (Online: True, RestartNeeded: False),
-#            proving the operation itself was never the problem.
-#          - The v1.7 scheduled task ran as SYSTEM with LogonType=
-#            Interactive, but SYSTEM does not have a genuine interactive
-#            desktop the way a real logged-on user does -- it doesn't
-#            attach to WinSta0 the same way, which is why it silently
-#            stalled instead of completing.
-#          - Fix: the scheduled task principal now targets the actual
-#            console-logged-in user (detected dynamically via whoever owns
-#            explorer.exe) instead of SYSTEM, with LogonType=Interactive,
-#            RunLevel=Highest. This matches the manually-confirmed working
-#            case exactly.
-#          - Requires someone to be logged into the console/RDP session
-#            for this to work (same as the manual test). Fails with a
-#            clear message if no explorer.exe owner can be found.
-
-#   v1.9 - Actual root cause found: hidden window, not session/user.
-#          - Side-by-side test isolated it cleanly: identical scheduled
-#            task, same console-user principal, only difference was
-#            -WindowStyle Hidden vs default (visible). Hidden silently
-#            stalled every time (matching v1.7/v1.8's failures); visible
-#            succeeded immediately (Online: True, RestartNeeded: False).
-#          - CBS's UI handler (CbsConUIHandler, seen throughout CBS.log)
-#            appears to require an actual window/message pump to complete
-#            the FOD install, even when no dialog is ever shown -- a
-#            hidden window doesn't provide one, so it stalls instead of
-#            erroring. This also explains the "Windows Features" GUI
-#            dialog seen at the very start of this investigation when
-#            running vsscopy.exe directly at a visible console.
-#          - v1.8's "must run as the console user, not SYSTEM" conclusion
-#            was half right (console user was still used successfully
-#            here) but incomplete -- SYSTEM vs real user was never the
-#            actual blocker; window visibility was.
-#          - Removed -WindowStyle Hidden from the scheduled task action.
-#            A PowerShell window will now briefly appear on the console
-#            screen during this one-time install -- expected and required,
-#            not a bug.
-
-#   v2.0 - Fixed premature timeout killing an in-progress install.
-#          - The 120-second poll cap was too short: NetFx3's FOD download
-#            can genuinely take several minutes depending on payload size
-#            and connection speed. When the cap was hit, the script moved
-#            on AND unregistered the scheduled task regardless of whether
-#            it was still Running -- which can forcibly tear down a task
-#            mid-execution, turning a slow-but-working install into a
-#            false failure (and possibly a genuinely half-applied one).
-#          - Poll window extended to 10 minutes, with a progress message
-#            every 15 seconds so it's clear it's still working rather than
-#            looking hung.
-#          - If still Running when the extended cap is hit, the task is now
-#            left alone (NOT unregistered) rather than killed. The script
-#            reports this clearly and tells the person to check back /
-#            re-run rather than silently destroying in-progress work.
-#          - Cleanup (unregister task + remove script) now only happens
-#            once the task has actually finished on its own.
-
-#   v2.1 - Fixed scheduled task running at low priority.
-#          - Identical command ran fast typed directly at the console, but
-#            crawled when launched via the scheduled task. Root cause:
-#            Task Scheduler's default Priority (7, "Below Normal") is lower
-#            than interactive/Normal priority -- and for a WU/FOD download
-#            specifically, lower process priority can cascade into the
-#            transfer itself being bandwidth-throttled (BITS/Delivery
-#            Optimization background mode), not just CPU scheduling.
-#          - Task now uses explicit Settings: Priority 4 (Normal, matching
-#            interactive), and idle/battery restrictions disabled so the
-#            task can't be paused/stopped by unrelated power-state changes
-#            during a long-running install.
-
-#   v2.2 - Verbose dependency status.
-#          - Both .NET Framework 3.5 and VSSCopy now print a clear
-#            Installed/Not installed status line up front, instead of only
-#            saying anything when a dependency needs to be installed.
-#            Makes it obvious at a glance what's already satisfied vs what
-#            the script is about to act on.
+# CHANGELOG (newest first):
+#   v2.2 - Dependency check now prints Installed/Not installed status for
+#          .NET 3.5 and VSSCopy up front, not just when installing.
+#   v2.1 - Fixed scheduled task running at throttled priority vs console
+#          (WU/FOD downloads were bandwidth-throttled); set Priority 4.
+#   v2.0 - Fixed a too-short (120s) poll timeout that could kill a slow
+#          but still-working NetFx3 install; extended to 10min, task is
+#          left alone (not unregistered) if still running when hit.
+#   v1.9 - Found the real root cause of the NetFx3 stall: -WindowStyle
+#          Hidden. CBS's UI handler needs an actual window/message pump
+#          to complete; hidden windows stalled, visible ones worked.
+#   v1.8 - (Partial/incorrect fix, superseded by v1.9) Pointed the
+#          scheduled task at the console user instead of SYSTEM.
+#   v1.7 - (Superseded by v1.9) First scheduled-task workaround attempt
+#          for NetFx3, run as SYSTEM.
+#   v1.6 - (Dead end) Tried a standalone .NET 3.5 installer; confirmed to
+#          be a thin WU wrapper with no bundled payload.
+#   v1.4 - NetFx3 enable resilience: checks/starts TrustedInstaller,
+#          falls back from the cmdlet to dism.exe directly.
+#   v1.3 - Corrected the .NET prerequisite: VSSCopy needs .NET 3.5 (a
+#          Windows Optional Feature), not 4.8 as v1.2 assumed.
+#   v1.2 - (Superseded by v1.3) First prerequisite auto-install attempt.
+#   v1.1 - Live rolling progress + per-folder logs to
+#          C:\VSSCopyLogs\<timestamp>\, instead of dumping full output
+#          only on failure.
+#   v1.0 - Initial release: prompts for source/destination drives, copies
+#          Documents/Desktop/Pictures per user via VSSCopy -s -v, admin +
+#          VSSCopy.exe checks, confirm-before-run, success/skip/fail summary.
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
