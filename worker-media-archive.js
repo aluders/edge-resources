@@ -1,5 +1,5 @@
 /********************************************************************
-  Church Media Archive Worker v1.3
+  Church Media Archive Worker v1.4
   --------------------------------------------------
   Secrets required:
     OA_CLIENT_ID
@@ -14,6 +14,12 @@
              raw counts, titles, and parsed services
   --------------------------------------------------
   CHANGELOG
+  v1.4 — 2026-08-28
+    - Added translate="no" to <html> tag to explicitly suppress
+      Chrome's translation prompt
+    - Added <meta http-equiv="Content-Language" content="en"> as
+      an additional language signal to Chrome's detector
+
   v1.3 — 2026-08-28
     - Added Content-Language: en response header to definitively
       prevent Chrome from prompting translation (lang attribute alone
@@ -348,10 +354,11 @@ export default {
       // ============================================================
       let html = `
 <!DOCTYPE html>
-<!-- Church Media Archive Worker v1.3 -->
-<html lang="en">
+<!-- Church Media Archive Worker v1.4 -->
+<html lang="en" translate="no">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Language" content="en">
 <link rel="icon" type="image/webp" href="${FAVICON_URL}">
 <title>${PAGE_TITLE}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
