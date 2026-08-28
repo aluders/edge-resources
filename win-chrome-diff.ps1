@@ -1,4 +1,4 @@
-#    Chrome Preferences Diff Helper v1.2
+#    Chrome Preferences Diff Helper v1.3
 #    =====================================
 #    Snapshots the Preferences file behind chrome://settings, then diffs it
 #    against a second snapshot to show exactly which key(s) changed - built
@@ -12,6 +12,13 @@
 #
 #    VERSION HISTORY
 #    ----------------
+#    1.3 - Fixed a bug from 1.2: the profile-tracking rewrite wrapped the
+#          entire (large) Preferences file as an escaped JSON string inside
+#          another JSON document before saving it, which can overflow
+#          Windows PowerShell 5.1's ~2MB built-in JSON size limit and
+#          corrupt the snapshot ("Invalid JSON primitive" on the next
+#          diff). The raw snapshot is a plain file copy again; only the
+#          small profile-tracking metadata goes through ConvertTo-Json now.
 #    1.2 - Snapshot now records which profile it was taken against and
 #          reuses it automatically on the diff run instead of prompting
 #          again - prevents silently diffing two different profiles
@@ -37,10 +44,16 @@
 #           script again -> automatically reuses that profile, diffs
 #           against the "before" snapshot, and prints everything that
 #           changed
-#    - Snapshot lives at %LOCALAPPDATA%\EdgeTools\chrome-prefs-diff\snapshot.json
-#      between runs. Use -Reset to throw it away and start over.
+#    - Snapshot lives at %LOCALAPPDATA%\EdgeTools\chrome-prefs-diff\ between
+#      runs (a metadata file plus a raw copy of Preferences). Use -Reset to
+#      throw both away and start over.
 #    - Read-only diagnostic - never writes to Chrome's actual Preferences
 #      file, only to its own snapshot copy under %LOCALAPPDATA%\EdgeTools\.
+#    - If "Invalid JSON primitive" still shows up after this fix, it means
+#      the LIVE Preferences file itself is big enough to hit that same
+#      Windows PowerShell 5.1 JSON ceiling on its own - a different, bigger
+#      fix (a custom parser that isn't limited to ~2MB) would be needed at
+#      that point. Worth knowing before assuming this is fully resolved.
 #    - Worth checking once you have the keys: if any show up nested under
 #      "protection.macs", Chrome is signing that value and a direct file
 #      edit likely won't stick - same MAC protection the search-fix script
@@ -72,9 +85,10 @@ param(
     [string]$ProfileDirOverride   # skip the profile picker, e.g. "Default" or "Profile 1"
 )
 
-$ScriptVersion = "1.2"
+$ScriptVersion = "1.3"
 $DataDir = Join-Path $env:LOCALAPPDATA "EdgeTools\chrome-prefs-diff"
-$SnapshotPath = Join-Path $DataDir "snapshot.json"
+$SnapshotMetaPath = Join-Path $DataDir "snapshot-meta.json"
+$SnapshotPrefsPath = Join-Path $DataDir "snapshot-preferences.json"
 $HighlightKeywords = @("passkey", "webauthn", "credential", "fido", "security_key", "security_keys", "bookmark_bar", "show_home_button", "home_button", "homepage")
 
 function Write-Sep  { Write-Host ("-" * 60) -ForegroundColor DarkGray }
@@ -95,8 +109,9 @@ Write-Sep
 Write-Host "Chrome Preferences Diff Helper  v$ScriptVersion" -ForegroundColor White
 Write-Sep
 
-if ($Reset -and (Test-Path $SnapshotPath)) {
-    Remove-Item $SnapshotPath -Force
+if ($Reset) {
+    if (Test-Path $SnapshotMetaPath)  { Remove-Item $SnapshotMetaPath -Force }
+    if (Test-Path $SnapshotPrefsPath) { Remove-Item $SnapshotPrefsPath -Force }
     Write-Ok "Cleared the saved snapshot - starting fresh"
     Write-Sep
 }
@@ -129,14 +144,19 @@ if (-not (Test-Path $LocalStatePath)) {
     return
 }
 
-$HasSnapshot = Test-Path $SnapshotPath
-$StoredSnapshot = $null
+$HasSnapshot = (Test-Path $SnapshotMetaPath) -and (Test-Path $SnapshotPrefsPath)
+if ((Test-Path $SnapshotMetaPath) -ne (Test-Path $SnapshotPrefsPath)) {
+    Write-Warn2 "Found half a snapshot (one file present, one missing) - treating it as none. Run with -Reset if you want to clear it explicitly."
+    $HasSnapshot = $false
+}
+
+$StoredMeta = $null
 if ($HasSnapshot) {
     try {
-        $StoredSnapshot = Get-Content $SnapshotPath -Raw | ConvertFrom-Json
+        $StoredMeta = Get-Content $SnapshotMetaPath -Raw | ConvertFrom-Json
     }
     catch {
-        Write-Err2 "Couldn't read the existing snapshot: $($_.Exception.Message)"
+        Write-Err2 "Couldn't read the existing snapshot metadata: $($_.Exception.Message)"
         return
     }
 }
@@ -144,7 +164,7 @@ if ($HasSnapshot) {
 $ProfileDir = $null
 
 if ($HasSnapshot) {
-    $ProfileDir = $StoredSnapshot.ProfileDir
+    $ProfileDir = $StoredMeta.ProfileDir
     if ($ProfileDirOverride -and $ProfileDirOverride -ne $ProfileDir) {
         Write-Warn2 "The 'before' snapshot was taken against profile '$ProfileDir', but -ProfileDirOverride asked for '$ProfileDirOverride' - proceeding with the override, but this diff will compare two different profiles."
         $ProfileDir = $ProfileDirOverride
@@ -256,20 +276,20 @@ function Get-PrefsDiff {
 }
 
 # ---------------------------------------------------------------------------
-# 4. First run: no snapshot yet - save this as "before" (recording which
-#    profile it came from) and stop. Second run: snapshot exists - diff
-#    against it.
+# 4. First run: no snapshot yet - save this as "before" (a raw copy of
+#    Preferences, plus a tiny metadata file recording which profile it
+#    came from) and stop. Second run: snapshot exists - diff against it.
 # ---------------------------------------------------------------------------
 if (-not $HasSnapshot) {
     if (-not (Test-Path $DataDir)) {
         New-Item -Path $DataDir -ItemType Directory -Force | Out-Null
     }
-    $snapshotObj = [pscustomobject]@{
-        ProfileDir  = $ProfileDir
-        SavedAt     = (Get-Date).ToString("o")
-        Preferences = (Get-Content $PrefsPath -Raw)
+    Copy-Item $PrefsPath $SnapshotPrefsPath -Force
+    $metaObj = [pscustomobject]@{
+        ProfileDir = $ProfileDir
+        SavedAt    = (Get-Date).ToString("o")
     }
-    $snapshotObj | ConvertTo-Json -Depth 3 | Set-Content -Path $SnapshotPath -Encoding UTF8
+    $metaObj | ConvertTo-Json -Depth 2 | Set-Content -Path $SnapshotMetaPath -Encoding UTF8
     Write-Ok "Saved 'before' snapshot for profile '$ProfileDir'"
     Write-Info "Now: reopen Chrome on that same profile, toggle the setting(s) you're chasing, fully quit Chrome again, and re-run this script."
     Write-Sep
@@ -280,7 +300,7 @@ Write-Info "Diffing against the 'before' snapshot..."
 Write-Sep
 
 try {
-    $before = $StoredSnapshot.Preferences | ConvertFrom-Json
+    $before = Get-Content $SnapshotPrefsPath -Raw | ConvertFrom-Json
     $after  = Get-Content $PrefsPath -Raw | ConvertFrom-Json
 }
 catch {
