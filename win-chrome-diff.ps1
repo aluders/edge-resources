@@ -78,14 +78,14 @@
 #    Run locally:
 #        .\chrome-prefs-diff.ps1
 #
-#    Or host it next to your other one-off tools and run remotely:
-#        irm <url> | iex
+#    Or remotely:
+#        irm chrome-diff.vcc.net | iex
 #
 #    Start over / clear a stale snapshot:
-#        & ([ScriptBlock]::Create((irm <url>))) -Reset
+#        & ([ScriptBlock]::Create((irm chrome-diff.vcc.net))) -Reset
 #
 #    Search current state for a key name, no snapshot needed:
-#        & ([ScriptBlock]::Create((irm <url>))) -Grep "home"
+#        & ([ScriptBlock]::Create((irm chrome-diff.vcc.net))) -Grep "home"
 
 [CmdletBinding()]
 param(
