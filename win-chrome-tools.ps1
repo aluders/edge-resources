@@ -48,17 +48,17 @@
 #    USAGE
 #    -----
 #    Interactive menu:
-#        irm <url> | iex
+#        irm chrome-tools.vcc.net | iex
 #
 #    Direct, no menu:
-#        & ([ScriptBlock]::Create((irm <url>))) -Tool search
-#        & ([ScriptBlock]::Create((irm <url>))) -Tool search -DumpUITree
-#        & ([ScriptBlock]::Create((irm <url>))) -Tool settings
-#        & ([ScriptBlock]::Create((irm <url>))) -Tool settings -DumpUITree
-#        & ([ScriptBlock]::Create((irm <url>))) -Tool settings -ProfileDir "Profile 2"
-#        & ([ScriptBlock]::Create((irm <url>))) -Tool diff
-#        & ([ScriptBlock]::Create((irm <url>))) -Tool diff -Reset
-#        & ([ScriptBlock]::Create((irm <url>))) -Tool diff -Grep "home"
+#        & ([ScriptBlock]::Create((irm chrome-tools.vcc.net))) -Tool search
+#        & ([ScriptBlock]::Create((irm chrome-tools.vcc.net))) -Tool search -DumpUITree
+#        & ([ScriptBlock]::Create((irm chrome-tools.vcc.net))) -Tool settings
+#        & ([ScriptBlock]::Create((irm chrome-tools.vcc.net))) -Tool settings -DumpUITree
+#        & ([ScriptBlock]::Create((irm chrome-tools.vcc.net))) -Tool settings -ProfileDir "Profile 2"
+#        & ([ScriptBlock]::Create((irm chrome-tools.vcc.net))) -Tool diff
+#        & ([ScriptBlock]::Create((irm chrome-tools.vcc.net))) -Tool diff -Reset
+#        & ([ScriptBlock]::Create((irm chrome-tools.vcc.net))) -Tool diff -Grep "home"
 #
 #    Numeric shorthand works too, e.g. -Tool 2 instead of -Tool settings.
 
