@@ -1,4 +1,4 @@
-#    Chrome Preferences Diff Helper v1.0
+#    Chrome Preferences Diff Helper v1.1
 #    =====================================
 #    Snapshots the Preferences file behind chrome://settings, then diffs it
 #    against a second snapshot to show exactly which key(s) changed - built
@@ -12,6 +12,9 @@
 #
 #    VERSION HISTORY
 #    ----------------
+#    1.1 - Snapshot moved to %LOCALAPPDATA%\EdgeTools\chrome-prefs-diff\
+#          (was %TEMP%), highlight keywords widened to cover bookmark
+#          bar / home button, not just passkey-related keys
 #    1.0 - Initial version
 #
 #    NOTES
@@ -28,10 +31,10 @@
 #           or off), fully quit Chrome again, run this script again ->
 #           diffs against the "before" snapshot and prints everything that
 #           changed
-#    - Snapshot lives at %TEMP%\chrome-prefs-diff-snapshot.json between runs.
-#      Use -Reset to throw it away and start over.
+#    - Snapshot lives at %LOCALAPPDATA%\EdgeTools\chrome-prefs-diff\snapshot.json
+#      between runs. Use -Reset to throw it away and start over.
 #    - Read-only diagnostic - never writes to Chrome's actual Preferences
-#      file, only to its own snapshot copy in %TEMP%.
+#      file, only to its own snapshot copy under %LOCALAPPDATA%\EdgeTools\.
 #    - Worth checking once you have the keys: if any show up nested under
 #      "protection.macs", Chrome is signing that value and a direct file
 #      edit likely won't stick - same MAC protection the search-fix script
@@ -63,8 +66,9 @@ param(
     [string]$ProfileDirOverride   # skip the profile picker, e.g. "Default" or "Profile 1"
 )
 
-$ScriptVersion = "1.0"
-$SnapshotPath = Join-Path $env:TEMP "chrome-prefs-diff-snapshot.json"
+$ScriptVersion = "1.1"
+$DataDir = Join-Path $env:LOCALAPPDATA "EdgeTools\chrome-prefs-diff"
+$SnapshotPath = Join-Path $DataDir "snapshot.json"
 $HighlightKeywords = @("passkey", "webauthn", "credential", "fido", "security_key", "security_keys", "bookmark_bar", "show_home_button", "home_button", "homepage")
 
 function Write-Sep  { Write-Host ("-" * 60) -ForegroundColor DarkGray }
@@ -221,10 +225,17 @@ function Get-PrefsDiff {
 # 4. First run: no snapshot yet - save this as "before" and stop.
 #    Second run: snapshot exists - diff against it.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 4. First run: no snapshot yet - save this as "before" and stop.
+#    Second run: snapshot exists - diff against it.
+# ---------------------------------------------------------------------------
 if (-not (Test-Path $SnapshotPath)) {
+    if (-not (Test-Path $DataDir)) {
+        New-Item -Path $DataDir -ItemType Directory -Force | Out-Null
+    }
     Copy-Item $PrefsPath $SnapshotPath -Force
     Write-Ok "Saved 'before' snapshot"
-    Write-Info "Now: reopen Chrome, toggle the setting you're chasing, fully quit Chrome again, and re-run this script."
+    Write-Info "Now: reopen Chrome, toggle the setting(s) you're chasing, fully quit Chrome again, and re-run this script."
     Write-Sep
     return
 }
