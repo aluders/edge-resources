@@ -1,4 +1,4 @@
-#    Network Scanner  (Windows)  v1.4
+#    Network Scanner  (Windows)  v1.5
 #    ===================================
 #    Discovers every device on the local subnet using a layered approach:
 #    ICMP ping sweep, ARP/neighbor cache, reverse DNS, OUI vendor lookup,
@@ -12,6 +12,7 @@
 #
 #    VERSION HISTORY
 #    ---------------
+#    1.5 - Cache paths moved to %LOCALAPPDATA%\EdgeTools\netscan\
 #    1.4 - Unicode symbol safety: auto-detects terminal capability and falls
 #          back to ASCII in classic conhost; tightened column widths to
 #          prevent line wrapping; IP column changed from Blue to Cyan
