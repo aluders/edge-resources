@@ -25,11 +25,11 @@
 #    -----
 #    - Run from an elevated PowerShell window (required for SendARP and
 #      Get-NetNeighbor to resolve MACs reliably across all device types).
-#    - Vendor cache lives at %LOCALAPPDATA%\netscan\oui\ — delete it to
+#    - Vendor cache lives at %LOCALAPPDATA%\EdgeTools\netscan\oui\ — delete it to
 #      force a fresh lookup. Only successful API results are cached, so
 #      transient failures are retried automatically on the next run.
 #    - Device identity (mDNS/SSDP/HTTP title) is cached by MAC address at
-#      %LOCALAPPDATA%\netscan\devices\ and survives IP changes between runs.
+#      %LOCALAPPDATA%\EdgeTools\netscan\devices\ and survives IP changes between runs.
 #    - macvendors.com API is rate-limited; the script waits 1.5s between
 #      uncached lookups. A /24 with 20 unique OUIs takes ~30s on first run,
 #      then instant from cache on every subsequent run.
@@ -121,7 +121,7 @@ function prefix2mask ([int]$p) {
 }
 
 # ── OUI cache + vendor lookup ──────────────────────────────────────────────────
-$CacheDir = "$env:LOCALAPPDATA\netscan\oui"
+$CacheDir = "$env:LOCALAPPDATA\EdgeTools\netscan\oui"
 if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null }
 
 function Get-Vendor ([string]$MAC) {
@@ -636,7 +636,7 @@ phaseln "Phase 6/7 — HTTP titles:" "   done $SYM_OK  (${httpCount} title(s) fo
 # ══════════════════════════════════════════════════════════════════════════════
 phase "Phase 7/7 — Device identity:" "  merging…`r"
 
-$DevCacheDir="$env:LOCALAPPDATA\netscan\devices"
+$DevCacheDir="$env:LOCALAPPDATA\EdgeTools\netscan\devices"
 if (-not (Test-Path $DevCacheDir)) { New-Item -ItemType Directory $DevCacheDir -Force | Out-Null }
 
 $deviceMap=@{}
