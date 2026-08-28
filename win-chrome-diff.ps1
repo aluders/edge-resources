@@ -1,4 +1,4 @@
-#    Chrome Preferences Diff Helper v1.1
+#    Chrome Preferences Diff Helper v1.2
 #    =====================================
 #    Snapshots the Preferences file behind chrome://settings, then diffs it
 #    against a second snapshot to show exactly which key(s) changed - built
@@ -12,6 +12,10 @@
 #
 #    VERSION HISTORY
 #    ----------------
+#    1.2 - Snapshot now records which profile it was taken against and
+#          reuses it automatically on the diff run instead of prompting
+#          again - prevents silently diffing two different profiles
+#          against each other
 #    1.1 - Snapshot moved to %LOCALAPPDATA%\EdgeTools\chrome-prefs-diff\
 #          (was %TEMP%), highlight keywords widened to cover bookmark
 #          bar / home button, not just passkey-related keys
@@ -25,11 +29,13 @@
 #      snapshot - Chrome only flushes its latest in-memory state to disk on
 #      a clean exit, so a snapshot taken while Chrome's still running (or
 #      right after killing it) can miss the change you just made.
-#    - Two-step workflow:
-#        1. Quit Chrome, run this script -> saves a "before" snapshot
-#        2. Reopen Chrome, toggle whichever setting(s) you're chasing (on
-#           or off), fully quit Chrome again, run this script again ->
-#           diffs against the "before" snapshot and prints everything that
+#    - Two-step workflow, same profile both times:
+#        1. Quit Chrome, run this script -> saves a "before" snapshot and
+#           records which profile it came from
+#        2. Reopen Chrome on that same profile, toggle whichever setting(s)
+#           you're chasing (on or off), fully quit Chrome again, run this
+#           script again -> automatically reuses that profile, diffs
+#           against the "before" snapshot, and prints everything that
 #           changed
 #    - Snapshot lives at %LOCALAPPDATA%\EdgeTools\chrome-prefs-diff\snapshot.json
 #      between runs. Use -Reset to throw it away and start over.
@@ -66,7 +72,7 @@ param(
     [string]$ProfileDirOverride   # skip the profile picker, e.g. "Default" or "Profile 1"
 )
 
-$ScriptVersion = "1.1"
+$ScriptVersion = "1.2"
 $DataDir = Join-Path $env:LOCALAPPDATA "EdgeTools\chrome-prefs-diff"
 $SnapshotPath = Join-Path $DataDir "snapshot.json"
 $HighlightKeywords = @("passkey", "webauthn", "credential", "fido", "security_key", "security_keys", "bookmark_bar", "show_home_button", "home_button", "homepage")
@@ -107,9 +113,13 @@ if ($ChromeRunning) {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Find the right profile's Preferences file. Same profile-picker pattern
-#    as the search-fix script, reading straight from Local State - if
-#    there's only one profile, use it without asking.
+# 2. Resolve which profile to use. If a "before" snapshot already exists,
+#    reuse whatever profile it was taken against automatically instead of
+#    prompting again - prompting on both runs risks picking a different
+#    profile the second time and silently diffing two unrelated profiles
+#    against each other, which defeats the whole point of this being
+#    profile-scoped. -ProfileDirOverride still wins if given, but warns if
+#    it doesn't match what the snapshot was taken from.
 # ---------------------------------------------------------------------------
 $UserDataDir = "$env:LOCALAPPDATA\Google\Chrome\User Data"
 $LocalStatePath = Join-Path $UserDataDir "Local State"
@@ -119,9 +129,31 @@ if (-not (Test-Path $LocalStatePath)) {
     return
 }
 
+$HasSnapshot = Test-Path $SnapshotPath
+$StoredSnapshot = $null
+if ($HasSnapshot) {
+    try {
+        $StoredSnapshot = Get-Content $SnapshotPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        Write-Err2 "Couldn't read the existing snapshot: $($_.Exception.Message)"
+        return
+    }
+}
+
 $ProfileDir = $null
 
-if ($ProfileDirOverride) {
+if ($HasSnapshot) {
+    $ProfileDir = $StoredSnapshot.ProfileDir
+    if ($ProfileDirOverride -and $ProfileDirOverride -ne $ProfileDir) {
+        Write-Warn2 "The 'before' snapshot was taken against profile '$ProfileDir', but -ProfileDirOverride asked for '$ProfileDirOverride' - proceeding with the override, but this diff will compare two different profiles."
+        $ProfileDir = $ProfileDirOverride
+    }
+    else {
+        Write-Ok "Reusing profile '$ProfileDir' from the 'before' snapshot"
+    }
+}
+elseif ($ProfileDirOverride) {
     $ProfileDir = $ProfileDirOverride
 }
 else {
@@ -167,7 +199,9 @@ if (-not (Test-Path $PrefsPath)) {
     return
 }
 
-Write-Ok "Using profile '$ProfileDir'"
+if (-not $HasSnapshot) {
+    Write-Ok "Using profile '$ProfileDir'"
+}
 Write-Sep
 
 # ---------------------------------------------------------------------------
@@ -222,29 +256,31 @@ function Get-PrefsDiff {
 }
 
 # ---------------------------------------------------------------------------
-# 4. First run: no snapshot yet - save this as "before" and stop.
-#    Second run: snapshot exists - diff against it.
+# 4. First run: no snapshot yet - save this as "before" (recording which
+#    profile it came from) and stop. Second run: snapshot exists - diff
+#    against it.
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# 4. First run: no snapshot yet - save this as "before" and stop.
-#    Second run: snapshot exists - diff against it.
-# ---------------------------------------------------------------------------
-if (-not (Test-Path $SnapshotPath)) {
+if (-not $HasSnapshot) {
     if (-not (Test-Path $DataDir)) {
         New-Item -Path $DataDir -ItemType Directory -Force | Out-Null
     }
-    Copy-Item $PrefsPath $SnapshotPath -Force
-    Write-Ok "Saved 'before' snapshot"
-    Write-Info "Now: reopen Chrome, toggle the setting(s) you're chasing, fully quit Chrome again, and re-run this script."
+    $snapshotObj = [pscustomobject]@{
+        ProfileDir  = $ProfileDir
+        SavedAt     = (Get-Date).ToString("o")
+        Preferences = (Get-Content $PrefsPath -Raw)
+    }
+    $snapshotObj | ConvertTo-Json -Depth 3 | Set-Content -Path $SnapshotPath -Encoding UTF8
+    Write-Ok "Saved 'before' snapshot for profile '$ProfileDir'"
+    Write-Info "Now: reopen Chrome on that same profile, toggle the setting(s) you're chasing, fully quit Chrome again, and re-run this script."
     Write-Sep
     return
 }
 
-Write-Info "Found an existing snapshot - diffing against it..."
+Write-Info "Diffing against the 'before' snapshot..."
 Write-Sep
 
 try {
-    $before = Get-Content $SnapshotPath -Raw | ConvertFrom-Json
+    $before = $StoredSnapshot.Preferences | ConvertFrom-Json
     $after  = Get-Content $PrefsPath -Raw | ConvertFrom-Json
 }
 catch {
