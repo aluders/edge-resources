@@ -76,13 +76,13 @@
 #
 #    USAGE
 #    -----
-#        irm <url> | iex
+#        irm chrome-settings.vcc.net | iex
 #
 #    Target a specific profile without the picker:
-#        & ([ScriptBlock]::Create((irm <url>))) -ProfileDir "Profile 2"
+#        & ([ScriptBlock]::Create((irm chrome-settings.vcc.net))) -ProfileDir "Profile 2"
 #
 #    Inspect the Appearance settings page instead of applying anything:
-#        & ([ScriptBlock]::Create((irm <url>))) -DumpUITree
+#        & ([ScriptBlock]::Create((irm chrome-settings.vcc.net))) -DumpUITree
 
 [CmdletBinding()]
 param(
