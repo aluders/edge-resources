@@ -1,4 +1,4 @@
-#    Chrome Preferences Diff Helper v1.3
+#    Chrome Preferences Diff Helper v1.4
 #    =====================================
 #    Snapshots the Preferences file behind chrome://settings, then diffs it
 #    against a second snapshot to show exactly which key(s) changed - built
@@ -12,6 +12,11 @@
 #
 #    VERSION HISTORY
 #    ----------------
+#    1.4 - Added -Grep: search the CURRENT Preferences, Local State, and
+#          Secure Preferences (if present) files directly for key names
+#          containing a given word - a fast existence check with no
+#          toggle/quit/diff cycle needed. Confirmed on this profile that
+#          the home button setting isn't in Preferences at all.
 #    1.3 - Fixed a bug from 1.2: the profile-tracking rewrite wrapped the
 #          entire (large) Preferences file as an escaped JSON string inside
 #          another JSON document before saving it, which can overflow
@@ -78,14 +83,18 @@
 #
 #    Start over / clear a stale snapshot:
 #        & ([ScriptBlock]::Create((irm <url>))) -Reset
+#
+#    Search current state for a key name, no snapshot needed:
+#        & ([ScriptBlock]::Create((irm <url>))) -Grep "home"
 
 [CmdletBinding()]
 param(
     [switch]$Reset,
-    [string]$ProfileDirOverride   # skip the profile picker, e.g. "Default" or "Profile 1"
+    [string]$ProfileDirOverride,  # skip the profile picker, e.g. "Default" or "Profile 1"
+    [string]$Grep                 # search current Preferences/Local State/Secure Preferences for key names containing this text - no toggle/diff cycle needed
 )
 
-$ScriptVersion = "1.3"
+$ScriptVersion = "1.4"
 $DataDir = Join-Path $env:LOCALAPPDATA "EdgeTools\chrome-prefs-diff"
 $SnapshotMetaPath = Join-Path $DataDir "snapshot-meta.json"
 $SnapshotPrefsPath = Join-Path $DataDir "snapshot-preferences.json"
@@ -117,24 +126,14 @@ if ($Reset) {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Warn if Chrome is still running - a snapshot taken now could miss a
-#    change that hasn't been flushed to disk yet.
-# ---------------------------------------------------------------------------
-$ChromeRunning = Get-Process chrome -ErrorAction SilentlyContinue
-if ($ChromeRunning) {
-    Write-Warn2 "Chrome is still running - fully quit it first (not just close the window), then re-run this."
-    Write-Warn2 "Chrome only writes its final state to disk on a clean exit."
-    return
-}
-
-# ---------------------------------------------------------------------------
-# 2. Resolve which profile to use. If a "before" snapshot already exists,
+# 1. Resolve which profile to use. If a "before" snapshot already exists,
 #    reuse whatever profile it was taken against automatically instead of
 #    prompting again - prompting on both runs risks picking a different
 #    profile the second time and silently diffing two unrelated profiles
 #    against each other, which defeats the whole point of this being
 #    profile-scoped. -ProfileDirOverride still wins if given, but warns if
-#    it doesn't match what the snapshot was taken from.
+#    it doesn't match what the snapshot was taken from. -Grep skips the
+#    snapshot logic entirely, so it works even with no snapshot saved.
 # ---------------------------------------------------------------------------
 $UserDataDir = "$env:LOCALAPPDATA\Google\Chrome\User Data"
 $LocalStatePath = Join-Path $UserDataDir "Local State"
@@ -225,7 +224,58 @@ if (-not $HasSnapshot) {
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 3. Recursive diff - walks two parsed JSON trees and reports every leaf
+# 2. -Grep: search the CURRENT state of Preferences, Local State, and (if
+#    it still exists on this Chrome version) Secure Preferences for any key
+#    name containing the given text - no toggling, quitting, or diffing
+#    needed. Existence-only check: a key showing up here doesn't prove it's
+#    the right one, but a key that's genuinely nowhere in any of the three
+#    tells you it's not stored in a file at all (session-only, or driven by
+#    something else entirely).
+# ---------------------------------------------------------------------------
+if ($Grep) {
+    $SecurePrefsPath = Join-Path $UserDataDir "$ProfileDir\Secure Preferences"
+    $grepTargets = @(
+        [pscustomobject]@{ Name = "Preferences";        Path = $PrefsPath }
+        [pscustomobject]@{ Name = "Local State";         Path = $LocalStatePath }
+        [pscustomobject]@{ Name = "Secure Preferences";  Path = $SecurePrefsPath }
+    )
+    $pattern = '"([^"]*' + [regex]::Escape($Grep) + '[^"]*)"\s*:\s*(true|false|null|-?\d+(?:\.\d+)?|"[^"]*")'
+
+    foreach ($target in $grepTargets) {
+        if (-not (Test-Path $target.Path)) {
+            Write-Info "$($target.Name) doesn't exist on this profile - skipping"
+            continue
+        }
+        $content = Get-Content $target.Path -Raw
+        $found = [regex]::Matches($content, $pattern, "IgnoreCase") |
+            ForEach-Object { "$($_.Groups[1].Value) = $($_.Groups[2].Value)" } |
+            Sort-Object -Unique
+
+        if ($found.Count -eq 0) {
+            Write-Warn2 "No key names containing '$Grep' in $($target.Name)"
+        }
+        else {
+            Write-Ok "Matches for '$Grep' in $($target.Name):"
+            $found | ForEach-Object { Write-Host "  $_" -ForegroundColor Cyan }
+        }
+    }
+    Write-Sep
+    return
+}
+
+# ---------------------------------------------------------------------------
+# 3. Warn if Chrome is still running - a snapshot taken now could miss a
+#    change that hasn't been flushed to disk yet.
+# ---------------------------------------------------------------------------
+$ChromeRunning = Get-Process chrome -ErrorAction SilentlyContinue
+if ($ChromeRunning) {
+    Write-Warn2 "Chrome is still running - fully quit it first (not just close the window), then re-run this."
+    Write-Warn2 "Chrome only writes its final state to disk on a clean exit."
+    return
+}
+
+# ---------------------------------------------------------------------------
+# 4. Recursive diff - walks two parsed JSON trees and reports every leaf
 #    that was added, removed, or changed. Arrays are compared whole (as
 #    JSON) rather than element-by-element - Preferences arrays (extension
 #    lists, MRU lists, etc.) aren't worth diffing item-by-item here, and
@@ -276,7 +326,7 @@ function Get-PrefsDiff {
 }
 
 # ---------------------------------------------------------------------------
-# 4. First run: no snapshot yet - save this as "before" (a raw copy of
+# 5. First run: no snapshot yet - save this as "before" (a raw copy of
 #    Preferences, plus a tiny metadata file recording which profile it
 #    came from) and stop. Second run: snapshot exists - diff against it.
 # ---------------------------------------------------------------------------
