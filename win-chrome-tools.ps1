@@ -1,32 +1,111 @@
-#    Chrome Tools v1.0
+#    Chrome Tools v1.3
 #    ==========================
-#    One entry point for three Chrome admin tools, picked via -Tool (or an
-#    interactive 1/2/3 menu if it's omitted):
-#      1 / search   - Chrome Default Search Engine Repair (was chrome.vcc.net)
+#    The sole Chrome admin script - one entry point for three tools,
+#    picked via -Tool (or an interactive 1/2/3 menu if it's omitted):
+#      1 / search   - Chrome Default Search Engine Repair
 #      2 / settings - Chrome UI Defaults: bookmark bar, passkey prompts,
-#                     home button (was chrome-settings.vcc.net)
+#                     home button
 #      3 / diff     - Preferences diagnostic: find the pref/policy behind
-#                     a Settings toggle (was chrome-diff.vcc.net)
+#                     a Settings toggle
 #
-#    This is a consolidation, not a rewrite - each tool's own internals
-#    are unchanged from its standalone script. Only genuinely identical
-#    helpers (the Write-* output functions, Test-IsAdmin, Show-UITree,
-#    Wait-ForElement, Send-LiteralKeys, Invoke-UIA) are shared instead of
-#    tripled; each tool's own config and tool-specific helpers stay local
-#    to its own function so nothing leaks between tools.
+#    chrome-search-repair (win-chrome-fix.ps1), chrome-ui-defaults.ps1,
+#    and chrome-prefs-diff.ps1 are retired - this replaces all three.
+#    Nothing else gets edited or tracked separately from here on; any fix
+#    to any of the three tools lands in this one file, under this one
+#    version number.
+#
+#    Each tool's own internals are unchanged from its retired standalone
+#    script beyond that retirement. Only genuinely identical helpers (the
+#    Write-* output functions, Test-IsAdmin, Show-UITree, Wait-ForElement,
+#    Send-LiteralKeys, Invoke-UIA) are shared instead of tripled; each
+#    tool's own config and tool-specific helpers stay local to its own
+#    function so nothing leaks between tools.
 #
 #    VERSION HISTORY
 #    ----------------
-#    1.0 - Combined chrome-search-repair (win-chrome-fix.ps1 v2.6),
-#          chrome-ui-defaults.ps1 (v1.5), and chrome-prefs-diff.ps1
-#          (v1.4) into this dispatcher. Each tool's own version number
-#          and full history stays in its own header block below,
-#          unchanged - this version number tracks the dispatcher/merge
-#          itself, not any individual tool's internal logic.
-#    - One naming change that came with the merge: the diff tool's
-#      -ProfileDirOverride is now just -ProfileDir, matching the settings
-#      tool's name for the same concept - having two names for "which
-#      profile" only made sense when they were separate files.
+#    1.3 - Consolidated to one version number for the whole script. Each
+#          tool used to carry its own internal $ScriptVersion and its own
+#          VERSION HISTORY block; those are gone now - there's one number
+#          (this one) and one history (this list) for every future
+#          change, to any of the three tools. Each tool's pre-merge
+#          evolution is preserved as narrative in HOW WE GOT HERE below
+#          instead of a versioned changelog, since those old numbers
+#          don't track anything live anymore.
+#    1.2 - Finalized as the sole script - chrome-search-repair, chrome-
+#          ui-defaults.ps1, and chrome-prefs-diff.ps1 no longer exist as
+#          separate files. Point chrome.vcc.net, chrome-settings.vcc.net,
+#          and chrome-diff.vcc.net all at this file (or retire the ones
+#          you don't want to keep around).
+#    1.1 - Fixed the "Show home button" toggle lookup (settings tool) to
+#          poll for the element instead of checking once - the window's
+#          title can flip to "Settings" before the page has actually
+#          finished rendering, especially over Chrome Remote Desktop's
+#          added latency, so a single immediate check could report "not
+#          touched" even though the toggle was a moment from existing.
+#    1.0 - Combined chrome-search-repair (win-chrome-fix.ps1), chrome-ui-
+#          defaults.ps1, and chrome-prefs-diff.ps1 into this dispatcher.
+#          One naming change that came with it: the diff tool's
+#          -ProfileDirOverride is now just -ProfileDir, matching the
+#          settings tool's name for the same concept.
+#
+#    HOW WE GOT HERE
+#    ----------------
+#    Search (default search engine repair) - four approaches, in order:
+#      1. Registry policy (DefaultSearchProvider* keys) - blocked by
+#         design on unmanaged/unenrolled devices, since it's the same
+#         registry trick hijacker malware uses.
+#      2. Editing Web Data / Preferences directly - Chrome signs this
+#         value with an HMAC and reverts anything that doesn't carry a
+#         valid signature.
+#      3. UI Automation against only the classic settings layout -
+#         worked, until Chrome redesigned chrome://settings/search and
+#         moved/hid the same controls.
+#      4. UI Automation rewrite tolerant of both layouts - the approach
+#         still in use, refined over many iterations from there: multi-
+#         profile handling, inactive/dormant shortcut cleanup, duplicate
+#         Google entry cleanup, and calibration against real -DumpUITree
+#         output each time Chrome's settings UI shifted under it. The
+#         core insight that held throughout: the one thing Chrome
+#         inherently trusts is real interaction with its own UI, so
+#         driving the actual Settings page via Windows UI Automation -
+#         genuine OS-level input Chrome can't tell apart from a person
+#         clicking - sidesteps the tamper protections entirely rather
+#         than fighting them.
+#
+#    Settings (bookmark bar / passkey prompts / home button):
+#      1. HKCU registry policy (BookmarkBarEnabled, ShowHomeButton) -
+#         technically worked, but only at the whole-Windows-account
+#         level, not scoped to one Chrome profile - didn't fit the
+#         actual need.
+#      2. Rewritten to edit the profile's own Preferences file directly -
+#         worked immediately for bookmark_bar.show_on_all_tabs and (once
+#         the real key was found via the diff tool)
+#         credentials_enable_automatic_passkey_upgrades, since neither is
+#         HMAC-protected.
+#      3. show_home_button turned out to be HMAC-protected (confirmed via
+#         the diff tool's -Grep against Secure Preferences) - same
+#         protection class as default search, so a file edit wouldn't
+#         stick. Needed the same real UI Automation approach as the
+#         search tool: drive chrome://settings/appearance directly,
+#         calibrated from a real -DumpUITree dump, with a poll-based wait
+#         for the toggle since a fixed delay wasn't reliably enough
+#         (especially over Chrome Remote Desktop).
+#
+#    Diff (Preferences diagnostic):
+#      Built from the start to stop guessing at pref/policy names -
+#      snapshot Preferences before and after toggling a setting by hand,
+#      diff the two, see exactly what changed. Went through one real bug
+#      along the way: an attempt to track which profile a snapshot came
+#      from wrapped the entire (large) Preferences file as an escaped
+#      JSON string inside another JSON document, which overflowed
+#      Windows PowerShell 5.1's ~2MB built-in JSON parsing limit and
+#      corrupted the snapshot. Fixed by keeping the raw snapshot as a
+#      plain file copy and only wrapping the small profile-tracking
+#      metadata in JSON. Later gained -Grep, a fast existence check
+#      against Preferences, Local State, and Secure Preferences without
+#      needing a toggle/diff cycle - what actually surfaced that
+#      show_home_button lives in Secure Preferences and is HMAC-protected
+#      in the first place.
 #
 #    NOTES
 #    -----
@@ -40,10 +119,6 @@
 #    - -DumpUITree means something to search and settings (each opens its
 #      own settings page and prints the UI tree, nothing clicked).
 #    - -Reset and -Grep only mean something to diff.
-#    - The three original URLs (chrome.vcc.net, chrome-settings.vcc.net,
-#      chrome-diff.vcc.net) still work independently unless/until you
-#      choose to point them all at this file instead - that's a hosting
-#      decision on your end, this merge doesn't assume either way.
 #
 #    USAGE
 #    -----
@@ -71,7 +146,7 @@ param(
     [string]$Grep           # diff only
 )
 
-$ChromeToolsVersion = "1.0"
+$ChromeToolsVersion = "1.3"
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -158,22 +233,12 @@ function Show-UITree {
 # ===========================================================================
 # TOOL 1: SEARCH
 #
-#    Chrome Default Search Engine Repair Tool v2.6
-#    =================================================
+#    Chrome Default Search Engine Repair
+#    =====================================
 #    Sets Google as the default search engine and removes the others by
 #    driving Chrome's own Settings UI through Windows UI Automation - the
-#    same accessibility API screen readers use. Not file edits.
-#
-#    VERSION HISTORY
-#    ----------------
-#    2.6 - Removal loop now cleans up duplicate Google entries instead of protecting all of them
-#    2.5 - Fixed a false-negative on longer search engine lists; cleaner Add-dialog backout
-#    2.4 - Handles multi-profile machines (lists profiles, launches the chosen one)
-#    2.3 - Also removes inactive/dormant shortcuts (same Delete menu as the active list)
-#    2.2 - Dump specifically tests an inactive row's menu contents
-#    2.1 - Dump also reveals inactive shortcuts if present
-#    2.0 - UI Automation rewrite; supports both old and new Chrome settings layouts
-#    1.x - Registry policy, then file edits, then UI Automation (classic layout only) - see "HOW WE GOT HERE" below
+#    same accessibility API screen readers use. Not file edits. See HOW
+#    WE GOT HERE at the top of this file for why.
 #
 #    NOTES
 #    -----
@@ -191,38 +256,12 @@ function Show-UITree {
 #      that points to an active hijacker (extension or background program)
 #      re-asserting itself, not a one-time corrupted setting - worth checking
 #      chrome://extensions and installed programs/Task Scheduler at that point.
-#
-#    HOW WE GOT HERE (v1.x, abandoned)
-#    ----------------------------------
-#    Three earlier approaches were tried and abandoned before landing on
-#    this one:
-#    1. Registry policy (DefaultSearchProvider* keys) - Chrome only honors
-#       this on AD/Entra-joined or Chrome Enterprise Core-enrolled devices.
-#       Blocked by design everywhere else, since it's the same registry
-#       trick hijacker malware uses.
-#    2. Editing Web Data / Preferences directly - Chrome signs sensitive
-#       settings (like the default search engine) with an HMAC and reverts
-#       anything that doesn't carry a valid signature. External file edits
-#       can't produce a valid one without reverse-engineering Chrome's
-#       internal seed - not worth building, since that's genuinely what
-#       hijacker-cleanup malware does.
-#    3. UI Automation against only the classic settings layout - worked,
-#       until Chrome shipped a redesign of chrome://settings/search mid-
-#       development that moved and partially hid the same controls.
-#
-#    The one thing Chrome inherently trusts is real interaction with its
-#    own UI, so the current approach drives the actual Settings page via
-#    Windows UI Automation - genuine OS-level input Chrome can't tell apart
-#    from a person clicking - which sidesteps the tamper protections above
-#    entirely rather than fighting them.
 # ===========================================================================
 function Invoke-SearchFix {
     param([switch]$DumpUITree)
 
-    $ScriptVersion = "2.6"
-
     Write-Sep
-    Write-Host "Chrome Default Search Repair  v$ScriptVersion" -ForegroundColor White
+    Write-Host "Chrome Default Search Repair" -ForegroundColor White
     Write-Sep
 
     # 1. Elevation check. Unlike the old file-editing versions, this one
@@ -952,30 +991,15 @@ function Invoke-SearchFix {
 # ===========================================================================
 # TOOL 2: SETTINGS
 #
-#    Chrome UI Defaults v1.5
-#    ==========================
+#    Chrome UI Defaults
+#    ====================
 #    Sets Chrome UI preferences for a specific profile. Two mechanisms:
 #      - Plain settings (bookmark bar, passkey upgrades): edited directly
 #        in the profile's Preferences file.
 #      - HMAC-protected settings (show_home_button): a file edit won't
 #        stick - Chrome detects the mismatched protection.macs hash and
-#        reverts it. Set via real UI Automation instead.
-#
-#    VERSION HISTORY
-#    ----------------
-#    1.5 - Removed the Preferences backup step.
-#    1.4 - show_home_button now actually gets set, via UI Automation on
-#          chrome://settings/appearance - confirmed via -DumpUITree that
-#          it's a Button named "Show home button" (every toggle on that
-#          page shares AutomationId "control", so matching is by Name).
-#          Checks current TogglePattern state first and only clicks if it
-#          doesn't match.
-#    1.3 - UI Automation groundwork added for HMAC-protected settings.
-#    1.2 - Added credentials_enable_automatic_passkey_upgrades = false
-#          (best guess, not yet confirmed to actually stop the prompt)
-#    1.1 - Rewrite: profile-scoped Preferences file edit instead of HKCU
-#          registry policy.
-#    1.0 - Initial version (registry-based)
+#        reverts it. Set via real UI Automation instead. See HOW WE GOT
+#        HERE at the top of this file for how that was figured out.
 #
 #    NOTES
 #    -----
@@ -1002,8 +1026,6 @@ function Invoke-Settings {
         [string]$ProfileDir,
         [switch]$DumpUITree
     )
-
-    $ScriptVersion = "1.5"
 
     # --- CONFIG: dotted Preferences path -> desired value (plain, unprotected settings only) ---
     $Settings = [ordered]@{
@@ -1134,7 +1156,7 @@ function Invoke-Settings {
     }
 
     Write-Sep
-    Write-Host "Chrome UI Defaults  v$ScriptVersion" -ForegroundColor White
+    Write-Host "Chrome UI Defaults" -ForegroundColor White
     Write-Sep
 
     # 1. Resolve the profile.
@@ -1269,11 +1291,18 @@ function Invoke-Settings {
         Write-Warn2 "Couldn't open the Appearance settings page - show_home_button was not touched."
     }
     else {
+        # Poll rather than check once - the window's title can flip to
+        # "Settings" as soon as navigation starts, before the Polymer page
+        # content has actually finished rendering (worse over Chrome
+        # Remote Desktop's extra latency), so a single immediate FindAll
+        # can miss the toggle even though it shows up a moment later.
         $btnCond = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::Button)
-        $homeButtonToggle = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
-            Where-Object { $_.Current.Name -eq "Show home button" } | Select-Object -First 1
+        $homeButtonToggle = Wait-ForElement -TimeoutMs 8000 -Finder {
+            $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+                Where-Object { $_.Current.Name -eq "Show home button" } | Select-Object -First 1
+        }
 
         if (-not $homeButtonToggle) {
             Write-Err2 "Couldn't find the 'Show home button' toggle on the page - not touched. Run with -DumpUITree to see what changed."
@@ -1333,24 +1362,13 @@ function Invoke-Settings {
 # ===========================================================================
 # TOOL 3: DIFF
 #
-#    Chrome Preferences Diff Helper v1.4
-#    =====================================
+#    Chrome Preferences Diff Helper
+#    =================================
 #    Snapshots the Preferences file behind chrome://settings, then diffs it
 #    against a second snapshot to show exactly which key(s) changed. Toggle
 #    more than one setting between snapshots and the diff will show all of
-#    them at once - no need to run this once per setting.
-#
-#    VERSION HISTORY
-#    ----------------
-#    1.4 - Added -Grep: search the CURRENT Preferences, Local State, and
-#          Secure Preferences (if present) files directly for key names
-#          containing a given word.
-#    1.3 - Fixed a bug from 1.2 (JSON size-limit corruption in the
-#          snapshot) - raw snapshot is a plain file copy again.
-#    1.2 - Snapshot now records which profile it was taken against and
-#          reuses it automatically on the diff run.
-#    1.1 - Snapshot moved to %LOCALAPPDATA%\EdgeTools\chrome-prefs-diff\
-#    1.0 - Initial version
+#    them at once - no need to run this once per setting. See HOW WE GOT
+#    HERE at the top of this file for the bug this went through.
 #
 #    NOTES
 #    -----
@@ -1379,7 +1397,6 @@ function Invoke-Diff {
     $RequestedProfileDir = $ProfileDir
     $ProfileDir = $null
 
-    $ScriptVersion = "1.4"
     $DataDir = Join-Path $env:LOCALAPPDATA "EdgeTools\chrome-prefs-diff"
     $SnapshotMetaPath = Join-Path $DataDir "snapshot-meta.json"
     $SnapshotPrefsPath = Join-Path $DataDir "snapshot-preferences.json"
@@ -1439,7 +1456,7 @@ function Invoke-Diff {
     }
 
     Write-Sep
-    Write-Host "Chrome Preferences Diff Helper  v$ScriptVersion" -ForegroundColor White
+    Write-Host "Chrome Preferences Diff Helper" -ForegroundColor White
     Write-Sep
 
     if ($Reset) {
