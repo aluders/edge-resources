@@ -1,4 +1,4 @@
-#    Chrome UI Defaults v1.4
+#    Chrome UI Defaults v1.5
 #    ==========================
 #    Sets Chrome UI preferences for a specific profile (chosen via the same
 #    profile picker as chrome-prefs-diff.ps1). Two mechanisms, depending on
@@ -13,6 +13,9 @@
 #
 #    VERSION HISTORY
 #    ----------------
+#    1.5 - Removed the Preferences backup step - no longer copies the file
+#          to %LOCALAPPDATA%\EdgeTools\chrome-ui-defaults\backups\ before
+#          writing.
 #    1.4 - show_home_button now actually gets set, via UI Automation on
 #          chrome://settings/appearance - confirmed via -DumpUITree that
 #          it's a Button named "Show home button" (every toggle on that
@@ -41,9 +44,6 @@
 #    - Chrome must be fully closed before editing Preferences - this
 #      script closes it automatically if running. Reopening afterward to
 #      confirm is left to you.
-#    - Backs up the untouched Preferences file to
-#      %LOCALAPPDATA%\EdgeTools\chrome-ui-defaults\backups\ before writing
-#      anything, timestamped, so a bad value can be rolled back by hand.
 #    - Idempotent - safe to run repeatedly. File-based settings only write
 #      if they differ from the current value; show_home_button checks its
 #      TogglePattern state first and only clicks if it's not already
@@ -90,8 +90,7 @@ param(
     [switch]$DumpUITree   # inspect chrome://settings/appearance's UI tree instead of applying anything
 )
 
-$ScriptVersion = "1.4"
-$BackupDir = Join-Path $env:LOCALAPPDATA "EdgeTools\chrome-ui-defaults\backups"
+$ScriptVersion = "1.5"
 
 # --- CONFIG: dotted Preferences path -> desired value (plain, unprotected settings only) ---
 $Settings = [ordered]@{
@@ -374,17 +373,9 @@ if ($ChromeProcs) {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Back up the untouched file, then apply each plain (unprotected)
-#    setting - only writing values that actually need it.
+# 5. Apply each plain (unprotected) setting - only writing values that
+#    actually need it.
 # ---------------------------------------------------------------------------
-if (-not (Test-Path $BackupDir)) {
-    New-Item -Path $BackupDir -ItemType Directory -Force | Out-Null
-}
-$backupName = "Preferences-$ProfileDir-$(Get-Date -Format 'yyyyMMdd-HHmmss').json" -replace '[\\/:*?"<>|]', '_'
-$backupPath = Join-Path $BackupDir $backupName
-Copy-Item $PrefsPath $backupPath -Force
-Write-Ok "Backed up current Preferences to $backupPath"
-
 try {
     $prefs = Get-Content $PrefsPath -Raw | ConvertFrom-Json
 }
