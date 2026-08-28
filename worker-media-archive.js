@@ -1,5 +1,5 @@
 /********************************************************************
-  Church Media Archive Worker v1.2
+  Church Media Archive Worker v1.3
   --------------------------------------------------
   Secrets required:
     OA_CLIENT_ID
@@ -14,6 +14,22 @@
              raw counts, titles, and parsed services
   --------------------------------------------------
   CHANGELOG
+  v1.3 — 2026-08-28
+    - Added Content-Language: en response header to definitively
+      prevent Chrome from prompting translation (lang attribute alone
+      was insufficient)
+    - Added version comment to HTML output for view-source confirmation
+
+  v1.2 — 2026-06-15
+    - Added lang="en" to <html> tag to prevent Chrome from
+      misidentifying the page language and prompting translation
+
+  v1.1 — 2026-06-15
+    - Cards with a title suffix (e.g. "Recital") no longer inherit
+      Drive sermon/audio files from the same date, preventing
+      cross-contamination when two streams share a date
+    - DEVELOPER_MODE changed from "ON"/"OFF" string to true/false boolean
+
   v1.0 — Initial release
     - OAuth 2.0 for YouTube and Google Drive
     - Year selector with card grid
@@ -23,16 +39,6 @@
     - DEVELOPER_MODE ?refresh cache bypass (used "ON"/"OFF" string)
     - Optional suffix parsing from video titles (e.g. "- Recital")
     - CARD_TITLE_PREFIX for verbatim card title control
-
-  v1.1 — 2026-06-15
-    - Cards with a title suffix (e.g. "Recital") no longer inherit
-      Drive sermon/audio files from the same date, preventing
-      cross-contamination when two streams share a date
-    - DEVELOPER_MODE changed from "ON"/"OFF" string to true/false boolean
-
-  v1.2 — 2026-06-15
-    - Added lang="en" to <html> tag to prevent Chrome from
-      misidentifying the page language and prompting translation
 ********************************************************************/
 
 // ============================================================
@@ -46,7 +52,7 @@ const UPLOADS_PLAYLIST_ID = "UU" + CHANNEL_ID.slice(2);
 // ============================================================
 const PAGE_TITLE        = "Covenant Media";
 const FAVICON_URL       = "https://covenantpaso.pages.dev/cpc-favicon.webp";
-const CARD_TITLE_PREFIX = "";  // Used verbatim before the date — include any spacing/punctuation you want
+const CARD_TITLE_PREFIX = "Covenant - ";  // Used verbatim before the date — include any spacing/punctuation you want
 
 // ============================================================
 //  FEATURE TOGGLES
@@ -342,6 +348,7 @@ export default {
       // ============================================================
       let html = `
 <!DOCTYPE html>
+<!-- Church Media Archive Worker v1.3 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -562,7 +569,10 @@ window.addEventListener("resize", updateThumbnails);
 </body></html>`;
 
       const response = new Response(html, {
-        headers: { "content-type": "text/html; charset=utf-8" }
+        headers: {
+          "content-type":    "text/html; charset=utf-8",
+          "Content-Language": "en"
+        }
       });
 
       await cache.put(cacheReq, response.clone(), { expirationTtl: CACHE_TTL });
