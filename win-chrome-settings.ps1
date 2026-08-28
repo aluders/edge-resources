@@ -1,4 +1,4 @@
-#    Chrome UI Defaults v1.3
+#    Chrome UI Defaults v1.4
 #    ==========================
 #    Sets Chrome UI preferences for a specific profile (chosen via the same
 #    profile picker as chrome-prefs-diff.ps1). Two mechanisms, depending on
@@ -8,11 +8,19 @@
 #      - HMAC-protected settings (show_home_button, and by extension
 #        homepage / homepage_is_newtabpage): a file edit won't stick -
 #        Chrome detects the mismatched protection.macs hash and reverts
-#        it. These need real UI Automation instead, same approach as the
+#        it. Set via real UI Automation instead, same approach as the
 #        search-fix script (chrome.vcc.net) used for default search.
 #
 #    VERSION HISTORY
 #    ----------------
+#    1.4 - show_home_button now actually gets set, via UI Automation on
+#          chrome://settings/appearance - confirmed via -DumpUITree that
+#          it's a Button named "Show home button" (every toggle on that
+#          page shares AutomationId "control", so matching is by Name).
+#          Checks current TogglePattern state first and only clicks if it
+#          doesn't match, same idempotence as the file-based settings.
+#          Launch/navigate logic factored into Open-AppearanceSettings so
+#          -DumpUITree and the real toggle share the same code path.
 #    1.3 - UI Automation groundwork added for HMAC-protected settings.
 #          -DumpUITree launches Chrome into the target profile, opens
 #          chrome://settings/appearance, and prints the UI tree - nothing
@@ -36,8 +44,12 @@
 #    - Backs up the untouched Preferences file to
 #      %LOCALAPPDATA%\EdgeTools\chrome-ui-defaults\backups\ before writing
 #      anything, timestamped, so a bad value can be rolled back by hand.
-#    - Idempotent - safe to run repeatedly; only writes if something in
-#      $Settings actually differs from the file's current value.
+#    - Idempotent - safe to run repeatedly. File-based settings only write
+#      if they differ from the current value; show_home_button checks its
+#      TogglePattern state first and only clicks if it's not already
+#      correct - UNLESS the element doesn't expose TogglePattern at all,
+#      in which case it clicks unconditionally and says so loudly, since
+#      state can't be verified first in that case.
 #    - bookmark_bar.show_on_all_tabs and
 #      credentials_enable_automatic_passkey_upgrades aren't nested under
 #      protection.macs in Secure Preferences - confirmed via
@@ -48,18 +60,19 @@
 #      prompt itself. Worth an on-screen check after a real run.
 #    - show_home_button (and homepage / homepage_is_newtabpage) ARE
 #      HMAC-protected - protection.macs entries for all three confirmed
-#      via chrome-prefs-diff.ps1 -Grep "home". A direct file edit will be
-#      silently reverted by Chrome. UI Automation is the only mechanism
-#      this script uses for HMAC-protected settings.
+#      via chrome-prefs-diff.ps1 -Grep "home". Only the toggle itself is
+#      clicked - turning it on reveals a "New Tab page vs custom URL"
+#      sub-choice in the real UI, which this script deliberately doesn't
+#      touch. It was asked to make the button show up, not decide what it
+#      opens; Chrome's own default for that sub-choice is left as-is.
 #    - Run this from a normal PowerShell window, NOT "Run as
 #      Administrator" - elevation blocks UI Automation's synthetic input
 #      (UIPI stops a higher-integrity process from sending input to a
 #      lower one), same restriction as the search-fix script.
-#    - -DumpUITree closes Chrome if running, relaunches it directly into
-#      the target profile (--profile-directory), opens
-#      chrome://settings/appearance, and dumps everything the automation
-#      can see. It does not touch $Settings or the Preferences file at
-#      all, and doesn't close Chrome afterward - left open to look at.
+#    - -DumpUITree opens the same Appearance settings page as the real
+#      toggle step, but only prints the UI tree - $Settings, the
+#      Preferences file, and show_home_button are all left untouched, and
+#      Chrome is left open afterward instead of being closed.
 #
 #    USAGE
 #    -----
@@ -74,17 +87,20 @@
 [CmdletBinding()]
 param(
     [string]$ProfileDir,
-    [switch]$DumpUITree   # inspect chrome://settings/appearance's UI tree instead of applying anything - for calibrating the home-button toggle logic
+    [switch]$DumpUITree   # inspect chrome://settings/appearance's UI tree instead of applying anything
 )
 
-$ScriptVersion = "1.3"
+$ScriptVersion = "1.4"
 $BackupDir = Join-Path $env:LOCALAPPDATA "EdgeTools\chrome-ui-defaults\backups"
 
-# --- CONFIG: dotted Preferences path -> desired value (plain, unprotected settings only - HMAC-protected settings are handled separately, see NOTES) ---
+# --- CONFIG: dotted Preferences path -> desired value (plain, unprotected settings only) ---
 $Settings = [ordered]@{
     "bookmark_bar.show_on_all_tabs"                  = $true
     "credentials_enable_automatic_passkey_upgrades"  = $false
 }
+
+# --- CONFIG: HMAC-protected settings, applied via UI Automation instead of a file edit ---
+$ShowHomeButtonDesired = $true
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -135,8 +151,6 @@ function Set-PrefValue {
 
 # Prints every element the automation can see under $Element, without
 # clicking anything - same shape as the search-fix script's dump mode.
-# Interactive controls print even with no Name/AutomationId, since an
-# icon-only toggle is still actionable despite lacking a label.
 function Show-UITree {
     param($Element, $Depth = 0, $MaxDepth = 40)
     if ($Depth -gt $MaxDepth) { return }
@@ -163,6 +177,94 @@ function Show-UITree {
         Show-UITree -Element $child -Depth ($Depth + 1) -MaxDepth $MaxDepth
         try { $child = $walker.GetNextSibling($child) } catch { break }
     }
+}
+
+# Closes Chrome if running, relaunches it directly into $ProfileDir, and
+# navigates to chrome://settings/appearance. Returns the window's root
+# AutomationElement, or $null if any step failed (with its own error
+# already printed). Shared by -DumpUITree and the real toggle step so
+# there's one launch/navigate implementation, not two.
+function Open-AppearanceSettings {
+    param([string]$ProfileDir)
+
+    $ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
+    if ($ChromeProcs) {
+        Write-Info "Closing Chrome so it can be relaunched on profile '$ProfileDir'..."
+        $ChromeProcs | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+        $waited = 0
+        while ((Get-Process -Name "chrome" -ErrorAction SilentlyContinue) -and $waited -lt 8) {
+            Start-Sleep -Milliseconds 500
+            $waited += 0.5
+        }
+        Get-Process -Name "chrome" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+
+    $chromeExe = @(
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if (-not $chromeExe) {
+        Write-Err2 "Couldn't find chrome.exe in any of the usual install locations - stopping"
+        return $null
+    }
+
+    Write-Info "Launching Chrome on profile '$ProfileDir'..."
+    Start-Process -FilePath $chromeExe -ArgumentList "--profile-directory=`"$ProfileDir`""
+
+    $ChromeWindow = $null
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt 20 -and -not $ChromeWindow) {
+        Start-Sleep -Milliseconds 500
+        $ChromeWindow = Get-Process chrome -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    }
+
+    if (-not $ChromeWindow) {
+        Write-Err2 "Chrome's window never appeared - stopping"
+        return $null
+    }
+
+    Start-Sleep -Seconds 2
+    $RootElement = [System.Windows.Automation.AutomationElement]::FromHandle($ChromeWindow.MainWindowHandle)
+    Write-Ok "Chrome window found - typing the settings URL into the address bar..."
+
+    $editCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit)
+    $omnibox = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCond) |
+        Where-Object { $_.Current.Name -match "Address and search bar|Address bar" } | Select-Object -First 1
+
+    if (-not $omnibox) {
+        Write-Err2 "Couldn't find the address bar - stopping."
+        return $null
+    }
+
+    $omnibox.SetFocus()
+    Start-Sleep -Milliseconds 400
+    [System.Windows.Forms.SendKeys]::SendWait("^a")
+    Start-Sleep -Milliseconds 200
+    [System.Windows.Forms.SendKeys]::SendWait("chrome://settings/appearance")
+    Start-Sleep -Milliseconds 300
+    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $onSettingsPage = $false
+    while ($sw.Elapsed.TotalSeconds -lt 15 -and -not $onSettingsPage) {
+        Start-Sleep -Milliseconds 500
+        $refreshed = Get-Process -Id $ChromeWindow.Id -ErrorAction SilentlyContinue
+        if ($refreshed -and $refreshed.MainWindowTitle -match "Settings") { $onSettingsPage = $true }
+    }
+
+    if (-not $onSettingsPage) {
+        Write-Err2 "Typing the URL didn't land on the settings page - stopping."
+        return $null
+    }
+
+    Start-Sleep -Seconds 1
+    Write-Ok "On the Appearance settings page"
+    return [System.Windows.Automation.AutomationElement]::FromHandle($ChromeWindow.MainWindowHandle)
 }
 
 Write-Sep
@@ -228,106 +330,34 @@ Write-Ok "Using profile '$ProfileDir'"
 Write-Sep
 
 # ---------------------------------------------------------------------------
-# 2. -DumpUITree: launch Chrome into this exact profile, open the
-#    Appearance settings page, and dump its UI tree - a completely
-#    separate, read-only path that returns before touching $Settings or
-#    the Preferences file at all.
+# 2. Elevation check - UI Automation (used by both -DumpUITree and the
+#    real show_home_button step below) can't send synthetic input from an
+#    elevated process to Chrome's non-elevated window (UIPI).
+# ---------------------------------------------------------------------------
+if (Test-IsAdmin) {
+    Write-Warn2 "Running elevated - this can block UI Automation from working at all (UIPI). Re-run from a normal PowerShell window if things don't work below."
+}
+
+# ---------------------------------------------------------------------------
+# 3. -DumpUITree: open the Appearance settings page and print its UI tree -
+#    a completely separate, read-only path that returns before touching
+#    $Settings, show_home_button, or the Preferences file at all.
 # ---------------------------------------------------------------------------
 if ($DumpUITree) {
-    if (Test-IsAdmin) {
-        Write-Warn2 "Running elevated - this can block UI Automation from working at all (UIPI). Re-run from a normal PowerShell window if the dump comes back empty."
-    }
+    $RootElement = Open-AppearanceSettings -ProfileDir $ProfileDir
+    if (-not $RootElement) { return }
 
-    $ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
-    if ($ChromeProcs) {
-        Write-Info "Closing Chrome so it can be relaunched on profile '$ProfileDir'..."
-        $ChromeProcs | ForEach-Object { $_.CloseMainWindow() | Out-Null }
-        $waited = 0
-        while ((Get-Process -Name "chrome" -ErrorAction SilentlyContinue) -and $waited -lt 8) {
-            Start-Sleep -Milliseconds 500
-            $waited += 0.5
-        }
-        Get-Process -Name "chrome" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    }
-
-    $chromeExe = @(
-        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
-        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
-    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    if (-not $chromeExe) {
-        Write-Err2 "Couldn't find chrome.exe in any of the usual install locations - stopping"
-        return
-    }
-
-    Write-Info "Launching Chrome on profile '$ProfileDir'..."
-    Start-Process -FilePath $chromeExe -ArgumentList "--profile-directory=`"$ProfileDir`""
-
-    $ChromeWindow = $null
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    while ($sw.Elapsed.TotalSeconds -lt 20 -and -not $ChromeWindow) {
-        Start-Sleep -Milliseconds 500
-        $ChromeWindow = Get-Process chrome -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    }
-
-    if (-not $ChromeWindow) {
-        Write-Err2 "Chrome's window never appeared - stopping"
-        return
-    }
-
-    Start-Sleep -Seconds 2
-    $RootElement = [System.Windows.Automation.AutomationElement]::FromHandle($ChromeWindow.MainWindowHandle)
-    Write-Ok "Chrome window found - typing the settings URL into the address bar..."
-
-    $editCond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Edit)
-    $omnibox = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCond) |
-        Where-Object { $_.Current.Name -match "Address and search bar|Address bar" } | Select-Object -First 1
-
-    if (-not $omnibox) {
-        Write-Err2 "Couldn't find the address bar - stopping. Run again if this was a one-off timing issue."
-        return
-    }
-
-    $omnibox.SetFocus()
-    Start-Sleep -Milliseconds 400
-    [System.Windows.Forms.SendKeys]::SendWait("^a")
-    Start-Sleep -Milliseconds 200
-    [System.Windows.Forms.SendKeys]::SendWait("chrome://settings/appearance")
-    Start-Sleep -Milliseconds 300
-    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
-
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    $onSettingsPage = $false
-    while ($sw.Elapsed.TotalSeconds -lt 15 -and -not $onSettingsPage) {
-        Start-Sleep -Milliseconds 500
-        $refreshed = Get-Process -Id $ChromeWindow.Id -ErrorAction SilentlyContinue
-        if ($refreshed -and $refreshed.MainWindowTitle -match "Settings") { $onSettingsPage = $true }
-    }
-
-    if (-not $onSettingsPage) {
-        Write-Err2 "Typing the URL didn't land on the settings page - stopping. Run with -DumpUITree again to retry."
-        return
-    }
-
-    Start-Sleep -Seconds 1
-    $RootElement = [System.Windows.Automation.AutomationElement]::FromHandle($ChromeWindow.MainWindowHandle)
-    Write-Ok "On the Appearance settings page"
     Write-Sep
-
     Write-Info "Dumping the page's UI tree (nothing will be clicked)..."
     Write-Sep
     Show-UITree -Element $RootElement
     Write-Sep
-    Write-Ok "Dump complete. Share this output back so the home-button toggle logic can be built against it."
+    Write-Ok "Dump complete."
     return
 }
 
 # ---------------------------------------------------------------------------
-# 3. Chrome has to be fully closed before the Preferences file is safe to
+# 4. Chrome has to be fully closed before the Preferences file is safe to
 #    edit - otherwise Chrome overwrites this on its own next flush.
 # ---------------------------------------------------------------------------
 $ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
@@ -344,10 +374,8 @@ if ($ChromeProcs) {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Back up the untouched file, then apply each plain (unprotected)
-#    setting - only writing values that actually need it. HMAC-protected
-#    settings like show_home_button aren't in $Settings and aren't
-#    touched here - see -DumpUITree above.
+# 5. Back up the untouched file, then apply each plain (unprotected)
+#    setting - only writing values that actually need it.
 # ---------------------------------------------------------------------------
 if (-not (Test-Path $BackupDir)) {
     New-Item -Path $BackupDir -ItemType Directory -Force | Out-Null
@@ -380,8 +408,6 @@ foreach ($path in $Settings.Keys) {
     }
 }
 
-Write-Sep
-
 if ($changed -gt 0) {
     # Explicit no-BOM UTF8 write - Set-Content -Encoding UTF8 adds a BOM on
     # Windows PowerShell 5.1, which the original file doesn't have and
@@ -391,9 +417,81 @@ if ($changed -gt 0) {
     Write-Ok "Wrote $changed change(s) to Preferences"
 }
 else {
-    Write-Info "Nothing to change - all settings already applied"
+    Write-Info "Nothing to change in Preferences - all file-based settings already applied"
 }
 
 Write-Sep
-Write-Ok "Done. Reopen Chrome on profile '$ProfileDir' to confirm. (show_home_button still needs -DumpUITree calibration before it's included here.)"
+
+# ---------------------------------------------------------------------------
+# 6. show_home_button is HMAC-protected, so it's set via real UI
+#    interaction instead. Only the toggle itself is clicked - see NOTES
+#    for why the New Tab page / custom URL sub-choice is left alone.
+# ---------------------------------------------------------------------------
+$RootElement = Open-AppearanceSettings -ProfileDir $ProfileDir
+
+if (-not $RootElement) {
+    Write-Warn2 "Couldn't open the Appearance settings page - show_home_button was not touched."
+}
+else {
+    $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Button)
+    $homeButtonToggle = $RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond) |
+        Where-Object { $_.Current.Name -eq "Show home button" } | Select-Object -First 1
+
+    if (-not $homeButtonToggle) {
+        Write-Err2 "Couldn't find the 'Show home button' toggle on the page - not touched. Run with -DumpUITree to see what changed."
+    }
+    else {
+        $togglePattern = $null
+        $hasToggle = $homeButtonToggle.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$togglePattern)
+
+        if ($hasToggle) {
+            $currentlyOn = $togglePattern.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On
+            if ($currentlyOn -eq $ShowHomeButtonDesired) {
+                Write-Ok "show_home_button already $ShowHomeButtonDesired"
+            }
+            else {
+                $togglePattern.Toggle()
+                Start-Sleep -Milliseconds 300
+                Write-Ok "Toggled show_home_button to $ShowHomeButtonDesired"
+            }
+        }
+        else {
+            Write-Warn2 "This toggle doesn't expose a Toggle state - can't check before clicking, so this click isn't idempotent. Clicking it unconditionally; verify the result manually."
+            $homeButtonToggle.SetFocus()
+            Start-Sleep -Milliseconds 200
+            $invokePattern = $null
+            if ($homeButtonToggle.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern)) {
+                $invokePattern.Invoke()
+                Write-Ok "Clicked show_home_button (state not verified)"
+            }
+            else {
+                Write-Err2 "No Toggle or Invoke pattern available on this element - can't interact with it safely. Skipped."
+            }
+        }
+    }
+}
+
+Write-Sep
+
+# ---------------------------------------------------------------------------
+# 7. Close Chrome so the result is easy to verify, same as the search-fix
+#    script.
+# ---------------------------------------------------------------------------
+$ChromeProcs = Get-Process -Name "chrome" -ErrorAction SilentlyContinue
+if ($ChromeProcs) {
+    Write-Info "Closing Chrome so you can relaunch and confirm everything..."
+    $ChromeProcs | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+    $waited = 0
+    while ((Get-Process -Name "chrome" -ErrorAction SilentlyContinue) -and $waited -lt 8) {
+        Start-Sleep -Milliseconds 500
+        $waited += 0.5
+    }
+    Get-Process -Name "chrome" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Write-Ok "Chrome closed"
+}
+
+Write-Sep
+Write-Ok "Done. Reopen Chrome on profile '$ProfileDir' to confirm."
 Write-Sep
