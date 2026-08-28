@@ -1,5 +1,5 @@
 /********************************************************************
-  Church Media Archive Worker v1.4
+  Church Media Archive Worker v1.5
   --------------------------------------------------
   Secrets required:
     OA_CLIENT_ID
@@ -14,6 +14,10 @@
              raw counts, titles, and parsed services
   --------------------------------------------------
   CHANGELOG
+  v1.5 — 2026-08-28
+    - Added <meta name="google" content="notranslate"> — Google's
+      documented method to suppress Chrome's translation prompt
+
   v1.4 — 2026-08-28
     - Added translate="no" to <html> tag to explicitly suppress
       Chrome's translation prompt
@@ -354,11 +358,12 @@ export default {
       // ============================================================
       let html = `
 <!DOCTYPE html>
-<!-- Church Media Archive Worker v1.4 -->
+<!-- Church Media Archive Worker v1.5 -->
 <html lang="en" translate="no">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Language" content="en">
+<meta name="google" content="notranslate">
 <link rel="icon" type="image/webp" href="${FAVICON_URL}">
 <title>${PAGE_TITLE}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
