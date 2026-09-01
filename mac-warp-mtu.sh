@@ -5,10 +5,34 @@
 # Simple on/off helper for Cloudflare WARP on macOS
 # with IPv6 verification + automatic MTU handling.
 #
-# Version:       1.3.0
+# Version:       1.3.1
 # Last Updated:  2026-09-01
 #
+# MTU notes:
+#   Cloudflare WARP can sit on top of your real Wi-Fi interface. If that
+#   interface's MTU is already reduced (common after previous VPN/WARP
+#   sessions), packets inside the tunnel can fragment or drop, and IPv6
+#   verification via dig often fails.
+#
+#   PHYSICAL_MTU (1500) is the normal Ethernet/Wi-Fi frame size we want
+#   on the physical adapter while WARP is running. The script does NOT
+#   change the WARP tunnel MTU; it only adjusts the Wi-Fi NIC.
+#
+#   On "on":
+#     - Detect the Wi-Fi interface (en0/en1/etc.).
+#     - Read its current MTU from ifconfig.
+#     - If it is not 1500, save the old value to /tmp/wifi_mtu_backup
+#       and set the interface to 1500.
+#     - If it is already 1500, delete any leftover backup file.
+#
+#   On "off":
+#     - If /tmp/wifi_mtu_backup exists, restore that saved MTU and
+#       delete the backup file.
+#     - If no backup exists, the Wi-Fi MTU is left as-is (already 1500
+#       or never changed by this script).
+#
 # Changelog:
+#   1.3.1  - Documented MTU backup/restore behavior in the header.
 #   1.3.0  - On "on": launch the Cloudflare WARP app so the menu-bar icon
 #            is visible while connected. On "off": quit the app after
 #            disconnect + MTU restore so the icon disappears.
@@ -18,8 +42,10 @@
 #   1.0.0  - Initial version (connect/disconnect + MTU backup/restore).
 #
 # Usage:
-#   ./warp.sh on      # Open WARP app, connect, verify IPv6
-#   ./warp.sh off     # Disconnect, restore MTU, close WARP app
+#   ./warp.sh on      # Open WARP app, set Wi-Fi MTU to 1500 if needed,
+#                     # connect, verify IPv6
+#   ./warp.sh off     # Disconnect, restore previous Wi-Fi MTU if we
+#                     # changed it, close WARP app
 #   ./warp.sh status  # Show current WARP status
 # =============================================================================
 
