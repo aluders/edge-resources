@@ -1,13 +1,43 @@
 #!/usr/bin/env bash
+# =============================================================================
+# Cloudflare Quick File Share
+# =============================================================================
+#
+# Description:
+#   Instantly share a local directory over the internet via a Cloudflare Tunnel.
+#   Starts a temporary Python HTTP server (with dotfiles hidden) and exposes it
+#   publicly through cloudflared. The public HTTPS URL is copied to the clipboard.
+#
+# Last Updated:    2026-08-31
+# Version:         1.1.0
+#
+# Platform:        macOS only
+# Dependencies:    cloudflared, python3, Homebrew
+#
+# Changelog:
+#   1.1.0  - Improved header documentation and versioning
+#          - Cleaner structure and comments
+#   1.0.0  - Initial release
+#            • Auto-selects Cloudflare-compatible non-privileged ports
+#            • Hides dotfiles from directory listings
+#            • Copies public URL to clipboard
+#            • Clean single-key quit (q / Ctrl+C)
+#
+# Usage:
+#   ./cfshare.sh                  # prompts for directory (default: cwd)
+#   ./cfshare.sh --help
+#
+# Prerequisites (one-time):
+#   brew install cloudflared python
+#   cloudflared tunnel login
+#
+# =============================================================================
+
 set -euo pipefail
 
-# ================================
-# Cloudflare + Python File Share
-# ================================
-
-# ================================
+# =============================================================================
 # HELP
-# ================================
+# =============================================================================
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
@@ -67,14 +97,13 @@ ALLOWED_PORTS=(
 
 TMP_CF_LOG="/tmp/cfshare-cloudflared.log"
 TMP_PY_LOG="/tmp/cfshare-python.log"
-
 PY_PID=""
 CF_PID=""
 _CLEANUP_DONE=0
 
-# ================================
+# =============================================================================
 # CLEANUP (runs exactly once)
-# ================================
+# =============================================================================
 cleanup() {
   [[ $_CLEANUP_DONE -eq 1 ]] && return
   _CLEANUP_DONE=1
@@ -92,14 +121,13 @@ trap 'cleanup; exit 130' INT TERM
 trap 'cleanup' EXIT
 
 echo
-echo "🌐 Cloudflare Quick File Share (macOS)"
-echo "-------------------------------------"
+echo "🌐 Cloudflare Quick File Share (macOS)  v1.1.0"
+echo "---------------------------------------------"
 echo
 
-# ================================
+# =============================================================================
 # PREREQUISITE CHECKS
-# ================================
-
+# =============================================================================
 [[ "$(uname)" == "Darwin" ]] || { echo "❌ macOS only"; exit 1; }
 command -v brew >/dev/null || { echo "❌ Install Homebrew: https://brew.sh"; exit 1; }
 command -v python3 >/dev/null || { echo "❌ Install python3: brew install python"; exit 1; }
@@ -109,22 +137,18 @@ command -v cloudflared >/dev/null || { echo "❌ Install cloudflared: brew insta
 echo "✅ All prerequisites satisfied"
 echo
 
-# ================================
+# =============================================================================
 # USER INPUT (Directory Only)
-# ================================
-
+# =============================================================================
 read -rp "📂 Directory to share (default: current directory): " SHARE_DIR
 SHARE_DIR="${SHARE_DIR:-$(pwd)}"
 [[ -d "$SHARE_DIR" ]] || { echo "❌ Directory does not exist"; exit 1; }
 
-# ================================
+# =============================================================================
 # AUTO-SELECT PORT
-# ================================
-
+# =============================================================================
 PORT=""
-
 echo "🔍 Scanning for an open allowed port..."
-
 for CANDIDATE in "${ALLOWED_PORTS[@]}"; do
   if ! lsof -iTCP:"$CANDIDATE" -sTCP:LISTEN >/dev/null 2>&1; then
     PORT="$CANDIDATE"
@@ -138,10 +162,9 @@ if [[ -z "$PORT" ]]; then
   exit 1
 fi
 
-# ================================
+# =============================================================================
 # START SERVICES
-# ================================
-
+# =============================================================================
 echo
 echo "📁 Sharing directory:"
 echo "   $SHARE_DIR"
@@ -156,7 +179,6 @@ python3 -c "
 import http.server
 import socketserver
 import os
-
 PORT = $PORT
 DIRECTORY = '.'
 
@@ -223,7 +245,6 @@ with socketserver.TCPServer(('', PORT), Handler) as httpd:
     print('Serving at port', PORT)
     httpd.serve_forever()
 " >"$TMP_PY_LOG" 2>&1 &
-
 PY_PID=$!
 
 sleep 1
@@ -234,10 +255,9 @@ cloudflared tunnel \
   >"$TMP_CF_LOG" 2>&1 &
 CF_PID=$!
 
-# ================================
+# =============================================================================
 # FETCH PUBLIC URL
-# ================================
-
+# =============================================================================
 echo "⏳ Waiting for public URL..."
 echo
 
@@ -252,7 +272,6 @@ echo
 if [[ -n "$PUBLIC_URL" ]]; then
   # Force https by stripping everything up to '//' and prepending https://
   PUBLIC_URL="https://${PUBLIC_URL#*//}"
-
   echo "✅ Public URL:"
   echo "👉 $PUBLIC_URL"
   
@@ -273,10 +292,9 @@ echo " Sharing live — press 'q' or Ctrl+C to quit "
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo
 
-# ================================
+# =============================================================================
 # SINGLE-KEY QUIT
-# ================================
-
+# =============================================================================
 # -icanon: raw (single-char) mode
 # -echo:   don't echo keypresses
 # isig:    KEEP signal processing so Ctrl+C still fires SIGINT
@@ -291,4 +309,5 @@ while true; do
     [[ "$key" == "q" || "$key" == $'\x03' ]] && break
   fi
 done
+
 # cleanup() runs automatically via the EXIT trap
