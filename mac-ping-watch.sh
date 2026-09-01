@@ -1,15 +1,45 @@
 #!/bin/bash
-
-# --- Configuration & Help ---
-# pingwatch.sh — Subnet IP monitor with per-host ping tracking
+# =============================================================================
+# pingwatch.sh — Subnet IP Monitor with Per-Host Ping Tracking
+# =============================================================================
+# Version:      1.1.0
+# Date:         2026-09-01
+# Description:  Interactive tool to monitor selected hosts on a subnet via
+#               continuous ping sweeps. Tracks up/down state changes, shows
+#               a live status board, and alerts on transitions. Supports
+#               configurable sweep interval.
+#
+# Requirements:
+#   - Bash
+#   - Standard ping utility
 #
 # Usage:
-#   pingwatch.sh           # Interactive: enter subnet, then IPs to watch
-#   pingwatch.sh --help    # Show this help message
+#   pingwatch.sh                     Interactive subnet monitor (default)
+#   pingwatch.sh --interval <sec>    Set ping sweep interval (default: 3s)
+#   pingwatch.sh --help              Show this help message
+#   pingwatch.sh -h                  Same as --help
+#
+# How it works:
+#   1. Enter a subnet (e.g. 10.1.0.0/24 or 192.168.1.0/23)
+#   2. Enter IP addresses to monitor one at a time using the last octet(s)
+#        For /24: just enter the last octet      → e.g. 50 for 10.1.0.50
+#        For /23: enter the last two octets      → e.g. 1.50 for 10.1.1.50
+#   3. Type "done" when finished adding hosts
+#   4. Monitor runs continuously, alerting when hosts go up or down
+#
+# Options:
+#   --interval <sec>   Seconds between full ping sweeps (default: 3)
 #
 # Examples:
 #   pingwatch.sh
 #   pingwatch.sh --interval 5
+#   pingwatch.sh --help
+#
+# Notes:
+#   - Press Ctrl+C for a clean summary exit
+#   - Tracks "since" timestamps for both up and down states
+#   - Supports common prefix lengths (/16, /23, /24, etc.)
+# =============================================================================
 
 # Defaults
 PING_INTERVAL=3   # seconds between full sweep
@@ -172,8 +202,8 @@ while true; do
     echo -ne "  ${BOLD}+${END} IP ${DIM}[or 'done']${END}: "
     read -r INPUT
     INPUT="${INPUT// /}"
-
     INPUT_LOWER=$(echo "$INPUT" | tr '[:upper:]' '[:lower:]')
+
     if [[ "$INPUT_LOWER" == "done" || "$INPUT_LOWER" == "d" ]]; then
         if [[ ${#HOSTS[@]} -eq 0 ]]; then
             echo -e "  ${YELLOW}No IPs added yet. Add at least one host.${END}"
@@ -255,7 +285,6 @@ trap_handler() {
     echo -e "\n\n${YELLOW}━━━  PINGWATCH STOPPED  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
     echo -e "  Monitored ${BOLD}${HOST_COUNT} host(s)${END} on ${BOLD}${SUBNET}${END}"
     echo -e ""
-
     for (( i=0; i<HOST_COUNT; i++ )); do
         local ip="${HOSTS[$i]}"
         local st="${STATE[$i]}"
@@ -267,7 +296,6 @@ trap_handler() {
             echo -e "  ${DIM}●  ${ip}  Unknown${END}"
         fi
     done
-
     echo -e ""
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${END}"
     echo -e ""
@@ -278,7 +306,6 @@ trap trap_handler INT TERM
 # ─────────────────────────────────────────────────────────────────────────────
 # Monitor loop
 # ─────────────────────────────────────────────────────────────────────────────
-
 # Do an initial sweep silently to populate state, then print board
 FIRST_SWEEP=1
 
