@@ -1,17 +1,46 @@
 #!/bin/bash
-
-# --- Configuration & Help ---
-# Tautulli API Key Location: Settings > Web Interface > API
+# =============================================================================
+# Tautulli / Plex Activity & User Audit Tool
+# =============================================================================
+# Version:      1.1.0
+# Date:         2026-09-01
+# Description:  Command-line tool to query a Tautulli instance for current
+#               Plex activity (streams, bandwidth, transcode details) or a
+#               list of shared users. Creates a hidden virtual environment
+#               (~/.plex_audit_venv) and installs requests on first run.
+#
+# Prerequisites:
+#   - Tautulli running and reachable on your network
+#   - API key from Tautulli → Settings → Web Interface → API
+#
+# Configuration (edit these values at the top of the script):
+#   TAUTULLI_IP    IP address of your Tautulli instance
+#   TAUTULLI_PORT  Port (default: 8181)
+#   API_KEY        Your Tautulli API key
 #
 # Usage:
-# tautulli.sh          # Current activity by default
-# tautulli.sh --users  # User list with the --users flag
-# tautulli.sh --help   # Show help message
+#   tautulli.sh            Show current Plex activity (default)
+#   tautulli.sh --users    List all shared users with email and ID
+#   tautulli.sh --help     Show this help message
+#   tautulli.sh -h         Same as --help
+#
+# Examples:
+#   tautulli.sh
+#   tautulli.sh --users
+#   tautulli.sh --help
+#
+# Notes:
+#   - Requires Python 3
+#   - Auto-creates ~/.plex_audit_venv and installs/updates requests
+#   - Performs a quick network reachability check before querying
+#   - Colorized output for activity, state, and quality details
+# =============================================================================
 
+# --- Configuration ---
+# Tautulli API Key Location: Settings > Web Interface > API
 TAUTULLI_IP="192.168.1.XXX"
 TAUTULLI_PORT="8181"
 API_KEY="YOUR_API_KEY_HERE"
-
 VENV_DIR="$HOME/.plex_audit_venv"
 
 # --- Help ---
@@ -46,7 +75,6 @@ if [ ! -d "$VENV_DIR" ]; then
     echo "Creating virtual environment..."
     python3 -m venv "$VENV_DIR"
 fi
-
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip requests &> /dev/null
 
