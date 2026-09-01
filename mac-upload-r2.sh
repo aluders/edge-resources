@@ -1,24 +1,49 @@
 #!/usr/bin/env bash
+# =============================================================================
+# upload-r2-hls.sh — Cloudflare R2 HLS Uploader
+# =============================================================================
+# Version:      1.1.0
+# Last Updated: 2026-09-01
+# Description:  Interactively uploads an HLS output folder (master/variant
+#               .m3u8 playlists + .ts segments) to a Cloudflare R2 bucket,
+#               setting the correct Content-Type header on each file type so
+#               Safari's native HLS player and hls.js will play it back.
 #
-# upload-r2-hls.sh
+#               Prompts for Cloudflare account ID, R2 API credentials, bucket
+#               name, and the local folder to upload. Credentials live only in
+#               this process's environment for the duration of the run —
+#               nothing is written to disk.
 #
-# Interactively uploads an HLS output folder (master/variant .m3u8
-# playlists + .ts segments) to a Cloudflare R2 bucket, setting the
-# correct Content-Type header on each file type so Safari's native
-# HLS player and hls.js will actually play it back.
+# Requirements:
+#   - rclone (installed automatically via Homebrew if missing)
+#   - Bash
+#   - Homebrew (only needed if rclone is not already installed)
 #
-# Prompts for Cloudflare account ID, R2 API credentials, bucket name,
-# and the local folder to upload. Nothing is written to disk -
-# credentials only live in this process's environment for the
-# duration of the run.
+# Usage:
+#   ./upload-r2-hls.sh
 #
-# Requires: rclone (installed automatically via Homebrew if missing)
+#   The script will interactively prompt for:
+#     - Cloudflare Account ID
+#     - R2 Access Key ID
+#     - R2 Secret Access Key (hidden input)
+#     - Bucket name
+#     - Local HLS output folder
+#     - Optional destination path inside the bucket
 #
-# Changelog (newest first)
-#   1.0 - Initial version
+# Notes:
+#   - Uses an in-memory rclone remote (no config file written)
+#   - Sets Content-Type: application/vnd.apple.mpegurl for .m3u8
+#   - Sets Content-Type: video/mp2t for .ts segments
+#   - Remaining files are uploaded without special headers
+#   - Credentials are unset from the environment after the upload finishes
 #
+# Changelog (newest first):
+#   1.1.0 - Added formal header, versioning, and usage documentation
+#   1.0   - Initial version
+# =============================================================================
+
 # ---- CONFIG ----
-VERSION="1.0"
+VERSION="1.1.0"
 REMOTE_NAME="r2upload"
 # ----------------
 
@@ -66,12 +91,14 @@ if [[ ! -d "$LOCAL_DIR" ]]; then
     err "Folder not found: $LOCAL_DIR"
     exit 1
 fi
+
 if ! find "$LOCAL_DIR" -iname "*.m3u8" -print -quit | grep -q .; then
     warn "No .m3u8 files found in that folder - double check this is the right one."
 fi
 
 DEST_PREFIX="${DEST_PREFIX%/}"
 DEST_PREFIX="${DEST_PREFIX#/}"
+
 if [[ -n "$DEST_PREFIX" ]]; then
     TARGET="${REMOTE_NAME}:${BUCKET_NAME}/${DEST_PREFIX}"
 else
