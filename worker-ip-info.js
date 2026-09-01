@@ -1,9 +1,56 @@
 /********************************************************************
   Public IP Details Worker  v1.6
-  - Primary: ipinfo.io / v6.ipinfo.io (best dual-stack)
-  - Fallback: Cloudflare /cdn-cgi/trace + AWS checkip
-  - Method line shows only the service that succeeded
-  - IP text stays on one line and shrinks to fit the card
+  Notes:
+    - Serves a self-contained page showing the visitor's IPv4/IPv6
+      address, ISP, and approximate location (via Cloudflare's
+      request.cf on the incoming request).
+    - CF-Connecting-IP plus request.cf.asOrganization/asn are used as
+      an immediate server-side fallback for IP + ISP, so the page
+      still shows real data even if the client-side probes fail
+      (e.g. VPN/WireGuard tunnels, WARP shared-exit rate limits,
+      MTU or DNS-blackhole issues that hang the in-browser fetch).
+    - Client-side JS then confirms/refreshes both values live.
+      Probe order is:
+        1. ipinfo.io/json (v4) and v6.ipinfo.io/json (v6)
+           — best dual-stack separation
+        2. Cloudflare /cdn-cgi/trace + AWS checkip
+           — fallback when ipinfo returns 429 / fails
+      Only overwrites the edge fallback once a probe actually succeeds.
+    - Method line under each card shows only the service that
+      actually succeeded (via ipinfo.io / via Cloudflare / via AWS).
+    - IP addresses stay on one line and shrink to fit the card
+      instead of wrapping. Short IPv4 stays large; long IPv6
+      scales down.
+    - No API keys required. ipinfo free-tier is rate-limited and
+      shared per source IP, which is why WARP often hits 429 —
+      the Cloudflare/AWS fallback exists for that case. Add
+      ?token=... to the two ipinfo URLs if a higher ceiling is
+      ever needed.
+  Changelog:
+    v1.6 - IP text no longer wraps: white-space nowrap + JS
+           fit-to-width (starts large, shrinks until the address
+           fits the card). Refits on resize and after copy.
+         - Header restored to the original notes/changelog style
+    v1.5 - Method line shows only the successful service instead
+           of listing all three
+         - Hybrid detection: ipinfo primary, Cloudflare/AWS fallback
+    v1.4 - First hybrid version after the pure Cloudflare/AWS
+           attempt put the same IPv6 in both cards
+    v1.3 - Temporary Cloudflare + AWS only (dropped — no protocol
+           forcing, both cards showed IPv6 under Happy Eyeballs)
+    v1.2 - Added ISP name under each IP card (Cloudflare
+           asOrganization/asn server-side, ipinfo.org client-side)
+         - Replaced raw ISO timestamp with a readable,
+           timezone-aware "Captured ..." line; raw ISO kept as
+           a small subtitle
+    v1.1 - Added CF-Connecting-IP server-side fallback so the page
+           still shows a real IP if the client-side probe fails
+           or times out
+         - Click-to-copy now binds immediately for edge-rendered
+           values instead of waiting on the client probe
+    v1.0 - Initial release: client-side dual-stack IP detection
+           via ipinfo.io, Cloudflare-derived location info
+           (country/region/city/timezone), click-to-copy IP boxes
 ********************************************************************/
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
