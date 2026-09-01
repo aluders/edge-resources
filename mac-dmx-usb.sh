@@ -1,4 +1,40 @@
 #!/bin/bash
+# =============================================================================
+# DMX Serial Controller (FT232RL / USB-DMX)
+# =============================================================================
+# Version:      1.1.0
+# Date:         2026-08-31
+# Description:  Interactive CLI tool for sending DMX512 data over a USB-serial
+#               adapter (FT232RL / usbserial). Automatically creates a hidden
+#               virtual environment (~/.dmx_env) and installs pyserial on first
+#               run. Supports static levels and animated modes (fade, rainbow,
+#               strobe). Clean fade-out on exit.
+#
+# Usage:
+#   ./dmx_serial.sh [--test]
+#
+#   --test      Run in virtual/test mode (no hardware required)
+#
+# Examples:
+#   ./dmx_serial.sh
+#   ./dmx_serial.sh --test
+#
+# Interactive Commands (once running):
+#   val [0-255]     Set entire universe to level         e.g. val 255
+#   fade            Slow pulse on all channels
+#   rainbow         Rolling sine wave across channels
+#   strobe          Rapid full-universe flash
+#   off             Instant blackout
+#   exit            Smooth fade to black and quit
+#
+# Notes:
+#   - Requires Python 3
+#   - Auto-creates ~/.dmx_env and installs/updates pyserial
+#   - Detects FT232RL / usbserial devices automatically
+#   - Precise DMX512 break + MAB timing for FT232RL
+#   - Use --test for development without hardware
+#   - Graceful fade-out on exit / Ctrl-C
+# =============================================================================
 
 # --- 1. DYNAMIC PATH SETUP ---
 # The environment is now hidden in your home directory: ~/.dmx_env
@@ -72,7 +108,6 @@ def dmx_loop(port):
                 universe = [val] * 512
                 strobe_state = not strobe_state
                 time.sleep(0.06) 
-
             send_dmx(ser, universe)
             time.sleep(0.04)
         
@@ -89,7 +124,6 @@ def dmx_loop(port):
             ser.close()
         print("[+] Hardware released. Goodbye!")
         sys.stdout.flush() 
-
     except Exception as e:
         print(f"\n[!] Error in DMX Loop: {e}")
 
@@ -142,7 +176,7 @@ if __name__ == "__main__":
                 print(f"[?] Unknown command: {cmd}")
     except (EOFError, KeyboardInterrupt):
         running = False
-
+    
     # Force the main process to wait until the fade thread finishes
     dmx_thread.join()
 EOF
