@@ -5,9 +5,8 @@
 # Simple on/off helper for Cloudflare WARP on macOS
 # with IPv6 verification + automatic MTU handling.
 #
-# Version:     1.2.0
-# Date:        2026-08-31
-# Author:      (your name / notes)
+# Version:       1.2.0
+# Last Updated:  2026-08-31
 #
 # Changelog:
 #   1.2.0  - After "off": wait for clean disconnect, restore MTU,
