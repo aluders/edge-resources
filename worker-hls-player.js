@@ -48,6 +48,44 @@
 //     into this file as of 1.1.
 //
 // Changelog (newest first)
+//   1.15 - Fixed the 16:9 sizing math so the video sits flush against
+//         the rounded player edges again (previous padding subtraction
+//         could produce a non-exact ratio and introduce thin black bars).
+//   1.14 - Restored 6px rounded corners and added ~16px padding so
+//         the player no longer touches the edges of the window.
+//   1.13 - Player now scales to the largest 16:9 size that fits the
+//         viewport (fills the window). Removed the 960px max-width
+//         and fixed-height constraints so the container is driven
+//         only by viewport dimensions; switching adaptive
+//         renditions no longer changes the player size.
+//   1.12 - Real fix attempt #2 for the size-jump issue. 1.10's fix
+//         only targeted the outer .plyr wrapper, not the actual
+//         <video> element inside it - per Plyr's own docs, HTML5
+//         video defaults to native-resolution sizing unless
+//         something overrides it, which is what was still
+//         happening. This time: plain CSS aspect-ratio on the
+//         wrapper (not Plyr's ratio option, which broke things in
+//         1.8) plus an explicit rule forcing the video element
+//         itself to fill it, !important to beat any inline sizing
+//         Plyr/the browser might set based on native resolution.
+//   1.11 - Added VERSION constant, embedded as an HTML comment near
+//         the top of the player page - view-source to confirm
+//         which version is actually deployed.
+//   1.10 - Actual fix for the size-jumping issue: .plyr was missing
+//         width: 100% (lost when we moved off plain <video>), so
+//         nothing forced it to fill the container - it was
+//         rendering closer to native pixel size, which is what
+//         visibly changed between renditions, not the aspect
+//         ratio (that was always 16:9, unchanged). No Plyr option
+//         involved this time, just a plain CSS width rule.
+//   1.9 - Reverted the ratio option - broke rendering entirely
+//         (player showed tiny, play button unclickable). Likely a
+//         Plyr-internal sizing bug interacting with the flex-
+//         centered body layout. Back to Plyr's default sizing.
+//   1.8 - Locked the player to a fixed 16:9 ratio - without this, Plyr
+//         resizes itself to match whatever rendition hls.js is
+//         currently on, so the window visibly jumps size on every
+//         quality switch even though all renditions are 16:9.
 //   1.7 - DOWNLOAD_URL is now proxied through this Worker (new
 //         /download route) instead of linked to directly, so
 //         Content-Disposition applies no matter where the file is
@@ -74,14 +112,13 @@
 //   1.0 - Initial version: R2 range-request passthrough, optional
 //         ?key= token gate, CORS headers for cross-origin playback
 //
-
 // ---- CONFIG ----
+const VERSION = '1.15'; // bump this with every change - shows up in the player page's HTML source
 const MASTER_PLAYLIST_KEY = 'kuhn/master.m3u8'; // HLS master playlist path inside the bucket
 const DOWNLOAD_URL = 'https://edgeintegrated.com/2026-0815-kuhn.mp4'; // optional - shows a download button in the player when set
 const DOWNLOAD_PATH = '/download'; // this Worker's own route that proxies DOWNLOAD_URL
 const PLAYER_PATHS = ['/', '/player', '/index.html']; // paths that render the player instead of serving an object
 // -----------------
-
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
@@ -93,33 +130,26 @@ export default {
         },
       });
     }
-
     const url = new URL(request.url);
-
     // Access gate - covers the player page and every object below it.
     if (env.ACCESS_TOKEN && url.searchParams.get('key') !== env.ACCESS_TOKEN) {
       return new Response('Forbidden', { status: 403 });
     }
-
     if (request.method === 'GET' && PLAYER_PATHS.includes(url.pathname)) {
       return new Response(renderPlayerHtml(env), {
         headers: { 'content-type': 'text/html; charset=UTF-8' },
       });
     }
-
     if (request.method === 'GET' && url.pathname === DOWNLOAD_PATH && DOWNLOAD_URL) {
       return proxyDownload();
     }
-
     const key = decodeURIComponent(url.pathname.slice(1));
     if (!key) {
       return new Response('Not found', { status: 404 });
     }
-
     return serveVideoObject(key, request, env, ctx);
   },
 };
-
 // Fetches DOWNLOAD_URL and re-serves it with Content-Disposition set,
 // so the download button gets a real download regardless of what
 // headers the origin (R2, edgeintegrated.com, wherever) actually sends.
@@ -128,15 +158,12 @@ async function proxyDownload() {
   if (!upstream.ok || !upstream.body) {
     return new Response('Download unavailable', { status: 502 });
   }
-
   const headers = new Headers(upstream.headers);
   const filename = DOWNLOAD_URL.split('/').pop();
   headers.set('content-disposition', `attachment; filename="${filename}"`);
   headers.set('access-control-allow-origin', '*');
-
   return new Response(upstream.body, { status: upstream.status, headers });
 }
-
 // Serves one R2 object (playlist or segment), caching the full object
 // at Cloudflare's edge and handling Range requests by hand on top of
 // whichever copy (cached or freshly fetched) is available.
@@ -145,29 +172,23 @@ async function serveVideoObject(key, request, env, ctx) {
   const cacheUrl = new URL(request.url);
   cacheUrl.search = ''; // ?key= shouldn't fragment the cache - it's a single shared token
   const cacheKey = new Request(cacheUrl.toString(), { method: 'GET' });
-
   let source = await cache.match(cacheKey);
-
   if (!source) {
     const object = await env.VIDEO_BUCKET.get(key);
     if (object === null) {
       return new Response('Not found', { status: 404 });
     }
-
     const headers = new Headers();
     object.writeHttpMetadata(headers);
     headers.set('etag', object.httpEtag);
     headers.set('accept-ranges', 'bytes');
     headers.set('cache-control', 'public, max-age=31536000, immutable');
     headers.set('content-length', String(object.size));
-
     source = new Response(object.body, { status: 200, headers });
     ctx.waitUntil(cache.put(cacheKey, source.clone()));
   }
-
   const headers = new Headers(source.headers);
   headers.set('access-control-allow-origin', '*');
-
   // Force an actual download (instead of the browser opening its own
   // video player) for .mp4 files - this is what the player's download
   // button relies on. Video content types play inline by default, so
@@ -176,33 +197,26 @@ async function serveVideoObject(key, request, env, ctx) {
     const filename = key.split('/').pop();
     headers.set('content-disposition', `attachment; filename="${filename}"`);
   }
-
   const range = request.headers.get('range');
   const size = Number(source.headers.get('content-length'));
   const match = range ? /^bytes=(\d+)-(\d*)$/.exec(range) : null;
-
   if (!match) {
     return new Response(source.body, { status: 200, headers });
   }
-
   const start = Number(match[1]);
   const end = match[2] ? Number(match[2]) : size - 1;
-
   const buf = await source.arrayBuffer();
   const sliced = buf.slice(start, end + 1);
-
   headers.set('content-range', `bytes ${start}-${end}/${size}`);
   headers.set('content-length', String(sliced.byteLength));
-
   return new Response(sliced, { status: 206, headers });
 }
-
 function renderPlayerHtml(env) {
   const gate = env.ACCESS_TOKEN ? `?key=${encodeURIComponent(env.ACCESS_TOKEN)}` : '';
   const streamUrl = `/${MASTER_PLAYLIST_KEY}${gate}`;
   const downloadUrl = DOWNLOAD_URL ? `${DOWNLOAD_PATH}${gate}` : '';
-
   return `<!DOCTYPE html>
+<!-- worker.js version ${VERSION} -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -213,29 +227,48 @@ function renderPlayerHtml(env) {
   html, body {
     margin: 0;
     height: 100%;
+    width: 100%;
+    overflow: hidden;
     background: #111;
     display: flex;
     align-items: center;
     justify-content: center;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
-  .wrap { width: 100%; max-width: 960px; padding: 16px; box-sizing: border-box; }
-  .plyr { border-radius: 6px; overflow: hidden; }
-  .message { color: #ccc; text-align: center; padding: 40px 16px; }
+  .wrap {
+    /* Largest exact 16:9 box that fits inside the window with ~16px padding */
+    width: min(100vw - 32px, (100vh - 32px) * 16 / 9);
+    height: min(100vh - 32px, (100vw - 32px) * 9 / 16);
+    box-sizing: border-box;
+  }
+  .plyr {
+    width: 100%;
+    height: 100%;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .plyr video {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain;
+  }
+  .message {
+    color: #ccc;
+    text-align: center;
+    padding: 40px 16px;
+  }
 </style>
 </head>
 <body>
   <div class="wrap">
     <video id="player" controls playsinline></video>
   </div>
-
   <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.15/hls.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/plyr/3.7.8/plyr.min.js"></script>
   <script>
     const STREAM_URL = "${streamUrl}";
     const DOWNLOAD_URL = "${downloadUrl}";
     const video = document.getElementById("player");
-
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       // Safari / iOS - plays HLS natively, no library needed
       video.src = STREAM_URL;
@@ -247,7 +280,6 @@ function renderPlayerHtml(env) {
       document.querySelector(".wrap").innerHTML =
         '<p class="message">Sorry, this browser cannot play the video. Try Chrome, Firefox, Edge, or Safari.</p>';
     }
-
     // Plyr replaces the native controls with a custom bar. The
     // "download" token only shows up if DOWNLOAD_URL is set below -
     // Plyr can't point it at STREAM_URL since that's a playlist, not
@@ -259,7 +291,6 @@ function renderPlayerHtml(env) {
     if (DOWNLOAD_URL) {
       controls.splice(controls.length - 1, 0, "download");
     }
-
     new Plyr(video, {
       controls,
       settings: ["speed"],
