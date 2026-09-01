@@ -1,6 +1,6 @@
 #requires -Version 5.1
 # ============================================================================
-# Backup-GYBMailboxes.ps1 v2.1
+# Backup-GYBMailboxes.ps1 v2.4
 # ----------------------------------------------------------------------------
 # All-in-one setup + runner for GYB (Got Your Back) Gmail backups against a
 # Google Workspace domain, using a domain-wide-delegated service account so
@@ -51,6 +51,22 @@
 # CHANGELOG (newest first)
 # CHANGELOG (newest first)
 # CHANGELOG (newest first)
+#   2.4  Installs now always land in $InstallDir\gyb\gyb.exe - extraction
+#        goes to a scratch folder first, then whatever sits next to
+#        gyb.exe gets moved into a "gyb" folder we name ourselves, instead
+#        of trusting the release zip's internal layout. Also fixes a real
+#        bug this introduced: an update would have deleted the existing
+#        oauth2service.json (and saved directory admin) along with the
+#        old files - those are now backed up and restored across the
+#        swap.
+#   2.3  Default install path simplified to %LOCALAPPDATA%\EdgeTools - the
+#        release zip already contains its own "gyb" subfolder, so the
+#        previous \EdgeTools\GYB default just duplicated that layer.
+#   2.2  Default install path moved under %LOCALAPPDATA%\EdgeTools\GYB to
+#        keep tool data grouped under one parent folder. Added a check
+#        against GitHub's latest release when GYB is already installed -
+#        prompts to update if a newer version exists (-SkipUpdateCheck to
+#        skip it and keep the pinned version).
 #   2.1  Blank stderr noise from GYB (shown as a bare
 #        "System.Management.Automation.RemoteException" line once the
 #        progress-collapsing logic started extracting message text
@@ -109,17 +125,18 @@
 param(
     [string[]]$Mailboxes,
     [string]$MailboxListPath,
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'GYB'),
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'EdgeTools'),
     [string]$BackupRoot = (Join-Path $env:USERPROFILE 'GYB-Backups'),
     [string]$TestMailbox,
     [string]$DirectoryAdmin,
     [switch]$PullFromDirectory,
     [switch]$Reauthorize,
     [switch]$SkipBackup,
+    [switch]$SkipUpdateCheck,
     [switch]$Help
 )
 
-$ScriptVersion = '2.1'
+$ScriptVersion = '2.4'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # ---------------------------------------------------------------------------
@@ -163,11 +180,12 @@ Parameters:
                        instead of a file/typed list, same numbered picker
   -DirectoryAdmin     Admin email to impersonate for the directory lookup
                        (remembered next to the key after first use)
-  -InstallDir       Where GYB gets installed  (default: %LOCALAPPDATA%\GYB)
+  -InstallDir       Where GYB gets installed  (default: %LOCALAPPDATA%\EdgeTools)
   -BackupRoot       Where backups get written (default: %USERPROFILE%\GYB-Backups)
   -TestMailbox      Address to use for the pre-flight auth check
   -Reauthorize      Force the service account wizard even if a key exists
   -SkipBackup       Run setup only, skip the backup loop
+  -SkipUpdateCheck  Don't check GitHub for a newer GYB release
 "@
 }
 
@@ -184,34 +202,75 @@ function Get-GYBExecutable {
     return $null
 }
 
-function Install-GYB {
-    param([string]$InstallDir)
-
-    Write-Status 'Looking up the latest GYB release on GitHub...' Info
+function Get-LatestGYBRelease {
     $headers = @{ 'User-Agent' = 'Backup-GYBMailboxes-Script' }
-    try {
-        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/GAM-team/got-your-back/releases/latest' -Headers $headers
-    } catch {
-        Write-Status "Couldn't reach the GitHub API: $($_.Exception.Message)" Error
-        throw
+    return Invoke-RestMethod -Uri 'https://api.github.com/repos/GAM-team/got-your-back/releases/latest' -Headers $headers
+}
+
+function Install-GYB {
+    param([string]$InstallDir, [object]$Release)
+
+    if (-not $Release) {
+        Write-Status 'Looking up the latest GYB release on GitHub...' Info
+        try {
+            $Release = Get-LatestGYBRelease
+        } catch {
+            Write-Status "Couldn't reach the GitHub API: $($_.Exception.Message)" Error
+            throw
+        }
     }
 
-    $asset = $release.assets | Where-Object { $_.name -like '*windows-x86_64.zip' } | Select-Object -First 1
+    $asset = $Release.assets | Where-Object { $_.name -like '*windows-x86_64.zip' } | Select-Object -First 1
     if (-not $asset) {
-        Write-Status "No Windows zip found in release $($release.tag_name). Grab it manually: https://github.com/GAM-team/got-your-back/releases" Error
+        Write-Status "No Windows zip found in release $($Release.tag_name). Grab it manually: https://github.com/GAM-team/got-your-back/releases" Error
         throw 'GYB Windows asset not found'
     }
 
-    Write-Status "Downloading GYB $($release.tag_name) ($($asset.name))..." Info
+    Write-Status "Downloading GYB $($Release.tag_name) ($($asset.name))..." Info
     $zipPath = Join-Path $env:TEMP $asset.name
     Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
 
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Expand-Archive -Path $zipPath -DestinationPath $InstallDir -Force
+    # Extract to a scratch folder first, then move whatever sits alongside gyb.exe into a
+    # folder we name ourselves - so the result is always $InstallDir\gyb\gyb.exe regardless
+    # of whether the release zip nests things in its own subfolder or not.
+    $stagingDir = Join-Path $env:TEMP "gyb-extract-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+    Expand-Archive -Path $zipPath -DestinationPath $stagingDir -Force
     Remove-Item $zipPath -Force
 
-    $exe = Get-GYBExecutable -InstallDir $InstallDir
-    if (-not $exe) { throw "Extracted the release but couldn't find gyb.exe under $InstallDir" }
+    $extractedExe = Get-GYBExecutable -InstallDir $stagingDir
+    if (-not $extractedExe) {
+        Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        throw "Extracted the release but couldn't find gyb.exe anywhere in it"
+    }
+    $sourceFolder = Split-Path $extractedExe -Parent
+
+    $targetDir = Join-Path $InstallDir 'gyb'
+    $backupDir = $null
+    if (Test-Path $targetDir) {
+        # Updating an existing install - don't lose the service account key or saved
+        # directory admin that live alongside gyb.exe when we clean-replace the folder.
+        $keepFiles = @('oauth2service.json', 'directory-admin.txt') | Where-Object { Test-Path (Join-Path $targetDir $_) }
+        if ($keepFiles) {
+            $backupDir = Join-Path $env:TEMP "gyb-keep-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+            New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+            foreach ($name in $keepFiles) {
+                Copy-Item -Path (Join-Path $targetDir $name) -Destination (Join-Path $backupDir $name) -Force
+            }
+        }
+        Remove-Item $targetDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    Get-ChildItem -Path $sourceFolder -Force | Move-Item -Destination $targetDir -Force
+    Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+
+    if ($backupDir) {
+        Get-ChildItem -Path $backupDir -Force | Move-Item -Destination $targetDir -Force
+        Remove-Item $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $exe = Join-Path $targetDir 'gyb.exe'
+    if (-not (Test-Path $exe)) { throw "Moved the extracted files but gyb.exe isn't at $exe" }
 
     Write-Status "GYB installed: $exe" Success
     return $exe
@@ -736,7 +795,31 @@ try {
     $gybExe = Get-GYBExecutable -InstallDir $InstallDir
     if ($gybExe) {
         $ver = & $gybExe --version 2>&1
-        Write-Status "GYB already installed ($ver) - skipping download" Success
+        Write-Status "GYB already installed ($ver)" Success
+
+        if (-not $SkipUpdateCheck) {
+            $installedVersion = $null
+            if ($ver -match 'Got Your Back (\d+(\.\d+)+)') {
+                try { $installedVersion = [version]$matches[1] } catch {}
+            }
+            try {
+                $latestRelease = Get-LatestGYBRelease
+                $latestVersion = $null
+                try { $latestVersion = [version]($latestRelease.tag_name.TrimStart('v')) } catch {}
+
+                if ($installedVersion -and $latestVersion -and $latestVersion -gt $installedVersion) {
+                    Write-Status "A newer GYB is available: $latestVersion (you have $installedVersion)" Warn
+                    $doUpdate = Read-Host '  Update now? (y/n)'
+                    if ($doUpdate -eq 'y') {
+                        $gybExe = Install-GYB -InstallDir $InstallDir -Release $latestRelease
+                        $ver = & $gybExe --version 2>&1
+                        Write-Status "Updated to $ver" Success
+                    }
+                }
+            } catch {
+                Write-Status 'Could not check GitHub for a newer GYB release - continuing with the installed version' Warn
+            }
+        }
     } else {
         $gybExe = Install-GYB -InstallDir $InstallDir
     }
