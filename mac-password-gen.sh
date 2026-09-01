@@ -1,9 +1,36 @@
 #!/usr/bin/env bash
-# genpass — Password generator for macOS
-# Usage: genpass [-l|--length LENGTH] [-s|--symbols] [-h|--help]
+# =============================================================================
+# genpass — Secure Password Generator for macOS
+# =============================================================================
+# Version:      1.1.0
+# Date:         2026-09-01
+# Description:  Generates a cryptographically random password using /dev/urandom
+#               and automatically copies it to the macOS clipboard via pbcopy.
+#               Supports configurable length and optional inclusion of symbols.
+#
+# Requirements:
+#   - macOS (uses pbcopy and /dev/urandom)
+#   - Bash
+#
+# Usage:
+#   genpass [-l|--length LENGTH] [-s|--symbols] [-h|--help]
+#
 #   -l, --length LENGTH   Password length (default: 20)
 #   -s, --symbols         Include symbols / special characters
 #   -h, --help            Show this help message
+#
+# Examples:
+#   genpass
+#   genpass -l 32
+#   genpass --length 24 --symbols
+#   genpass -s -l 16
+#   genpass --help
+#
+# Notes:
+#   - Uses LC_ALL=C tr -dc for safe character filtering
+#   - Password is printed and also copied to the clipboard
+#   - Length must be a positive integer
+# =============================================================================
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RESET='\033[0m'
