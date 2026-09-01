@@ -1,4 +1,43 @@
 #!/bin/bash
+# =============================================================================
+# DMX Test Tool (Art-Net / sACN)
+# =============================================================================
+# Version:      1.1.0
+# Date:         2026-08-31
+# Description:  Interactive CLI tool for sending DMX512 data over Art-Net or
+#               sACN (E1.31). Supports static channel control, global levels,
+#               and animated modes (fade, rainbow, strobe). Clean fade-out on
+#               exit.
+#
+# Usage:
+#   ./dmx_test.sh [NODE_IP] [UNIVERSE] [PROTOCOL]
+#
+#   NODE_IP     Target IP of the Art-Net/sACN node (default: 192.168.1.50)
+#   UNIVERSE    DMX universe number (default: 1)
+#   PROTOCOL    "artnet" or "sacn" (default: sacn)
+#
+# Examples:
+#   ./dmx_test.sh
+#   ./dmx_test.sh 192.168.1.100
+#   ./dmx_test.sh 192.168.1.100 2 artnet
+#   ./dmx_test.sh 10.0.0.5 4 sacn
+#
+# Interactive Commands (once running):
+#   [ch] on/off     Turn channel on (255) or off (0)     e.g. 1 on, 5 off
+#   [ch] [val]      Set channel to value 0-255           e.g. 12 128
+#   val [0-255]     Set entire universe to level         e.g. val 255
+#   fade            Slow pulse on all channels
+#   rainbow         Rolling sine wave across channels
+#   strobe          Rapid full-universe flash
+#   off             Instant blackout
+#   exit            Smooth fade to black and quit
+#
+# Notes:
+#   - Requires Python 3
+#   - Runs at ~40 FPS (Art-Net / sACN)
+#   - Sequence counter maintained for sACN
+#   - Graceful fade-out on exit / Ctrl-C
+# =============================================================================
 
 # --- EXECUTE PYTHON ---
 # We use the '-' flag so Python reads the code from the pipe and passes arguments
@@ -36,7 +75,6 @@ def send_artnet(sock, ip, data):
     subuni = UNIVERSE & 0xFF
     net = (UNIVERSE >> 8) & 0x7F
     header.extend([subuni, net, 0x02, 0x00])
-
     packet = header + bytearray(data)
     try: sock.sendto(packet, (ip, ARTNET_PORT))
     except Exception: pass
@@ -68,7 +106,6 @@ def send_sacn(sock, ip, data, seq):
     header.extend([0x00, 0x01])             # Address Increment
     header.extend([0x02, 0x01])             # Property Value Count (513)
     header.extend([0x00])                   # DMX Start Code
-
     packet = header + bytearray(data)
     try: sock.sendto(packet, (ip, SACN_PORT))
     except Exception: pass
@@ -103,7 +140,6 @@ def dmx_loop():
                 universe_data = [val] * 512
                 strobe_state = not strobe_state
                 time.sleep(0.06) 
-
             send_dmx(sock)
             time.sleep(0.025) # ~40fps refresh
         
@@ -122,7 +158,6 @@ def dmx_loop():
         sock.close()
         print("[+] Network socket released. Goodbye!")
         sys.stdout.flush() 
-
     except Exception as e:
         print(f"\n[!] Error in DMX Loop: {e}")
 
@@ -192,6 +227,6 @@ if __name__ == "__main__":
                 
     except (EOFError, KeyboardInterrupt):
         running = False
-
+    
     dmx_thread.join()
 EOF
