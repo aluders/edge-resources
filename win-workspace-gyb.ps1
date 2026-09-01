@@ -1,6 +1,6 @@
 #requires -Version 5.1
 # ============================================================================
-# Backup-GYBMailboxes.ps1 v2.4
+# Backup-GYBMailboxes.ps1 v2.6
 # ----------------------------------------------------------------------------
 # All-in-one setup + runner for GYB (Got Your Back) Gmail backups against a
 # Google Workspace domain, using a domain-wide-delegated service account so
@@ -49,8 +49,15 @@
 #       Show this usage block and exit.
 #
 # CHANGELOG (newest first)
-# CHANGELOG (newest first)
-# CHANGELOG (newest first)
+#   2.6  Install/update scratch files (downloaded zip, extraction staging,
+#        key-preservation backup) now go under a new -TempDir, defaulting
+#        to %LOCALAPPDATA%\EdgeTools\temp, instead of the system %TEMP%.
+#   2.5  Install/update's scratch files (downloaded zip, extraction
+#        staging folder, key-preservation backup folder) are now cleaned
+#        up in a finally block, so a failure partway through no longer
+#        leaves orphaned folders in %TEMP%. Also fixed three duplicated
+#        "CHANGELOG (newest first)" header lines here from an earlier
+#        edit - cosmetic, no functional impact.
 #   2.4  Installs now always land in $InstallDir\gyb\gyb.exe - extraction
 #        goes to a scratch folder first, then whatever sits next to
 #        gyb.exe gets moved into a "gyb" folder we name ourselves, instead
@@ -127,6 +134,7 @@ param(
     [string]$MailboxListPath,
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'EdgeTools'),
     [string]$BackupRoot = (Join-Path $env:USERPROFILE 'GYB-Backups'),
+    [string]$TempDir = (Join-Path $env:LOCALAPPDATA 'EdgeTools\temp'),
     [string]$TestMailbox,
     [string]$DirectoryAdmin,
     [switch]$PullFromDirectory,
@@ -136,7 +144,7 @@ param(
     [switch]$Help
 )
 
-$ScriptVersion = '2.4'
+$ScriptVersion = '2.6'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # ---------------------------------------------------------------------------
@@ -181,6 +189,7 @@ Parameters:
   -DirectoryAdmin     Admin email to impersonate for the directory lookup
                        (remembered next to the key after first use)
   -InstallDir       Where GYB gets installed  (default: %LOCALAPPDATA%\EdgeTools)
+  -TempDir          Scratch space for downloads/extraction (default: %LOCALAPPDATA%\EdgeTools\temp)
   -BackupRoot       Where backups get written (default: %USERPROFILE%\GYB-Backups)
   -TestMailbox      Address to use for the pre-flight auth check
   -Reauthorize      Force the service account wizard even if a key exists
@@ -208,7 +217,7 @@ function Get-LatestGYBRelease {
 }
 
 function Install-GYB {
-    param([string]$InstallDir, [object]$Release)
+    param([string]$InstallDir, [object]$Release, [string]$TempDir)
 
     if (-not $Release) {
         Write-Status 'Looking up the latest GYB release on GitHub...' Info
@@ -226,54 +235,58 @@ function Install-GYB {
         throw 'GYB Windows asset not found'
     }
 
+    New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
     Write-Status "Downloading GYB $($Release.tag_name) ($($asset.name))..." Info
-    $zipPath = Join-Path $env:TEMP $asset.name
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
-
-    # Extract to a scratch folder first, then move whatever sits alongside gyb.exe into a
-    # folder we name ourselves - so the result is always $InstallDir\gyb\gyb.exe regardless
-    # of whether the release zip nests things in its own subfolder or not.
-    $stagingDir = Join-Path $env:TEMP "gyb-extract-$([guid]::NewGuid().ToString('N').Substring(0,8))"
-    New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
-    Expand-Archive -Path $zipPath -DestinationPath $stagingDir -Force
-    Remove-Item $zipPath -Force
-
-    $extractedExe = Get-GYBExecutable -InstallDir $stagingDir
-    if (-not $extractedExe) {
-        Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
-        throw "Extracted the release but couldn't find gyb.exe anywhere in it"
-    }
-    $sourceFolder = Split-Path $extractedExe -Parent
-
-    $targetDir = Join-Path $InstallDir 'gyb'
+    $zipPath = Join-Path $TempDir $asset.name
+    $stagingDir = Join-Path $TempDir "gyb-extract-$([guid]::NewGuid().ToString('N').Substring(0,8))"
     $backupDir = $null
-    if (Test-Path $targetDir) {
-        # Updating an existing install - don't lose the service account key or saved
-        # directory admin that live alongside gyb.exe when we clean-replace the folder.
-        $keepFiles = @('oauth2service.json', 'directory-admin.txt') | Where-Object { Test-Path (Join-Path $targetDir $_) }
-        if ($keepFiles) {
-            $backupDir = Join-Path $env:TEMP "gyb-keep-$([guid]::NewGuid().ToString('N').Substring(0,8))"
-            New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-            foreach ($name in $keepFiles) {
-                Copy-Item -Path (Join-Path $targetDir $name) -Destination (Join-Path $backupDir $name) -Force
+
+    try {
+        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -UseBasicParsing
+
+        # Extract to a scratch folder first, then move whatever sits alongside gyb.exe into
+        # a folder we name ourselves - so the result is always $InstallDir\gyb\gyb.exe
+        # regardless of whether the release zip nests things in its own subfolder or not.
+        New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+        Expand-Archive -Path $zipPath -DestinationPath $stagingDir -Force
+
+        $extractedExe = Get-GYBExecutable -InstallDir $stagingDir
+        if (-not $extractedExe) { throw "Extracted the release but couldn't find gyb.exe anywhere in it" }
+        $sourceFolder = Split-Path $extractedExe -Parent
+
+        $targetDir = Join-Path $InstallDir 'gyb'
+        if (Test-Path $targetDir) {
+            # Updating an existing install - don't lose the service account key or saved
+            # directory admin that live alongside gyb.exe when we clean-replace the folder.
+            $keepFiles = @('oauth2service.json', 'directory-admin.txt') | Where-Object { Test-Path (Join-Path $targetDir $_) }
+            if ($keepFiles) {
+                $backupDir = Join-Path $TempDir "gyb-keep-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+                New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+                foreach ($name in $keepFiles) {
+                    Copy-Item -Path (Join-Path $targetDir $name) -Destination (Join-Path $backupDir $name) -Force
+                }
             }
+            Remove-Item $targetDir -Recurse -Force
         }
-        Remove-Item $targetDir -Recurse -Force
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        Get-ChildItem -Path $sourceFolder -Force | Move-Item -Destination $targetDir -Force
+
+        if ($backupDir) {
+            Get-ChildItem -Path $backupDir -Force | Move-Item -Destination $targetDir -Force
+        }
+
+        $exe = Join-Path $targetDir 'gyb.exe'
+        if (-not (Test-Path $exe)) { throw "Moved the extracted files but gyb.exe isn't at $exe" }
+
+        Write-Status "GYB installed: $exe" Success
+        return $exe
     }
-    New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-    Get-ChildItem -Path $sourceFolder -Force | Move-Item -Destination $targetDir -Force
-    Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
-
-    if ($backupDir) {
-        Get-ChildItem -Path $backupDir -Force | Move-Item -Destination $targetDir -Force
-        Remove-Item $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+    finally {
+        # Runs on success or failure - nothing scratch-related should ever survive this function.
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+        if ($backupDir) { Remove-Item $backupDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
-
-    $exe = Join-Path $targetDir 'gyb.exe'
-    if (-not (Test-Path $exe)) { throw "Moved the extracted files but gyb.exe isn't at $exe" }
-
-    Write-Status "GYB installed: $exe" Success
-    return $exe
 }
 
 function Test-ServiceAccountKeyFile {
@@ -811,7 +824,7 @@ try {
                     Write-Status "A newer GYB is available: $latestVersion (you have $installedVersion)" Warn
                     $doUpdate = Read-Host '  Update now? (y/n)'
                     if ($doUpdate -eq 'y') {
-                        $gybExe = Install-GYB -InstallDir $InstallDir -Release $latestRelease
+                        $gybExe = Install-GYB -InstallDir $InstallDir -Release $latestRelease -TempDir $TempDir
                         $ver = & $gybExe --version 2>&1
                         Write-Status "Updated to $ver" Success
                     }
@@ -821,7 +834,7 @@ try {
             }
         }
     } else {
-        $gybExe = Install-GYB -InstallDir $InstallDir
+        $gybExe = Install-GYB -InstallDir $InstallDir -TempDir $TempDir
     }
 
     # Phase 2: service account
