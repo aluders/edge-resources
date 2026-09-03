@@ -2,13 +2,13 @@
 # =============================================================================
 #  kuma.sh  —  Kuma Script  v2.5
 # =============================================================================
-#  Detects a Docker / Compose / PM2 install and manages lifecycle, updates,
-#  and data-directory backups. Built for a Contabo/Plesk Ubuntu host running
-#  the official louislam/uptime-kuma image.
+#  All-in-one manager for Uptime Kuma. Detects Docker, Compose, or PM2,
+#  or installs a fresh Docker instance on a new VM. Config and backups
+#  live next to this script.
 #
 #  Usage:
 #    sudo ./kuma.sh --install             Fresh Docker install (prompts for v1 or v2)
-#    sudo ./kuma.sh --status              Show install, image line (v1/v2), ports
+#    sudo ./kuma.sh --status              Show install, app version, ports, backups
 #    sudo ./kuma.sh --start               Start Uptime Kuma
 #    sudo ./kuma.sh --stop                Stop Uptime Kuma
 #    sudo ./kuma.sh --restart             Restart Uptime Kuma
@@ -18,14 +18,26 @@
 #         ./kuma.sh --list-backups        List backup archives
 #    sudo ./kuma.sh --restore <file>      Restore a .tar.gz data backup
 #    sudo ./kuma.sh --prune-backups       Delete archives older than KEEP days
-#    sudo ./kuma.sh --update              Update on the SAME major (v1 stays v1)
+#    sudo ./kuma.sh --update              Same-major update (v1 stays v1, skip if current)
 #    sudo ./kuma.sh --update-to-v2        Backup, then migrate image :1 → :2
 #    sudo ./kuma.sh --detect              Print detected paths / image
-#    sudo ./kuma.sh --config              Write / re-write kuma.conf next to this script
+#    sudo ./kuma.sh --config              Write / re-write ./kuma.conf
 #    sudo ./kuma.sh --cron-install        Daily backup cron (03:15)
 #    sudo ./kuma.sh --cron-remove         Remove the cron job
 #         ./kuma.sh --reset-password-help Official password-reset hints
 #         ./kuma.sh --help                Show this help
+#
+#  Files (beside this script):
+#    ./kuma.sh            This manager
+#    ./kuma.conf          Written by --config / --install
+#    ./kuma-backups/      Data-volume archives
+#
+#  --install defaults:
+#    Line             2          (louislam/uptime-kuma:2)
+#    Host port        3001
+#    Container name   uptime-kuma
+#    Volume name      uptime-kuma
+#    Restart policy   always
 # =============================================================================
 #  Version history:
 #    2.5  — --install for a fresh VM (Docker + official container)
