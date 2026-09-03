@@ -1,0 +1,14 @@
+#!/bin/sh
+# /config/scripts/kuma-push.sh
+curl -fsS --max-time 15 \
+  "https://uptime.edgeintegrated.net/api/push/YOURTOKEN?status=up&msg=er12&ping=" \
+  >/dev/null 2>&1
+
+chmod +x /config/scripts/kuma-push.sh
+
+configure
+set system task-scheduler task kuma-push interval 1m
+set system task-scheduler task kuma-push executable path /config/scripts/kuma-push.sh
+commit
+save
+exit
