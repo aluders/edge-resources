@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  kuma.sh  —  Uptime Kuma manager  v2.3
+#  kuma.sh  —  Kuma Script  v2.3
 # =============================================================================
 #  Detects a Docker / Compose / PM2 install and manages lifecycle, updates,
 #  and data-directory backups. Built for a Contabo/Plesk Ubuntu host running
@@ -430,7 +430,7 @@ cmd_logs() {
 cmd_status() {
     detect_mode
     echo
-    header "Uptime Kuma  v${VERSION}"
+    header "Kuma Script  v${VERSION}"
     echo -e "  Host        : $(hostname)  ($(date '+%F %T %Z'))"
     echo -e "  Mode        : ${MODE:-none}"
     if have docker; then
@@ -870,7 +870,7 @@ EOF
 
 cmd_help() {
     echo
-    echo -e "${BOLD}Uptime Kuma manager${NC}  v${VERSION}"
+    echo -e "${BOLD}Kuma Script${NC}  v${VERSION}"
     echo
     echo -e "${CYAN}Usage:${NC}"
     echo    "  sudo $0 --status              Show install, image line, ports, backups"
