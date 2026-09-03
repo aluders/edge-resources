@@ -3,7 +3,7 @@
 #!/bin/sh
 # /config/scripts/kuma-push.sh
 curl -fsS --max-time 15 \
-  "https://uptime.edgeintegrated.net/api/push/YOURTOKEN?status=up&msg=er12&ping=" \
+  "https://uptimekuma.push.url/api/push/YOURTOKEN?status=up&msg=er12&ping=" \
   >/dev/null 2>&1
 
 *** set executable ***
