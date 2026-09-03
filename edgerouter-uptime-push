@@ -6,11 +6,11 @@ curl -fsS --max-time 15 \
   "https://uptime.edgeintegrated.net/api/push/YOURTOKEN?status=up&msg=er12&ping=" \
   >/dev/null 2>&1
 
-*** set executable
+*** set executable ***
 
 chmod +x /config/scripts/kuma-push.sh
 
-*** configure task
+*** configure task ***
 
 configure
 set system task-scheduler task kuma-push interval 1m
