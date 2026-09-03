@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  kuma.sh  —  Kuma Script  v2.3
+#  kuma.sh  —  Kuma Script  v2.4
 # =============================================================================
 #  Detects a Docker / Compose / PM2 install and manages lifecycle, updates,
 #  and data-directory backups. Built for a Contabo/Plesk Ubuntu host running
@@ -20,13 +20,14 @@
 #    sudo ./kuma.sh --update              Update on the SAME major (v1 stays v1)
 #    sudo ./kuma.sh --update-to-v2        Backup, then migrate image :1 → :2
 #    sudo ./kuma.sh --detect              Print detected paths / image
-#    sudo ./kuma.sh --config              Write / re-write /etc/uptime-kuma/kuma.conf
+#    sudo ./kuma.sh --config              Write / re-write kuma.conf next to this script
 #    sudo ./kuma.sh --cron-install        Daily backup cron (03:15)
 #    sudo ./kuma.sh --cron-remove         Remove the cron job
 #         ./kuma.sh --reset-password-help Official password-reset hints
 #         ./kuma.sh --help                Show this help
 # =============================================================================
 #  Version history:
+#    2.4  — Config file lives next to the script (kuma.conf)
 #    2.3  — Ignore stale /var/backups path; backups stay beside the script
 #    2.2  — Backups default next to the script (e.g. /root/kuma-backups)
 #    2.1  — --update compares digests; skip recreate if already current
@@ -52,14 +53,13 @@
 
 set -euo pipefail
 
-VERSION="2.3"
+VERSION="2.4"
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-
-CONFIG_DIR="/etc/uptime-kuma"
-CONFIG_FILE="${CONFIG_DIR}/kuma.conf"
-# Backups live beside the script unless BACKUP_DIR is set in the conf.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Everything local to the script except cron (needs /etc/cron.d).
+CONFIG_FILE="${SCRIPT_DIR}/kuma.conf"
 BACKUP_DIR_DEFAULT="${SCRIPT_DIR}/kuma-backups"
 CRON_FILE="/etc/cron.d/uptime-kuma"
 LOG_FILE="${BACKUP_DIR_DEFAULT}/backup.log"
@@ -117,17 +117,12 @@ load_config() {
     [[ -f "$CONFIG_FILE" ]] || return 0
     # shellcheck disable=SC1090
     source "$CONFIG_FILE"
-    # Old installs wrote /var/backups/uptime-kuma. Always prefer the
-    # folder next to this script unless the conf points somewhere else.
-    if [[ -z "${BACKUP_DIR:-}" || "${BACKUP_DIR}" == "/var/backups/uptime-kuma" ]]; then
-        BACKUP_DIR="$BACKUP_DIR_DEFAULT"
-    fi
+    [[ -n "${BACKUP_DIR:-}" ]] || BACKUP_DIR="$BACKUP_DIR_DEFAULT"
     LOG_FILE="${BACKUP_DIR}/backup.log"
 }
 
 write_config_file() {
     header "Writing configuration"
-    mkdir -p "$CONFIG_DIR"
     cat > "$CONFIG_FILE" <<CONF
 # =============================================================================
 #  Uptime Kuma — kuma.sh configuration
@@ -517,6 +512,7 @@ cmd_config() {
     LOG_FILE="${BACKUP_DIR}/backup.log"
     write_config_file
     info "Pinned image is ${KUMA_IMAGE} (v${RUNNING_MAJOR})"
+    info "Config  → ${CONFIG_FILE}"
     info "Backups → ${BACKUP_DIR}"
 }
 
@@ -893,6 +889,7 @@ cmd_help() {
     echo    "       $0 --help                This help"
     echo
     echo -e "${CYAN}Files:${NC}"
+    echo    "  Script   ${SCRIPT_PATH}"
     echo    "  Config   ${CONFIG_FILE}"
     echo    "  Backups  ${BACKUP_DIR}"
     echo    "  Cron     ${CRON_FILE}"
