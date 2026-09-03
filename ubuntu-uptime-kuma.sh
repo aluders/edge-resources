@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  kuma.sh  —  Uptime Kuma manager  v2.0
+#  kuma.sh  —  Uptime Kuma manager  v2.3
 # =============================================================================
 #  Detects a Docker / Compose / PM2 install and manages lifecycle, updates,
 #  and data-directory backups. Built for a Contabo/Plesk Ubuntu host running
@@ -27,6 +27,8 @@
 #         ./kuma.sh --help                Show this help
 # =============================================================================
 #  Version history:
+#    2.3  — Ignore stale /var/backups path; backups stay beside the script
+#    2.2  — Backups default next to the script (e.g. /root/kuma-backups)
 #    2.1  — --update compares digests; skip recreate if already current
 #    2.0  — Flag-style CLI, v1/v2 awareness, prompted major upgrades
 #    1.1  — Auto-detect Docker volume + compose/PM2
@@ -50,15 +52,17 @@
 
 set -euo pipefail
 
-VERSION="2.1"
+VERSION="2.3"
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 
 CONFIG_DIR="/etc/uptime-kuma"
 CONFIG_FILE="${CONFIG_DIR}/kuma.conf"
-BACKUP_DIR_DEFAULT="/var/backups/uptime-kuma"
+# Backups live beside the script unless BACKUP_DIR is set in the conf.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKUP_DIR_DEFAULT="${SCRIPT_DIR}/kuma-backups"
 CRON_FILE="/etc/cron.d/uptime-kuma"
-LOG_FILE="/var/log/uptime-kuma-backup.log"
+LOG_FILE="${BACKUP_DIR_DEFAULT}/backup.log"
 
 # Runtime (overridden by config / detection)
 FORCE_MODE=""
@@ -113,6 +117,12 @@ load_config() {
     [[ -f "$CONFIG_FILE" ]] || return 0
     # shellcheck disable=SC1090
     source "$CONFIG_FILE"
+    # Old installs wrote /var/backups/uptime-kuma. Always prefer the
+    # folder next to this script unless the conf points somewhere else.
+    if [[ -z "${BACKUP_DIR:-}" || "${BACKUP_DIR}" == "/var/backups/uptime-kuma" ]]; then
+        BACKUP_DIR="$BACKUP_DIR_DEFAULT"
+    fi
+    LOG_FILE="${BACKUP_DIR}/backup.log"
 }
 
 write_config_file() {
@@ -503,8 +513,11 @@ cmd_config() {
     require_mode
     resolve_data_source
     detect_running_image
+    BACKUP_DIR="$BACKUP_DIR_DEFAULT"
+    LOG_FILE="${BACKUP_DIR}/backup.log"
     write_config_file
     info "Pinned image is ${KUMA_IMAGE} (v${RUNNING_MAJOR})"
+    info "Backups → ${BACKUP_DIR}"
 }
 
 # =============================================================================
