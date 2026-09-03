@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  kuma.sh  —  Kuma Script  v2.4
+#  kuma.sh  —  Kuma Script  v2.5
 # =============================================================================
 #  Detects a Docker / Compose / PM2 install and manages lifecycle, updates,
 #  and data-directory backups. Built for a Contabo/Plesk Ubuntu host running
 #  the official louislam/uptime-kuma image.
 #
 #  Usage:
+#    sudo ./kuma.sh --install             Fresh Docker install (prompts for v1 or v2)
 #    sudo ./kuma.sh --status              Show install, image line (v1/v2), ports
 #    sudo ./kuma.sh --start               Start Uptime Kuma
 #    sudo ./kuma.sh --stop                Stop Uptime Kuma
@@ -27,6 +28,7 @@
 #         ./kuma.sh --help                Show this help
 # =============================================================================
 #  Version history:
+#    2.5  — --install for a fresh VM (Docker + official container)
 #    2.4  — Config file lives next to the script (kuma.conf)
 #    2.3  — Ignore stale /var/backups path; backups stay beside the script
 #    2.2  — Backups default next to the script (e.g. /root/kuma-backups)
@@ -53,7 +55,7 @@
 
 set -euo pipefail
 
-VERSION="2.4"
+VERSION="2.5"
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -349,6 +351,116 @@ image_id() {
 
 container_image_id() {
     docker inspect -f '{{.Image}}' "$KUMA_CONTAINER" 2>/dev/null || true
+}
+
+# =============================================================================
+#  FRESH INSTALL
+# =============================================================================
+prompt_value() {
+    local label="$1" default="$2"
+    local ps="  ${label}"
+    [[ -n "$default" ]] && ps+=" [${CYAN}${default}${NC}]"
+    echo -en "${ps}: "
+    read -r REPLY || REPLY=""
+    [[ -z "$REPLY" ]] && REPLY="$default"
+}
+
+ensure_docker() {
+    header "Docker"
+    if have docker && docker info >/dev/null 2>&1; then
+        ok "Docker ready  ($(docker --version | head -1))"
+        return 0
+    fi
+    if have docker; then
+        info "Docker binary present but daemon not running — starting it"
+        systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
+        docker info >/dev/null 2>&1 && { ok "Docker daemon is up"; return 0; }
+    fi
+    warn "Docker is not installed"
+    confirm_yes "Type YES to install Docker via get.docker.com" || die "Docker is required"
+    have curl || {
+        have apt-get || die "Need curl or apt-get to install Docker"
+        apt-get update -qq
+        apt-get install -y ca-certificates curl
+    }
+    curl -fsSL https://get.docker.com | sh
+    systemctl enable --now docker 2>/dev/null || true
+    docker info >/dev/null 2>&1 || die "Docker installed but the daemon is not running"
+    ok "Docker installed  ($(docker --version | head -1))"
+}
+
+cmd_install() {
+    require_root --install
+    detect_mode
+
+    echo
+    echo -e "${BOLD}${BLUE}╔══════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}${BLUE}║   Kuma Script — fresh install                ║${NC}"
+    echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════╝${NC}"
+    echo
+
+    if [[ -n "$MODE" ]] && docker inspect "$KUMA_CONTAINER" >/dev/null 2>&1; then
+        warn "Container '${KUMA_CONTAINER}' already exists."
+        info "Use --status / --update / --start.  Refusing to overwrite it."
+        exit 1
+    fi
+
+    ensure_docker
+
+    header "Install options"
+    echo -e "  Fresh installs should use ${BOLD}v2${NC} (${CYAN}louislam/uptime-kuma:2${NC})."
+    echo -e "  Use v1 only if you need to match an existing v1 backup."
+    echo
+    prompt_value "Line  (1 or 2)" "2"
+    local line="$REPLY"
+    case "$line" in
+        1|v1|:1) KUMA_IMAGE="louislam/uptime-kuma:1"; MODE="docker" ;;
+        2|v2|:2) KUMA_IMAGE="louislam/uptime-kuma:2"; MODE="docker" ;;
+        *) die "Enter 1 or 2" ;;
+    esac
+    prompt_value "Host port" "${KUMA_PORT}"
+    KUMA_PORT="$REPLY"
+    prompt_value "Container name" "${KUMA_CONTAINER}"
+    KUMA_CONTAINER="$REPLY"
+    prompt_value "Volume name" "${KUMA_VOLUME}"
+    KUMA_VOLUME="$REPLY"
+    prompt_value "Restart policy  (always / unless-stopped)" "${DOCKER_RESTART_POLICY}"
+    DOCKER_RESTART_POLICY="$REPLY"
+
+    echo
+    echo "  Image     : ${KUMA_IMAGE}"
+    echo "  Port      : ${KUMA_PORT} → 3001"
+    echo "  Volume    : ${KUMA_VOLUME}:/app/data"
+    echo "  Container : ${KUMA_CONTAINER}"
+    echo
+    confirm_yes "Type YES to pull and start" || die "Aborted"
+
+    header "Pulling ${KUMA_IMAGE}"
+    docker pull "$KUMA_IMAGE"
+
+    header "Creating container"
+    docker run -d --restart="$DOCKER_RESTART_POLICY" \
+        -p "${KUMA_PORT}:3001" \
+        -v "${KUMA_VOLUME}:/app/data" \
+        --name "$KUMA_CONTAINER" \
+        "$KUMA_IMAGE"
+
+    FORCE_MODE="docker"
+    MODE="docker"
+    resolve_data_source
+    detect_running_image
+    mkdir -p "$BACKUP_DIR"
+    write_config_file
+
+    echo
+    ok "Uptime Kuma is running"
+    echo -e "  UI      : ${CYAN}http://$(hostname -I 2>/dev/null | awk '{print $1}'):${KUMA_PORT}${NC}"
+    echo -e "  Local   : ${CYAN}http://127.0.0.1:${KUMA_PORT}${NC}"
+    echo -e "  Config  : ${CONFIG_FILE}"
+    echo -e "  Status  : ${CYAN}$0 --status${NC}"
+    echo -e "  Logs    : ${CYAN}$0 --logs${NC}"
+    echo
+    info "Complete setup in the browser (create the admin user)."
 }
 
 # =============================================================================
@@ -869,6 +981,7 @@ cmd_help() {
     echo -e "${BOLD}Kuma Script${NC}  v${VERSION}"
     echo
     echo -e "${CYAN}Usage:${NC}"
+    echo    "  sudo $0 --install             Fresh Docker install on a new VM"
     echo    "  sudo $0 --status              Show install, image line, ports, backups"
     echo    "  sudo $0 --start               Start"
     echo    "  sudo $0 --stop                Stop"
@@ -907,6 +1020,7 @@ load_config
 
 case "${1:-}" in
     ""|--help|-h)          cmd_help ;;
+    --install)             cmd_install ;;
     --status)              cmd_status ;;
     --detect)              cmd_detect ;;
     --config)              cmd_config ;;
