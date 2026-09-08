@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# backblaze.sh  v1.2
+# backblaze.sh  v1.3
 # -----------------------------------------------------------------------------
 # B2 Upload Automation Script (cURL / Native B2 API)
 #
@@ -36,6 +36,8 @@
 #   1  Missing dependency, bad path, API failure, or one or more files failed
 #
 # VERSION CHANGELOG:
+#   1.3  2026-09-07
+#        - Fix Python SyntaxWarning in X-Bz-File-Name encoder (`\$`)
 #   1.2  2026-09-07
 #        - Accept a directory as LOCAL_PATH and upload all files recursively
 #        - Preserve relative folder structure as B2 object names
@@ -53,7 +55,7 @@ set -euo pipefail
 
 show_help() {
     cat << 'EOF'
-B2 Upload Automation Script (cURL/Native API)  v1.2
+B2 Upload Automation Script (cURL/Native API)  v1.3
 
 Usage:
   backblaze.sh [OPTIONS] <APP_ID> <APP_KEY> <BUCKET_ID> <LOCAL_PATH>
@@ -163,8 +165,7 @@ b2_percent_encode() {
     # B2-safe encoding for X-Bz-File-Name. Keep / unencoded so folder structure works.
     python3 -c '
 import sys, urllib.parse
-s = sys.argv[1]
-print(urllib.parse.quote(s, safe="/._-~!\$'\''()*;=:@"), end="")
+print(urllib.parse.quote(sys.argv[1], safe=r"/._-~!$'"'"'()*;=:@"), end="")
 ' "$1"
 }
 
