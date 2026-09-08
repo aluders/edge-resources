@@ -22,9 +22,6 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
-#   3.5  - Registry key names now include Admin/User so two tools with the same display name (one elevated, one not) cannot collide
-#   3.4  - Dropped the "*" prefix on admin tools; HasLUAShield already marks them
-#   3.3  - Admin tools in the center list get a leading "*" (non-admin get two spaces) so the designation is minimal and names stay vertically aligned
 #   3.2  - Refresh and Remove windows now auto-close 5 seconds after completion instead of staying open (dropped -NoExit, added a closing pause)
 #   3.1  - Refresh and Remove no longer use "irm ... | iex" / [ScriptBlock]::Create((irm ...)) - that shape (fetch-and-evaluate with explorer.exe as parent) triggered a Defender ML false positive (Trojan:Win32/Commando.A!ml). Both now download/deploy to a local file first and run via -File.
 #   3.0  - Separators reattempted: CommandFlags=0x40 (ECF_SEPARATORAFTER) forced as true DWORD on the last item of each group, instead of dummy *_Sep keys with 0x20 (which is documented as top-level-only and was likely written as REG_SZ, not DWORD)
@@ -51,7 +48,7 @@
 param(
     [switch]$Uninstall
 )
-$ScriptVersion = "3.5"
+$ScriptVersion = "3.2"
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
@@ -199,8 +196,7 @@ function Install-EdgeToolsMenu {
         $lastToolKey = $null
         foreach ($tool in $Tools) {
             $safeName = ($tool.name -replace '[^a-zA-Z0-9]', '')
-            $adminSuffix = if ($tool.admin -eq $true) { 'Admin' } else { 'User' }
-            $itemKey = "$shellKey\{0:D2}_{1}_{2}" -f $menuIndex, $safeName, $adminSuffix
+            $itemKey = "$shellKey\{0:D2}_{1}" -f $menuIndex, $safeName
             New-Item -Path $itemKey -Force | Out-Null
             Set-ItemProperty -Path $itemKey -Name 'Icon' -Value $Config.Icon
             $menuIndex++
