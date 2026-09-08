@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   3.3  - Admin tools in the center list get a leading "*" (non-admin get two spaces) so the designation is minimal and names stay vertically aligned
 #   3.2  - Refresh and Remove windows now auto-close 5 seconds after completion instead of staying open (dropped -NoExit, added a closing pause)
 #   3.1  - Refresh and Remove no longer use "irm ... | iex" / [ScriptBlock]::Create((irm ...)) - that shape (fetch-and-evaluate with explorer.exe as parent) triggered a Defender ML false positive (Trojan:Win32/Commando.A!ml). Both now download/deploy to a local file first and run via -File.
 #   3.0  - Separators reattempted: CommandFlags=0x40 (ECF_SEPARATORAFTER) forced as true DWORD on the last item of each group, instead of dummy *_Sep keys with 0x20 (which is documented as top-level-only and was likely written as REG_SZ, not DWORD)
@@ -45,13 +46,10 @@
 #   1.2  - Tool list folded back into the script (no separate manifest)
 #   1.1  - Tools pulled from a JSON manifest
 #   1.0  - Initial release (static tool list)
-
 param(
     [switch]$Uninstall
 )
-
-$ScriptVersion = "3.2"
-
+$ScriptVersion = "3.3"
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
@@ -80,7 +78,6 @@ $Config = @{
         # List" (or re-run the installer) on each machine to pick it up.
     )
 }
-
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
@@ -92,13 +89,11 @@ function Write-Status {
     $color = switch ($Type) { '+' {'Green'} '*' {'Cyan'} '!' {'Yellow'} 'x' {'Red'} }
     Write-Host "[$Type] $Message" -ForegroundColor $color
 }
-
 function Deploy-Launcher {
     $dir = Split-Path $Config.LauncherPath -Parent
     if (-not (Test-Path $dir)) {
         New-Item -Path $dir -ItemType Directory -Force | Out-Null
     }
-
     $launcherContent = @'
 param(
     [Parameter(Mandatory)][string]$ToolUrl,
@@ -109,11 +104,9 @@ Write-Host "[*] Path: $Path" -ForegroundColor Cyan
 Write-Host "[*] Running $ToolUrl ..." -ForegroundColor Cyan
 Invoke-RestMethod $ToolUrl | Invoke-Expression
 '@
-
     Set-Content -Path $Config.LauncherPath -Value $launcherContent -Encoding UTF8 -Force
     Write-Status "Launcher deployed to $($Config.LauncherPath)" '+'
 }
-
 function Deploy-Uninstaller {
     # Deployed locally so "Remove Edge Tools" can run entirely offline via
     # -File. The earlier version fetched this installer and invoked it via
@@ -125,11 +118,9 @@ function Deploy-Uninstaller {
     if (-not (Test-Path $dir)) {
         New-Item -Path $dir -ItemType Directory -Force | Out-Null
     }
-
     $rootsLiteral = ($Config.Roots | ForEach-Object {
         "    'HKCU:\Software\Classes\$_\EdgeTools'"
     }) -join "`r`n"
-
     $uninstallContent = @"
 `$keys = @(
 $rootsLiteral
@@ -143,11 +134,9 @@ Write-Host '[+] Edge Tools removed.' -ForegroundColor Green
 Write-Host '[*] Closing in 5 seconds...' -ForegroundColor Yellow
 Start-Sleep -Seconds 5
 "@
-
     Set-Content -Path $Config.UninstallerPath -Value $uninstallContent -Encoding UTF8 -Force
     Write-Status "Uninstaller deployed to $($Config.UninstallerPath)" '+'
 }
-
 function Remove-EdgeToolsMenu {
     foreach ($root in $Config.Roots) {
         $key = "Registry::HKEY_CURRENT_USER\Software\Classes\$root\EdgeTools"
@@ -156,10 +145,8 @@ function Remove-EdgeToolsMenu {
         }
     }
 }
-
 function Install-EdgeToolsMenu {
     param([array]$Tools)
-
     function Set-RegDword {
         # Set-ItemProperty has been unreliable at writing numeric values as
         # true REG_DWORD (sometimes lands as REG_SZ instead), which silently
@@ -169,22 +156,18 @@ function Install-EdgeToolsMenu {
         param([string]$Path, [string]$Name, [int]$Value)
         New-ItemProperty -Path $Path -Name $Name -PropertyType DWord -Value $Value -Force | Out-Null
     }
-
     foreach ($root in $Config.Roots) {
         $rootKey = "Registry::HKEY_CURRENT_USER\Software\Classes\$root\EdgeTools"
         New-Item -Path $rootKey -Force | Out-Null
         Set-ItemProperty -Path $rootKey -Name 'MUIVerb' -Value $Config.MenuLabel
         Set-ItemProperty -Path $rootKey -Name 'Icon' -Value $Config.Icon
         Set-ItemProperty -Path $rootKey -Name 'SubCommands' -Value ''
-
         $shellKey = "$rootKey\shell"
         New-Item -Path $shellKey -Force | Out-Null
-
         # Cascading subcommand order follows alphabetical key-name sort,
         # not MenuIndex (that only reliably applies to top-level entries).
         # Zero-padded numeric prefixes force the order we want.
         $menuIndex = 0
-
         # --- plain PowerShell prompts, always first ---
         $psKey = "$shellKey\{0:D2}_PowerShell" -f $menuIndex
         New-Item -Path $psKey -Force | Out-Null
@@ -195,7 +178,6 @@ function Install-EdgeToolsMenu {
         New-Item -Path $psCmdKey -Force | Out-Null
         $psCmd = "powershell.exe -NoExit -Command `"Set-Location -LiteralPath '%V'`""
         Set-Item -Path $psCmdKey -Value $psCmd
-
         $psAdminKey = "$shellKey\{0:D2}_PowerShellAdmin" -f $menuIndex
         New-Item -Path $psAdminKey -Force | Out-Null
         Set-ItemProperty -Path $psAdminKey -Name 'MUIVerb' -Value 'PowerShell (Admin)'
@@ -211,7 +193,6 @@ function Install-EdgeToolsMenu {
         # inside the single-quoted -ArgumentList string - not a typo.
         $psAdminCmd = "powershell.exe -Command `"Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit -Command Set-Location -LiteralPath ''%V'''`""
         Set-Item -Path $psAdminCmdKey -Value $psAdminCmd
-
         # --- tools, alphabetical ---
         $lastToolKey = $null
         foreach ($tool in $Tools) {
@@ -221,12 +202,13 @@ function Install-EdgeToolsMenu {
             Set-ItemProperty -Path $itemKey -Name 'Icon' -Value $Config.Icon
             $menuIndex++
             $lastToolKey = $itemKey
-
             $cmdKey = "$itemKey\command"
             New-Item -Path $cmdKey -Force | Out-Null
-
+            # Leading "*" marks admin tools; two spaces on non-admin keep
+            # the names vertically aligned in the cascading menu.
+            $label = if ($tool.admin -eq $true) { "* $($tool.name)" } else { "  $($tool.name)" }
             if ($tool.admin -eq $true) {
-                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $tool.name
+                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $label
                 Set-ItemProperty -Path $itemKey -Name 'HasLUAShield' -Value ''
                 # NB: \`" (backslash + quote) below is deliberate, not a typo -
                 # it embeds a literal quote inside the single-quoted
@@ -236,18 +218,16 @@ function Install-EdgeToolsMenu {
                 Set-Item -Path $cmdKey -Value $adminCmd
             }
             else {
-                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $tool.name
+                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $label
                 $normalCmd = "powershell.exe -NoExit -ExecutionPolicy Bypass -File `"$($Config.LauncherPath)`" -ToolUrl `"$($tool.url)`" -Path `"%V`""
                 Set-Item -Path $cmdKey -Value $normalCmd
             }
         }
-
         # ECF_SEPARATORAFTER on the last tool - divider between the tools
         # and the Refresh/Remove management entries.
         if ($lastToolKey) {
             Set-RegDword -Path $lastToolKey -Name 'CommandFlags' -Value 0x40
         }
-
         # --- self-refresh entry ---
         # Downloads the latest installer to disk first, then runs it via
         # -File. The previous "irm ... | iex" cradle (fetch-and-evaluate
@@ -264,7 +244,6 @@ function Install-EdgeToolsMenu {
         New-Item -Path $refreshCmdKey -Force | Out-Null
         $refreshCmd = "powershell.exe -ExecutionPolicy Bypass -Command `"Invoke-WebRequest -UseBasicParsing -Uri '$($Config.InstallerUrl)' -OutFile '$($Config.InstallerLocalPath)'; & '$($Config.InstallerLocalPath)'; Write-Host '[*] Closing in 5 seconds...' -ForegroundColor Yellow; Start-Sleep -Seconds 5`""
         Set-Item -Path $refreshCmdKey -Value $refreshCmd
-
         # --- self-uninstall entry ---
         # Runs the locally-deployed Uninstall-EdgeTools.ps1 via -File - no
         # network fetch, no [ScriptBlock]::Create. See Deploy-Uninstaller.
@@ -277,16 +256,13 @@ function Install-EdgeToolsMenu {
         New-Item -Path $removeCmdKey -Force | Out-Null
         $removeCmd = "powershell.exe -ExecutionPolicy Bypass -File `"$($Config.UninstallerPath)`""
         Set-Item -Path $removeCmdKey -Value $removeCmd
-
         Write-Status "Installed $($Tools.Count) tool(s) under $root" '+'
     }
 }
-
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
 Write-Status "Edge Tools Context Menu Installer v$ScriptVersion" '*'
-
 if ($Uninstall) {
     Remove-EdgeToolsMenu
     $dir = Split-Path $Config.LauncherPath -Parent
@@ -296,15 +272,12 @@ if ($Uninstall) {
     Write-Status "Uninstalled." '+'
     return
 }
-
 if ($Config.Tools.Count -eq 0) {
     Write-Status "No tools defined in `$Config.Tools - nothing to install." 'x'
     return
 }
-
 Deploy-Launcher
 Deploy-Uninstaller
 Remove-EdgeToolsMenu
 Install-EdgeToolsMenu -Tools $Config.Tools
-
 Write-Status "Done. Right-click a folder or its background to see 'Edge Tools'." '+'
