@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   3.5  - Registry key names now include Admin/User so two tools with the same display name (one elevated, one not) cannot collide
 #   3.4  - Dropped the "*" prefix on admin tools; HasLUAShield already marks them
 #   3.3  - Admin tools in the center list get a leading "*" (non-admin get two spaces) so the designation is minimal and names stay vertically aligned
 #   3.2  - Refresh and Remove windows now auto-close 5 seconds after completion instead of staying open (dropped -NoExit, added a closing pause)
@@ -50,7 +51,7 @@
 param(
     [switch]$Uninstall
 )
-$ScriptVersion = "3.4"
+$ScriptVersion = "3.5"
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
@@ -70,7 +71,6 @@ $Config = @{
         @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
         @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
         @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
-        @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $false  }
         @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
         @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true  }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
@@ -199,7 +199,8 @@ function Install-EdgeToolsMenu {
         $lastToolKey = $null
         foreach ($tool in $Tools) {
             $safeName = ($tool.name -replace '[^a-zA-Z0-9]', '')
-            $itemKey = "$shellKey\{0:D2}_{1}" -f $menuIndex, $safeName
+            $adminSuffix = if ($tool.admin -eq $true) { 'Admin' } else { 'User' }
+            $itemKey = "$shellKey\{0:D2}_{1}_{2}" -f $menuIndex, $safeName, $adminSuffix
             New-Item -Path $itemKey -Force | Out-Null
             Set-ItemProperty -Path $itemKey -Name 'Icon' -Value $Config.Icon
             $menuIndex++
