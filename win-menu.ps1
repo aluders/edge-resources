@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   3.4  - Dropped the "*" prefix on admin tools; HasLUAShield already marks them
 #   3.3  - Admin tools in the center list get a leading "*" (non-admin get two spaces) so the designation is minimal and names stay vertically aligned
 #   3.2  - Refresh and Remove windows now auto-close 5 seconds after completion instead of staying open (dropped -NoExit, added a closing pause)
 #   3.1  - Refresh and Remove no longer use "irm ... | iex" / [ScriptBlock]::Create((irm ...)) - that shape (fetch-and-evaluate with explorer.exe as parent) triggered a Defender ML false positive (Trojan:Win32/Commando.A!ml). Both now download/deploy to a local file first and run via -File.
@@ -49,7 +50,7 @@
 param(
     [switch]$Uninstall
 )
-$ScriptVersion = "3.3"
+$ScriptVersion = "3.4"
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
@@ -69,7 +70,6 @@ $Config = @{
         @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
         @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
         @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
-        @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $false  }
         @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
         @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true  }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
@@ -205,11 +205,8 @@ function Install-EdgeToolsMenu {
             $lastToolKey = $itemKey
             $cmdKey = "$itemKey\command"
             New-Item -Path $cmdKey -Force | Out-Null
-            # Leading "*" marks admin tools; two spaces on non-admin keep
-            # the names vertically aligned in the cascading menu.
-            $label = if ($tool.admin -eq $true) { "* $($tool.name)" } else { "  $($tool.name)" }
             if ($tool.admin -eq $true) {
-                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $label
+                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $tool.name
                 Set-ItemProperty -Path $itemKey -Name 'HasLUAShield' -Value ''
                 # NB: \`" (backslash + quote) below is deliberate, not a typo -
                 # it embeds a literal quote inside the single-quoted
@@ -219,7 +216,7 @@ function Install-EdgeToolsMenu {
                 Set-Item -Path $cmdKey -Value $adminCmd
             }
             else {
-                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $label
+                Set-ItemProperty -Path $itemKey -Name 'MUIVerb' -Value $tool.name
                 $normalCmd = "powershell.exe -NoExit -ExecutionPolicy Bypass -File `"$($Config.LauncherPath)`" -ToolUrl `"$($tool.url)`" -Path `"%V`""
                 Set-Item -Path $cmdKey -Value $normalCmd
             }
