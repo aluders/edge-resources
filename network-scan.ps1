@@ -1,4 +1,4 @@
-#    Network Scanner  (Windows)  v1.5
+#    Network Scanner  (Windows)  v1.6
 #    ===================================
 #    Discovers every device on the local subnet using a layered approach:
 #    ICMP ping sweep, ARP/neighbor cache, reverse DNS, OUI vendor lookup,
@@ -12,6 +12,10 @@
 #
 #    VERSION HISTORY
 #    ---------------
+#    1.6 - Standard-user mode: no admin required. Detects elevation, optional
+#          interactive confirm on a real console (skipped for irm | iex),
+#          UDP ARP prime to populate the neighbor cache without privileges,
+#          SendARP / Get-NetNeighbor treated as best-effort. New -Limited flag.
 #    1.5 - Cache paths moved to %LOCALAPPDATA%\EdgeTools\netscan\
 #    1.4 - Unicode symbol safety: auto-detects terminal capability and falls
 #          back to ASCII in classic conhost; tightened column widths to
@@ -24,8 +28,10 @@
 #
 #    NOTES
 #    -----
-#    - Run from an elevated PowerShell window (required for SendARP and
-#      Get-NetNeighbor to resolve MACs reliably across all device types).
+#    - Admin elevation is OPTIONAL. Ping, TCP scan, mDNS, SSDP, HTTP titles,
+#      arp -a, SendARP, and LOCALAPPDATA caches all work as a standard user.
+#      Elevation can improve MAC coverage when the neighbor cache is empty.
+#      This script never flushes the ARP cache (that *does* need admin).
 #    - Vendor cache lives at %LOCALAPPDATA%\EdgeTools\netscan\oui\ — delete it to
 #      force a fresh lookup. Only successful API results are cached, so
 #      transient failures are retried automatically on the next run.
@@ -43,19 +49,18 @@
 #    With flags (wrap in a scriptblock to pass parameters):
 #        & ([scriptblock]::Create((irm netscan.vcc.net))) -Network 10.1.0.0/24
 #        & ([scriptblock]::Create((irm netscan.vcc.net))) -Timeout 500 -Verbose
+#        & ([scriptblock]::Create((irm netscan.vcc.net))) -Limited
 #        & ([scriptblock]::Create((irm netscan.vcc.net))) -Help
-
 # netscan.ps1 — Network device discovery for Windows
-# Usage:  .\netscan.ps1 [-Interface NIC] [-Network CIDR] [-Timeout MS] [-Verbose] [-Help]
-
+# Usage:  .\netscan.ps1 [-Interface NIC] [-Network CIDR] [-Timeout MS] [-Verbose] [-Limited] [-Help]
 param(
     [string]$Interface = "",
     [string]$Network   = "",
     [int]   $Timeout   = 1000,
     [switch]$Verbose,
+    [switch]$Limited,
     [switch]$Help
 )
-
 # ── Console encoding + symbol safety ─────────────────────────────────────────
 # Force UTF-8 output so Unicode symbols render correctly in modern terminals.
 # Old conhost.exe (classic PowerShell window) often can't render them even with
@@ -64,21 +69,17 @@ param(
 $cp = [Console]::OutputEncoding.CodePage
 # Unicode symbols work in Windows Terminal or VS Code; fall back to ASCII in classic conhost
 $canUnicode = [bool]($env:WT_SESSION -or $env:TERM_PROGRAM -or $env:ConEmuPID)
-
 $SYM_OK  = if ($canUnicode) { [char]0x2713 } else { "OK" }   # ✓
 $SYM_ARR = if ($canUnicode) { [char]0x25B6 } else { ">" }    # ▶
 $SYM_DIV = if ($canUnicode) { [char]0x2500 } else { "-" }    # ─
 $SYM_MID = if ($canUnicode) { " · " }        else { " | " }  # ·
-
 # ── Ports to scan ──────────────────────────────────────────────────────────────
 $ScanPorts = @(21, 22, 80, 443, 8080, 8443)
 $DIVIDER   = $SYM_DIV * 72
-
 # ── Tiny write helpers ─────────────────────────────────────────────────────────
 function wh { param([string]$t,[string]$c="White",[switch]$n)
     if ($n) { Write-Host $t -ForegroundColor $c -NoNewline } else { Write-Host $t -ForegroundColor $c } }
 function divider { Write-Host $DIVIDER -ForegroundColor DarkCyan }
-
 # ANSI dim prefix/suffix (works in Windows Terminal & modern conhost)
 $DIM = [char]0x1b + "[2m"; $RST = [char]0x1b + "[0m"
 # Helpers for inline ANSI-colored progress lines (no per-segment Write-Host overhead)
@@ -86,28 +87,47 @@ function phase { param([string]$label,[string]$rest)
     Write-Host -NoNewline ("  ${DIM}${label}${RST}${rest}") }
 function phaseln { param([string]$label,[string]$rest)
     Write-Host ("  ${DIM}${label}${RST}${rest}") }
-
+# ── Elevation / standard-user mode ─────────────────────────────────────────────
+function Test-IsElevated {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $p  = [Security.Principal.WindowsPrincipal]$id
+        return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+$Elevated = Test-IsElevated
+# Real TTY only — irm | iex and redirected stdin must never block on Read-Host
+$IsInteractive = $false
+try {
+    $IsInteractive = [Environment]::UserInteractive -and
+                     -not [Console]::IsInputRedirected -and
+                     -not [Console]::IsOutputRedirected
+} catch { $IsInteractive = $false }
+# -Limited forces the non-admin code path even in an elevated window
+$UseSendARP = (-not $Limited)   # SendARP itself is user-mode; Limited skips the extra pass
 # ── Usage ──────────────────────────────────────────────────────────────────────
 if ($Help) {
     Write-Host ""
     wh "  NETWORK SCANNER" Cyan; divider
     wh "  Usage:  " White -n; wh ".\netscan.ps1 " Cyan -n
-    wh "[-Interface NIC] [-Network CIDR] " Yellow -n; wh "[-Timeout MS] [-Verbose] [-Help]" DarkGray
+    wh "[-Interface NIC] [-Network CIDR] " Yellow -n; wh "[-Timeout MS] [-Verbose] [-Limited] [-Help]" DarkGray
     Write-Host ""
     wh "  -Interface  " Cyan    -n; wh "Adapter name  " White -n; wh "(default: auto-detect)" DarkGray
     wh "  -Network    " Yellow  -n; wh "Subnet CIDR   " White -n; wh "(e.g. 10.1.0.0/24)" DarkGray
     wh "  -Timeout    " Magenta -n; wh "Ping timeout  " White -n; wh "(ms, default: 1000)" DarkGray
     wh "  -Verbose    " DarkGray -n; wh "Show verbose lookup progress" DarkGray
+    wh "  -Limited    " DarkGray -n; wh "Skip SendARP pass (standard-user / quieter ARP)" DarkGray
     wh "  -Help       " DarkGray -n; wh "Show this help message" DarkGray
+    Write-Host ""
+    wh "  Admin rights are optional. Remote run:" DarkGray
+    wh "      irm netscan.vcc.net | iex" Cyan
     divider; Write-Host ""; exit 0
 }
-
 # ── CIDR validation ────────────────────────────────────────────────────────────
 function Test-CIDR ([string]$c) { $c -match '^\d{1,3}(\.\d{1,3}){3}/([0-9]|[12]\d|3[0-2])$' }
 if ($Network -ne "" -and -not (Test-CIDR $Network)) {
     wh "  Error: " Red -n; Write-Host "Invalid CIDR '$Network'. Use e.g. 10.1.0.0/24"; exit 1
 }
-
 # ── IP math ────────────────────────────────────────────────────────────────────
 function ip2int ([string]$ip) {
     $p = $ip.Split('.')
@@ -120,28 +140,22 @@ function prefix2mask ([int]$p) {
     if ($p -eq 0) { return [long]0 }
     $m = [long]0; for ($b=0;$b -lt $p;$b++) { $m = ($m -shr 1) -bor [long]0x80000000 }; $m
 }
-
 # ── OUI cache + vendor lookup ──────────────────────────────────────────────────
 $CacheDir = "$env:LOCALAPPDATA\EdgeTools\netscan\oui"
 if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null }
-
 function Get-Vendor ([string]$MAC) {
     $oui = ($MAC.ToUpper() -replace '[:\-]','').Substring(0,6)
-
     # Locally administered (randomized) MAC — bit 1 of first octet is set.
     # No vendor lookup possible for privacy MACs — leave blank.
     $firstByte = [Convert]::ToInt32($oui.Substring(0,2), 16)
     if ($firstByte -band 0x02) { return "" }
-
     $cf = Join-Path $CacheDir "oui_$oui"
-
     # 1. Persistent disk cache — only trust non-empty results.
     #    Empty or missing = try the API again. No point keeping failures forever.
     if (Test-Path $cf) {
         $cached = (Get-Content $cf -Raw).Trim()
         if ($cached -ne "") { return $cached }
     }
-
     # 2. macvendors.com API — sole source of truth.
     #    Only write to cache on a real result so transient failures get retried next run.
     try {
@@ -152,10 +166,8 @@ function Get-Vendor ([string]$MAC) {
             return $v
         }
     } catch {}
-
     return ""
 }
-
 # ── SSDP ──────────────────────────────────────────────────────────────────────
 function Get-SSDPDevices {
     $results = @{}
@@ -195,7 +207,6 @@ function Get-SSDPDevices {
     } catch {}
     return $results
 }
-
 # ── mDNS multicast listener ────────────────────────────────────────────────────
 function Get-MDNSDevices ([string[]]$AliveIPs) {
     $results = @{}
@@ -241,10 +252,8 @@ function Get-MDNSDevices ([string[]]$AliveIPs) {
     } catch {}
     return $results
 }
-
 # ── Network detection ──────────────────────────────────────────────────────────
 $LocalIP=""; $LocalIface=""; $Prefix=24; $NetAddr=""; $MaskInt=[long]0; $Gateway="unknown"
-
 if ($Network -ne "") {
     $parts=$Network -split '/'; $NetAddr=$parts[0]; $Prefix=[int]$parts[1]
     $MaskInt=prefix2mask $Prefix; $NetInt=ip2int $NetAddr
@@ -269,13 +278,27 @@ if ($Network -ne "") {
         Where-Object { $_.InterfaceAlias -eq $LocalIface } | Sort-Object RouteMetric | Select-Object -First 1
     if ($gw) { $Gateway=$gw.NextHop }
 }
-
 $NetInt   = ip2int $NetAddr
 $BcastInt = $NetInt -bor ((-bnot $MaskInt) -band 0xFFFFFFFFL)
 $Subnet   = "$NetAddr/$Prefix"
 $AllIPs   = @(); for ($h=$NetInt+1; $h -lt $BcastInt; $h++) { $AllIPs += int2ip $h }
 $Total    = $AllIPs.Count
-
+# ── Optional interactive confirm (local file run only) ─────────────────────────
+if (-not $Elevated -and $IsInteractive) {
+    Write-Host ""
+    wh "  NETWORK SCANNER" Cyan
+    divider
+    wh "  Running as a standard user — admin is not required." Yellow
+    wh "  MAC addresses may be missing for hosts that never ARP'd this PC." DarkGray
+    wh "  A UDP prime + SendARP will still be attempted." DarkGray
+    Write-Host ""
+    try {
+        $ans = Read-Host "  Continue without elevation? [Y/n]"
+        if ($ans -match '^[Nn]') { Write-Host ""; exit 0 }
+    } catch {
+        # If Read-Host fails (weird host), just continue
+    }
+}
 # ── Header ─────────────────────────────────────────────────────────────────────
 Write-Host ""
 wh "  NETWORK SCANNER" Cyan
@@ -287,36 +310,38 @@ wh "  Scanning:   " White -n; wh $Subnet     Cyan
 wh "  Ports:      " White -n; wh ($ScanPorts -join " ") Cyan
 wh "  Engine:     " White -n; wh "ping + ARP + TCP connect" Cyan
 wh "  Timeout:    " White -n; wh "${Timeout}ms per host" Cyan
+wh "  Privileges: " White -n
+if ($Elevated -and -not $Limited) {
+    wh "elevated" Green
+} elseif ($Limited) {
+    wh "limited (SendARP skipped)" Yellow
+} else {
+    wh "standard user" Yellow
+}
 divider
-
 # ── Temp dir + cleanup trap ────────────────────────────────────────────────────
 $TmpDir = Join-Path $env:TEMP "netscan_$PID"
 New-Item -ItemType Directory -Path $TmpDir -Force | Out-Null
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 1 — Ping sweep via RunspacePool (all hosts in parallel — fast!)
 # ══════════════════════════════════════════════════════════════════════════════
 phase "Phase 1/7 — Ping sweep:" ("   ${DIM}0${RST}/$Total probed  " + "${DIM}0${RST} alive`r")
-
 $PingScript = {
     param([string]$ip,[int]$timeout)
     $p = New-Object System.Net.NetworkInformation.Ping
     try { if ($p.Send($ip,$timeout).Status -eq 'Success') { return $ip } } catch {}
     return $null
 }
-
 # Cap concurrency at 256 to avoid socket exhaustion; /24 = 254 hosts fits perfectly
 $concurrency = [Math]::Min($Total, 256)
 $Pool = [RunspaceFactory]::CreateRunspacePool(1, $concurrency)
 $Pool.Open()
-
 $Handles = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($ip in $AllIPs) {
     $ps = [PowerShell]::Create(); $ps.RunspacePool = $Pool
     $ps.AddScript($PingScript).AddArgument($ip).AddArgument($Timeout) | Out-Null
     $Handles.Add(@{ PS=$ps; AR=$ps.BeginInvoke(); Collected=$false })
 }
-
 $AliveIPs = [System.Collections.Generic.List[string]]::new()
 while ($true) {
     $done = 0
@@ -339,12 +364,24 @@ while ($true) {
     Start-Sleep -Milliseconds 80
 }
 $Pool.Close(); $Pool.Dispose()
-
 $pingAlive = $AliveIPs.Count
 phaseln "Phase 1/7 — Ping sweep:" ("   " +
     [char]0x1b+"[36m${Total}"+[char]0x1b+"[0m/$Total probed  " +
     [char]0x1b+"[32m${pingAlive}"+[char]0x1b+"[0m alive $SYM_OK                    ")
-
+# ── UDP ARP prime (user-mode; forces Windows to ARP before we read the cache) ─
+# Sending a 1-byte UDP datagram to port 1 does not need admin. The stack still
+# issues ARP to deliver it, which fills Get-NetNeighbor / arp -a.
+try {
+    $udpPrime = New-Object System.Net.Sockets.UdpClient
+    $udpPrime.Client.SendTimeout = 1
+    $primeBytes = [byte[]](0)
+    $primeTargets = if ($AliveIPs.Count -gt 0) { $AliveIPs } else { $AllIPs }
+    foreach ($ip in $primeTargets) {
+        try { [void]$udpPrime.Send($primeBytes, 1, $ip, 1) } catch {}
+    }
+    $udpPrime.Close()
+    Start-Sleep -Milliseconds 200
+} catch {}
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 2 — ARP cache (picks up devices that silently block ICMP)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -362,17 +399,14 @@ foreach ($line in (arp -a 2>$null)) {
 $AliveIPs = [System.Collections.Generic.List[string]]($AliveIPs | Sort-Object { [System.Version]$_ })
 $TotalFound = $AliveIPs.Count
 phaseln "Phase 2/7 — ARP cache:" ("    " + [char]0x1b+"[32m+${arpNew}"+[char]0x1b+"[0m additional device(s) found $SYM_OK          ")
-
 if ($TotalFound -eq 0) {
     Write-Host ""; wh "  No devices found on $Subnet." Yellow
     divider; Write-Host ""; Remove-Item $TmpDir -Recurse -Force -ErrorAction SilentlyContinue; exit 0
 }
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 3 — Reverse DNS (parallel runspaces)
 # ══════════════════════════════════════════════════════════════════════════════
 phase "Phase 3/7 — Hostnames:" "    resolving ${TotalFound} host(s)…`r"
-
 $DnsScript  = { param([string]$ip); try { [System.Net.Dns]::GetHostEntry($ip).HostName } catch { "" } }
 $Pool2 = [RunspaceFactory]::CreateRunspacePool(1,[Math]::Min($TotalFound,64)); $Pool2.Open()
 $DnsH  = [System.Collections.Generic.List[hashtable]]::new()
@@ -387,14 +421,11 @@ if ($LocalIP -ne "unknown") { $hostMap[$LocalIP] = $env:COMPUTERNAME }
 foreach ($h in $DnsH) { $r=$h.PS.EndInvoke($h.AR); if ($r) { $hostMap[$h.IP]=[string]$r }; $h.PS.Dispose() }
 $Pool2.Close(); $Pool2.Dispose()
 phaseln "Phase 3/7 — Hostnames:" "    done $SYM_OK                                    "
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 4 — MAC addresses + OUI vendor lookup
 # ══════════════════════════════════════════════════════════════════════════════
 phase "Phase 4/7 — Vendors:" "      resolving MACs…`r"
-
 $macMap = @{}; $vendorMap = @{}; $seenOUIs = @{}
-
 # Inject local machine's own MAC directly from the adapter.
 # The local IP never appears in the ARP table (ARP only resolves other machines).
 $localAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
@@ -411,16 +442,12 @@ if ($localAdapter -and $LocalIP -ne "unknown") {
     $localOui = ($localMac -replace ':','').Substring(0,6)
     if (-not $seenOUIs.ContainsKey($localOui)) { $seenOUIs[$localOui] = $localMac }
 }
-
 # ── ARP resolution — three passes for maximum coverage ────────────────────────
 #
 # Pass 1: Read the existing ARP cache (instant, catches most devices)
-# Pass 2: For any IP still missing a MAC, send a directed ping + re-read ARP
-#          (some entries age out between the ping sweep and now)
-# Pass 3: For any IP still missing, use SendARP() via iphlpapi.dll —
-#          a direct ARP request that bypasses the OS cache entirely and forces
-#          a fresh ARP exchange on the wire. Most robust for stubborn devices.
-
+# Pass 2: For any IP still missing a MAC, SendARP() via iphlpapi.dll
+#          (user-mode; no admin). Skipped when -Limited is set.
+# Pass 3: For any IP still missing, directed ping + re-read ARP
 # Build a MAC lookup from all available sources into a single hashtable
 function Get-NeighborMACs {
     $found = @{}
@@ -431,16 +458,17 @@ function Get-NeighborMACs {
             ForEach-Object { $found[$_.IPAddress] = $_.LinkLayerAddress.ToUpper() -replace '-',':' }
     } catch {}
     # Source 2: arp -a — covers any entries not in the PS neighbor cache
-    foreach ($line in (arp -a 2>$null)) {
-        if ($line -match '^\s+(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{2}(-[0-9a-f]{2}){5})') {
-            $ip = $Matches[1]
-            if (-not $found.ContainsKey($ip)) { $found[$ip] = $Matches[2].ToUpper() -replace '-',':' }
+    try {
+        foreach ($line in (arp -a 2>$null)) {
+            if ($line -match '^\s+(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{2}(-[0-9a-f]{2}){5})') {
+                $ip = $Matches[1]
+                if (-not $found.ContainsKey($ip)) { $found[$ip] = $Matches[2].ToUpper() -replace '-',':' }
+            }
         }
-    }
+    } catch {}
     return $found
 }
-
-# SendARP p/invoke — direct wire-level ARP, bypasses cache entirely
+# SendARP p/invoke — direct wire-level ARP, bypasses cache entirely (user-mode)
 Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -451,7 +479,6 @@ namespace Net {
     }
 }
 '@
-
 function Invoke-SendARP ([string]$IP) {
     try {
         $bytes  = [System.Net.IPAddress]::Parse($IP).GetAddressBytes()
@@ -465,7 +492,6 @@ function Invoke-SendARP ([string]$IP) {
     } catch {}
     return $null
 }
-
 # Pass 1 — neighbor cache + arp -a (catches ~95% instantly)
 $neighbors = Get-NeighborMACs
 $need = [System.Collections.Generic.List[string]]::new()
@@ -473,9 +499,9 @@ foreach ($ip in $AliveIPs) {
     if ($ip -eq $LocalIP) { continue }
     if ($neighbors.ContainsKey($ip)) { $macMap[$ip] = $neighbors[$ip] } else { $need.Add($ip) }
 }
-
 # Pass 2 — SendARP directly on anything still missing (parallel, no cache involved)
-if ($need.Count -gt 0) {
+# User-mode API; skipped only when -Limited is set.
+if ($UseSendARP -and $need.Count -gt 0) {
     $SendARPScript = {
         param([string]$ip)
         Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
@@ -512,7 +538,6 @@ namespace Net {
         $h.PS.Dispose()
     }
     $Pool0.Close(); $Pool0.Dispose()
-
     # Pass 3 — ping any that SendARP still missed, then re-read neighbor cache
     $still = [System.Collections.Generic.List[string]]::new()
     foreach ($ip in $need) { if (-not $macMap.ContainsKey($ip)) { $still.Add($ip) } }
@@ -523,8 +548,14 @@ namespace Net {
             if ($neighbors2.ContainsKey($ip)) { $macMap[$ip] = $neighbors2[$ip] }
         }
     }
+} elseif ($need.Count -gt 0) {
+    # Limited mode: ping-prime + re-read cache only
+    foreach ($ip in $need) { ping $ip -n 1 -w 300 2>$null | Out-Null }
+    $neighbors2 = Get-NeighborMACs
+    foreach ($ip in $need) {
+        if ($neighbors2.ContainsKey($ip)) { $macMap[$ip] = $neighbors2[$ip] }
+    }
 }
-
 # Build seenOUIs from everything we found
 foreach ($ip in $AliveIPs) {
     if (-not $macMap.ContainsKey($ip)) { continue }
@@ -532,7 +563,6 @@ foreach ($ip in $AliveIPs) {
     $oui = ($raw -replace ':','').Substring(0,6)
     if (-not $seenOUIs.ContainsKey($oui)) { $seenOUIs[$oui] = $raw }
 }
-
 $ouiIdx=0; $ouiTotal=$seenOUIs.Count
 foreach ($kv in $seenOUIs.GetEnumerator()) {
     $ouiIdx++
@@ -551,12 +581,10 @@ foreach ($kv in $seenOUIs.GetEnumerator()) {
     if (-not $isCached -and -not $isRandomized) { Start-Sleep -Milliseconds 1500 }
 }
 phaseln "Phase 4/7 — Vendors:" "      ${ouiTotal} unique OUI(s) resolved $SYM_OK              "
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 5 — Port scan + mDNS + SSDP (all in parallel)
 # ══════════════════════════════════════════════════════════════════════════════
 phase "Phase 5/7 — Port scan + mDNS + SSDP:" "  running…`r"
-
 $PortScript = {
     param([string]$ip,[int[]]$ports)
     $open=@()
@@ -570,7 +598,6 @@ $PortScript = {
     }
     return ($open -join " ")
 }
-
 $Pool3=[RunspaceFactory]::CreateRunspacePool(1,[Math]::Min($TotalFound,64)); $Pool3.Open()
 $PortH=[System.Collections.Generic.List[hashtable]]::new()
 foreach ($ip in $AliveIPs) {
@@ -578,23 +605,18 @@ foreach ($ip in $AliveIPs) {
     $ps.AddScript($PortScript).AddArgument($ip).AddArgument($ScanPorts) | Out-Null
     $PortH.Add(@{PS=$ps;AR=$ps.BeginInvoke();IP=$ip})
 }
-
 # mDNS + SSDP run concurrently while port scan is in-flight
 $ssdpMap = Get-SSDPDevices
 $mdnsMap = Get-MDNSDevices ($AliveIPs.ToArray())
-
 $portMap=@{}
 foreach ($h in $PortH) { $r=$h.PS.EndInvoke($h.AR); if ($r) { $portMap[$h.IP]=[string]$r }; $h.PS.Dispose() }
 $Pool3.Close(); $Pool3.Dispose()
-
 $portsWithData=($portMap.Values | Where-Object { $_ -ne "" }).Count
 phaseln "Phase 5/7 — Port scan + mDNS + SSDP:" ("  done $SYM_OK  (${portsWithData} ports$SYM_MID $($mdnsMap.Count) mDNS$SYM_MID $($ssdpMap.Count) SSDP)   ")
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 6 — HTTP title scrape (parallel)
 # ══════════════════════════════════════════════════════════════════════════════
 phase "Phase 6/7 — HTTP titles:" "   scraping web interfaces…`r"
-
 $HttpScript = {
     param([string]$ip,[string]$ports)
     $skip='router','login','index','home','welcome','default','untitled','web interface',
@@ -616,7 +638,6 @@ $HttpScript = {
     }
     return ""
 }
-
 $Pool4=[RunspaceFactory]::CreateRunspacePool(1,[Math]::Min($TotalFound,32)); $Pool4.Open()
 $HttpH=[System.Collections.Generic.List[hashtable]]::new()
 foreach ($ip in $AliveIPs) {
@@ -628,18 +649,14 @@ foreach ($ip in $AliveIPs) {
 $titleMap=@{}
 foreach ($h in $HttpH) { $r=$h.PS.EndInvoke($h.AR); if ($r) { $titleMap[$h.IP]=[string]$r }; $h.PS.Dispose() }
 $Pool4.Close(); $Pool4.Dispose()
-
 $httpCount=($titleMap.Values | Where-Object { $_ -ne "" }).Count
 phaseln "Phase 6/7 — HTTP titles:" "   done $SYM_OK  (${httpCount} title(s) found)                    "
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 7 — Device identity merge (mDNS > SSDP > HTTP title, cached by MAC)
 # ══════════════════════════════════════════════════════════════════════════════
 phase "Phase 7/7 — Device identity:" "  merging…`r"
-
 $DevCacheDir="$env:LOCALAPPDATA\EdgeTools\netscan\devices"
 if (-not (Test-Path $DevCacheDir)) { New-Item -ItemType Directory $DevCacheDir -Force | Out-Null }
-
 $deviceMap=@{}
 foreach ($ip in $AliveIPs) {
     $winner=""
@@ -657,13 +674,11 @@ foreach ($ip in $AliveIPs) {
 }
 $devCount=$deviceMap.Count
 phaseln "Phase 7/7 — Device identity:" "  done $SYM_OK  (${devCount} device(s) identified)               "
-
 # ══════════════════════════════════════════════════════════════════════════════
 # RESULTS TABLE
 # ══════════════════════════════════════════════════════════════════════════════
 Write-Host ""; divider
 Write-Host ""
-
 # Column headers — match bash layout
 Write-Host -NoNewline "  "
 Write-Host -NoNewline ("{0,-15}" -f "IP ADDRESS") -ForegroundColor Cyan
@@ -677,38 +692,30 @@ Write-Host -NoNewline "  "
 Write-Host -NoNewline ("{0,-16}" -f "OPEN PORTS") -ForegroundColor White
 Write-Host            "DEVICE"                      -ForegroundColor White
 Write-Host ""
-
 foreach ($ip in $AliveIPs) {
     if ($ip -match '\.255$') { continue }
-
     $mac    = if ($macMap.ContainsKey($ip))    { $macMap[$ip] }    else { [string][char]0x2014 }
     $oui    = if ($mac -ne [char]0x2014) { ($mac -replace ':','').Substring(0,6) } else { "" }
     $vendor = if ($oui -and $vendorMap.ContainsKey($oui)) { $vendorMap[$oui] } else { "" }
     $hn     = if ($hostMap.ContainsKey($ip))   { $hostMap[$ip] }   else { "" }
     $ports  = if ($portMap.ContainsKey($ip))   { $portMap[$ip] }   else { "" }
     $device = if ($deviceMap.ContainsKey($ip)) { $deviceMap[$ip] } else { "" }
-
     # ▶ for local machine (red), spaces otherwise
     if ($ip -eq $LocalIP) { wh "$SYM_ARR " Red -n } else { Write-Host -NoNewline "  " }
-
     # IP — blue
     Write-Host -NoNewline ("{0,-15}" -f $ip) -ForegroundColor Cyan
     Write-Host -NoNewline "  "
-
     # MAC — magenta/purple
     Write-Host -NoNewline ("{0,-17}" -f $mac) -ForegroundColor Magenta
     Write-Host -NoNewline "  "
-
     # Vendor — yellow or dim
     $vs = if ($vendor) { $vendor.Substring(0,[Math]::Min(16,$vendor.Length)) } else { "" }
     Write-Host -NoNewline ("{0,-16}" -f $vs) -ForegroundColor $(if ($vendor) { "Yellow" } else { "DarkGray" })
     Write-Host -NoNewline "  "
-
     # Hostname — white or dim
     $hs = if ($hn) { $hn.Substring(0,[Math]::Min(18,$hn.Length)) } else { "" }
     Write-Host -NoNewline ("{0,-18}" -f $hs) -ForegroundColor $(if ($hn) { "White" } else { "DarkGray" })
     Write-Host -NoNewline "  "
-
     # Open ports — green numbers with manual padding to keep DEVICE column aligned
     if ($ports) {
         $visible = 0
@@ -722,22 +729,24 @@ foreach ($ip in $AliveIPs) {
         Write-Host -NoNewline ("{0,-16}" -f "")
     }
     Write-Host -NoNewline "  "
-
     # Device name — dim (DarkGray)
     Write-Host $device -ForegroundColor DarkGray
 }
-
 # ── Footer ─────────────────────────────────────────────────────────────────────
 Write-Host ""; Write-Host ""
 Write-Host -NoNewline "  $SYM_OK Scan complete — " -ForegroundColor Green
 Write-Host -NoNewline $TotalFound -ForegroundColor White
 Write-Host " device(s) on $Subnet" -ForegroundColor Green
-
+if (-not $Elevated) {
+    Write-Host "  Ran without elevation. Missing MACs are expected for silent hosts." -ForegroundColor DarkGray
+}
 if ($Verbose) {
     Write-Host ""
-    wh "  Methods: ICMP ping sweep$SYM_MID ARP cache$SYM_MID reverse DNS$SYM_MID macvendors.com API (cached)$SYM_MID TCP connect$SYM_MID HTTP title$SYM_MID mDNS$SYM_MID SSDP" DarkGray
+    wh "  Methods: ICMP ping sweep$SYM_MID ARP cache$SYM_MID UDP prime$SYM_MID reverse DNS$SYM_MID macvendors.com API (cached)$SYM_MID TCP connect$SYM_MID HTTP title$SYM_MID mDNS$SYM_MID SSDP" DarkGray
+    if ($UseSendARP) { wh "  MAC extra: SendARP (iphlpapi, user-mode)" DarkGray }
+    else { wh "  MAC extra: skipped (-Limited)" DarkGray }
     wh "  Ports scanned: $($ScanPorts -join ', ')" DarkGray
+    wh "  Privileges: $(if ($Elevated) {'elevated'} else {'standard user'})" DarkGray
 }
-
 divider; Write-Host ""
 Remove-Item $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
