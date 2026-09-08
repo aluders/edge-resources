@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# backblaze.sh  v1.5
+# backblaze.sh  v1.6
 # -----------------------------------------------------------------------------
 # B2 Upload Automation Script
 #
@@ -20,22 +20,36 @@
 #       --skip-hash           rclone: --b2-disable-checksum (no full-file SHA1)
 #       --chunk-size <SIZE>   rclone chunk size (default: 96M)
 #       --transfers <N>       rclone parallel transfers (default: 4)
-#       --no-install          Do not download/install rclone if missing
+#       --no-install          Do not install Homebrew / rclone / jq
 #   -h, --help
 #
 # MODE BEHAVIOR:
-#   auto    Prefer rclone. If missing, install a user-local copy (no sudo).
-#           If install fails, fall back to curl.
-#   rclone  rclone only; install if needed, then exit if still unavailable
+#   auto    Prefer rclone. On macOS, install Homebrew if needed, then
+#           `brew install rclone` (and jq). Fall back to curl on failure.
+#   rclone  rclone only; brew-install if needed, then exit if unavailable
 #   curl    native API only (no rclone install)
 #
 # EXAMPLE:
 #   backblaze.sh --mode auto 0000 KEY 46df5f1b1744f265994b051f /Volumes/STORAGE_2/huge.img
 #   backblaze.sh -m rclone -n my-bucket --skip-hash 0000 KEY my-bucket /path/to/dir
+#
+# REQUIREMENTS / DEPENDENCIES
+#   Always:
+#     bash, curl
+#   macOS (intended environment):
+#     Homebrew  — used if present; installed automatically if missing
+#                 unless --no-install
+#     rclone    — preferred backend; brew install rclone if missing
+#     jq        — B2 auth / bucket-id lookup; brew install jq if missing
+#   curl backend only (fallback / --mode curl):
+#     python3, shasum, stat, find
+#   Notes:
+#     --no-install disables Homebrew / rclone / jq installation
+#     First-time Homebrew setup may prompt for a macOS password
 # =============================================================================
 set -euo pipefail
 
-VERSION="1.5"
+VERSION="1.6"
 DEFAULT_CUTOFF=$((200 * 1024 * 1024))
 DEFAULT_CHUNK="96M"
 DEFAULT_TRANSFERS=4
@@ -62,18 +76,22 @@ Options:
       --skip-hash           Do not pre-hash large files in rclone
       --chunk-size <SIZE>   rclone --b2-chunk-size (default: ${DEFAULT_CHUNK})
       --transfers <N>       rclone --transfers (default: ${DEFAULT_TRANSFERS})
-      --no-install          Skip automatic rclone download
+      --no-install          Skip Homebrew / rclone / jq installation
   -h, --help
 
 Modes:
-  auto     rclone first (auto-install); curl fallback
-  rclone   require rclone (auto-install if allowed)
+  auto     rclone first (brew install on macOS); curl fallback
+  rclone   require rclone (brew install if allowed)
   curl     native single-request upload
 
-Requirements:
-  bash, curl, jq
-  rclone is fetched automatically into ~/.local/share/backblaze-sh/bin
-  python3, shasum, stat, find  (curl backend only)
+Requirements / dependencies:
+  Always:     bash, curl
+  macOS:      Homebrew (auto-installed if missing, unless --no-install)
+              rclone via brew (preferred upload backend)
+              jq via brew (auth + bucket name/id resolution)
+  curl mode:  python3, shasum, stat, find
+  Notes:      --no-install skips brew/rclone/jq installs
+              First-time Homebrew setup may ask for your Mac password
 EOF
 }
 
@@ -193,25 +211,87 @@ if [[ ! -f "$LOCAL_PATH" && ! -d "$LOCAL_PATH" ]]; then
     exit 1
 fi
 
-if ! command -v jq &>/dev/null; then
-    echo "❌ ERROR: 'jq' is required."
-    exit 1
-fi
-
 RCLONE_BIN=""
-RCLONE_LOCAL_DIR="${BACKBLAZE_RCLONE_HOME:-$HOME/.local/share/backblaze-sh/bin}"
+BREW_BIN=""
 has_rclone=0
+
+find_brew() {
+    if [[ -n "${BREW_BIN}" && -x "${BREW_BIN}" ]]; then
+        return 0
+    fi
+    if command -v brew &>/dev/null; then
+        BREW_BIN="$(command -v brew)"
+        return 0
+    fi
+    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [[ -x "$candidate" ]]; then
+            BREW_BIN="$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+use_brew_env() {
+    find_brew || return 1
+    # Apple Silicon brew is often missing from non-interactive PATH.
+    local prefix
+    prefix="$("$BREW_BIN" --prefix 2>/dev/null)" || prefix=""
+    if [[ -n "$prefix" && -d "$prefix/bin" ]]; then
+        case ":$PATH:" in
+            *":$prefix/bin:"*) ;;
+            *) PATH="$prefix/bin:$PATH" ;;
+        esac
+        export PATH
+    fi
+    return 0
+}
+
+install_homebrew() {
+    if [[ "${OSTYPE:-}" != darwin* ]]; then
+        echo "⚠️  Automatic Homebrew install is only implemented on macOS."
+        return 1
+    fi
+    if [[ "$NO_INSTALL" -eq 1 ]]; then
+        echo "Homebrew not found and --no-install was set."
+        return 1
+    fi
+    echo "Homebrew not found. Installing Homebrew (NONINTERACTIVE)..."
+    if ! NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; then
+        echo "⚠️  Homebrew installation failed."
+        return 1
+    fi
+    find_brew || true
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        BREW_BIN="/opt/homebrew/bin/brew"
+    elif [[ -x /usr/local/bin/brew ]]; then
+        BREW_BIN="/usr/local/bin/brew"
+    fi
+    use_brew_env
+    find_brew
+}
+
+ensure_homebrew() {
+    use_brew_env && return 0
+    install_homebrew
+}
+
+brew_install_pkg() {
+    local pkg="$1"
+    ensure_homebrew || return 1
+    if "$BREW_BIN" list --formula "$pkg" &>/dev/null; then
+        return 0
+    fi
+    echo "Installing $pkg with Homebrew..."
+    "$BREW_BIN" install "$pkg"
+}
 
 find_rclone() {
     if [[ -n "${RCLONE_BIN}" && -x "${RCLONE_BIN}" ]]; then
         has_rclone=1
         return 0
     fi
-    if [[ -x "${RCLONE_LOCAL_DIR}/rclone" ]]; then
-        RCLONE_BIN="${RCLONE_LOCAL_DIR}/rclone"
-        has_rclone=1
-        return 0
-    fi
+    use_brew_env || true
     if command -v rclone &>/dev/null; then
         RCLONE_BIN="$(command -v rclone)"
         has_rclone=1
@@ -221,67 +301,20 @@ find_rclone() {
     return 1
 }
 
-rclone_zip_name() {
-    local os arch
-    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-    arch="$(uname -m)"
-    case "$os" in
-        darwin) os="osx" ;;
-        linux) os="linux" ;;
-        *)
-            echo ""
-            return 1
-            ;;
-    esac
-    case "$arch" in
-        x86_64|amd64) arch="amd64" ;;
-        arm64|aarch64) arch="arm64" ;;
-        *)
-            echo ""
-            return 1
-            ;;
-    esac
-    printf 'rclone-current-%s-%s.zip\n' "$os" "$arch"
-}
-
-install_rclone_local() {
-    local zip_name url tmpdir zip_path extracted
-    zip_name="$(rclone_zip_name)" || true
-    if [[ -z "$zip_name" ]]; then
-        echo "⚠️  No prebuilt rclone zip for $(uname -s)/$(uname -m)."
+ensure_jq() {
+    if command -v jq &>/dev/null; then
+        return 0
+    fi
+    if [[ "$NO_INSTALL" -eq 1 ]]; then
+        echo "❌ ERROR: 'jq' is required and --no-install was set."
         return 1
     fi
-    url="https://downloads.rclone.org/${zip_name}"
-    echo "Installing rclone (user-local, no sudo)..."
-    echo "  $url"
-    mkdir -p "$RCLONE_LOCAL_DIR"
-    tmpdir=$(mktemp -d)
-    zip_path="${tmpdir}/${zip_name}"
-    if ! curl -fL --retry 3 --retry-delay 2 -o "$zip_path" "$url"; then
-        echo "⚠️  Failed to download rclone."
-        rm -rf "$tmpdir"
+    echo "jq not found."
+    brew_install_pkg jq || {
+        echo "❌ ERROR: 'jq' is required."
         return 1
-    fi
-    if command -v unzip &>/dev/null; then
-        unzip -q "$zip_path" -d "$tmpdir"
-    else
-        echo "⚠️  'unzip' is required to install rclone automatically."
-        rm -rf "$tmpdir"
-        return 1
-    fi
-    extracted=$(find "$tmpdir" -type f -name rclone -perm -u+x | head -n1)
-    if [[ -z "$extracted" ]]; then
-        echo "⚠️  rclone binary not found in archive."
-        rm -rf "$tmpdir"
-        return 1
-    fi
-    cp "$extracted" "${RCLONE_LOCAL_DIR}/rclone"
-    chmod +x "${RCLONE_LOCAL_DIR}/rclone"
-    rm -rf "$tmpdir"
-    RCLONE_BIN="${RCLONE_LOCAL_DIR}/rclone"
-    has_rclone=1
-    echo "  Installed: $RCLONE_BIN  ($("$RCLONE_BIN" version | head -n1))"
-    return 0
+    }
+    command -v jq &>/dev/null
 }
 
 ensure_rclone() {
@@ -293,7 +326,9 @@ ensure_rclone() {
     if [[ "$MODE" == "curl" ]]; then
         return 1
     fi
-    install_rclone_local || return 1
+    echo "rclone not found."
+    brew_install_pkg rclone || return 1
+    use_brew_env || true
     find_rclone
 }
 
@@ -563,8 +598,7 @@ else
     elif [[ "$MODE" == "rclone" ]]; then
         echo "❌ ERROR: rclone is required for --mode rclone."
         echo "   Install: brew install rclone"
-        echo "   Or allow this script to download it to:"
-        echo "   $RCLONE_LOCAL_DIR"
+        echo "   Or re-run without --no-install so this script can use Homebrew."
         exit 1
     else
         CHOSEN="curl"
@@ -577,6 +611,8 @@ else
     fi
 fi
 echo "Backend: $CHOSEN   rclone: ${RCLONE_BIN:-not found}"
+
+ensure_jq || exit 1
 
 authorize_account
 resolve_bucket
