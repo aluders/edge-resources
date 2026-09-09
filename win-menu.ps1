@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   3.4  - Classic right-click toggle uses only {86ca1aa0-34aa-4e8b-a509-50c905bae2a2}
 #   3.3  - Added "Toggle Classic Right-Click" above Refresh: per-user enable/disable of the Win11 compact menu (both known CLSIDs), local script via -File, Explorer restarted only if it stays down
 #   3.2  - Refresh and Remove windows now auto-close 5 seconds after completion instead of staying open (dropped -NoExit, added a closing pause)
 #   3.1  - Refresh and Remove no longer use "irm ... | iex" / [ScriptBlock]::Create((irm ...)) - that shape (fetch-and-evaluate with explorer.exe as parent) triggered a Defender ML false positive (Trojan:Win32/Commando.A!ml). Both now download/deploy to a local file first and run via -File.
@@ -49,7 +50,7 @@
 param(
     [switch]$Uninstall
 )
-$ScriptVersion = "3.3"
+$ScriptVersion = "3.4"
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
@@ -140,29 +141,18 @@ Start-Sleep -Seconds 5
     Write-Status "Uninstaller deployed to $($Config.UninstallerPath)" '+'
 }
 function Deploy-ClassicToggle {
-    # HKCU-only stub of the Win11 compact-menu CLSIDs. Empty InprocServer32
-    # makes Explorer fail to load that COM object and fall back to the classic
-    # Win32 menu. Two GUIDs are in circulation (the original 2021 key and the
-    # one current WinUtil / newer guides use); touch both so either build
-    # toggles. Removing Edge Tools does not undo this - it is a user preference.
+    # Same key as: reg add "HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" /f /ve
+    # Empty default value on InprocServer32 blocks the Win11 compact-menu COM
+    # object so Explorer falls back to the classic menu. HKCU only.
+    # Removing Edge Tools does not undo this - it is a user preference.
     $dir = Split-Path $Config.ClassicTogglePath -Parent
     if (-not (Test-Path $dir)) {
         New-Item -Path $dir -ItemType Directory -Force | Out-Null
     }
     $toggleContent = @'
 $ErrorActionPreference = 'Stop'
-$guids = @(
-    '{86ca1aa0-4cab-4d50-9fff-d190bb5d36b8}',
-    '{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}'
-)
-function Test-ClassicEnabled {
-    foreach ($guid in $guids) {
-        if (Test-Path "HKCU:\Software\Classes\CLSID\$guid\InprocServer32") {
-            return $true
-        }
-    }
-    return $false
-}
+$key = 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}'
+$inproc = "$key\InprocServer32"
 function Restart-Explorer {
     Write-Host '[!] Restarting Explorer (taskbar / desktop will flicker)...' -ForegroundColor Yellow
     Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
@@ -172,24 +162,15 @@ function Restart-Explorer {
     }
 }
 Write-Host '[*] Toggle Classic Right-Click' -ForegroundColor Cyan
-$enabled = Test-ClassicEnabled
-if ($enabled) {
+if (Test-Path $inproc) {
     Write-Host '[*] Classic menu is ON - restoring the Windows 11 menu.' -ForegroundColor Cyan
-    foreach ($guid in $guids) {
-        $key = "HKCU:\Software\Classes\CLSID\$guid"
-        if (Test-Path $key) {
-            Remove-Item -LiteralPath $key -Recurse -Force
-        }
-    }
+    Remove-Item -LiteralPath $key -Recurse -Force
     Write-Host '[+] Windows 11 compact menu restored.' -ForegroundColor Green
 }
 else {
     Write-Host '[*] Classic menu is OFF - enabling the previous layout.' -ForegroundColor Cyan
-    foreach ($guid in $guids) {
-        $key = "HKCU:\Software\Classes\CLSID\$guid\InprocServer32"
-        New-Item -Path $key -Force | Out-Null
-        Set-Item -Path $key -Value ''
-    }
+    New-Item -Path $inproc -Force | Out-Null
+    Set-Item -Path $inproc -Value ''
     Write-Host '[+] Classic right-click menu enabled (this user only).' -ForegroundColor Green
 }
 Restart-Explorer
