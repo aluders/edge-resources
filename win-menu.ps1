@@ -22,6 +22,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   3.3  - Added "Toggle Classic Right-Click" above Refresh: per-user enable/disable of the Win11 compact menu (both known CLSIDs), local script via -File, Explorer restarted only if it stays down
 #   3.2  - Refresh and Remove windows now auto-close 5 seconds after completion instead of staying open (dropped -NoExit, added a closing pause)
 #   3.1  - Refresh and Remove no longer use "irm ... | iex" / [ScriptBlock]::Create((irm ...)) - that shape (fetch-and-evaluate with explorer.exe as parent) triggered a Defender ML false positive (Trojan:Win32/Commando.A!ml). Both now download/deploy to a local file first and run via -File.
 #   3.0  - Separators reattempted: CommandFlags=0x40 (ECF_SEPARATORAFTER) forced as true DWORD on the last item of each group, instead of dummy *_Sep keys with 0x20 (which is documented as top-level-only and was likely written as REG_SZ, not DWORD)
@@ -48,7 +49,7 @@
 param(
     [switch]$Uninstall
 )
-$ScriptVersion = "3.2"
+$ScriptVersion = "3.3"
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
@@ -56,6 +57,7 @@ $Config = @{
     InstallerUrl      = 'https://menu.vcc.net'   # used by the self-refresh menu entry
     LauncherPath      = Join-Path $env:LOCALAPPDATA 'EdgeTools\Invoke-EdgeTool.ps1'
     UninstallerPath   = Join-Path $env:LOCALAPPDATA 'EdgeTools\Uninstall-EdgeTools.ps1'
+    ClassicTogglePath = Join-Path $env:LOCALAPPDATA 'EdgeTools\Toggle-ClassicRightClick.ps1'
     InstallerLocalPath = Join-Path $env:LOCALAPPDATA 'EdgeTools\install-edge-tools-context-menu.ps1'
     MenuLabel    = 'Edge Tools'
     Icon         = 'powershell.exe'
@@ -68,8 +70,7 @@ $Config = @{
         @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
         @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
         @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
-        @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $false  }
-        @{ name = 'Network Scanner Advanced'; url = 'https://netscan.vcc.net'; admin = $true  }
+        @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
         @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true  }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
         @{ name = 'Print Spooler Clear'; url = 'https://spooler.vcc.net'; admin = $true  }
@@ -136,6 +137,66 @@ Start-Sleep -Seconds 5
 "@
     Set-Content -Path $Config.UninstallerPath -Value $uninstallContent -Encoding UTF8 -Force
     Write-Status "Uninstaller deployed to $($Config.UninstallerPath)" '+'
+}
+function Deploy-ClassicToggle {
+    # HKCU-only stub of the Win11 compact-menu CLSIDs. Empty InprocServer32
+    # makes Explorer fail to load that COM object and fall back to the classic
+    # Win32 menu. Two GUIDs are in circulation (the original 2021 key and the
+    # one current WinUtil / newer guides use); touch both so either build
+    # toggles. Removing Edge Tools does not undo this - it is a user preference.
+    $dir = Split-Path $Config.ClassicTogglePath -Parent
+    if (-not (Test-Path $dir)) {
+        New-Item -Path $dir -ItemType Directory -Force | Out-Null
+    }
+    $toggleContent = @'
+$ErrorActionPreference = 'Stop'
+$guids = @(
+    '{86ca1aa0-4cab-4d50-9fff-d190bb5d36b8}',
+    '{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}'
+)
+function Test-ClassicEnabled {
+    foreach ($guid in $guids) {
+        if (Test-Path "HKCU:\Software\Classes\CLSID\$guid\InprocServer32") {
+            return $true
+        }
+    }
+    return $false
+}
+function Restart-Explorer {
+    Write-Host '[!] Restarting Explorer (taskbar / desktop will flicker)...' -ForegroundColor Yellow
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800
+    if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
+        Start-Process -FilePath "$env:WINDIR\explorer.exe"
+    }
+}
+Write-Host '[*] Toggle Classic Right-Click' -ForegroundColor Cyan
+$enabled = Test-ClassicEnabled
+if ($enabled) {
+    Write-Host '[*] Classic menu is ON - restoring the Windows 11 menu.' -ForegroundColor Cyan
+    foreach ($guid in $guids) {
+        $key = "HKCU:\Software\Classes\CLSID\$guid"
+        if (Test-Path $key) {
+            Remove-Item -LiteralPath $key -Recurse -Force
+        }
+    }
+    Write-Host '[+] Windows 11 compact menu restored.' -ForegroundColor Green
+}
+else {
+    Write-Host '[*] Classic menu is OFF - enabling the previous layout.' -ForegroundColor Cyan
+    foreach ($guid in $guids) {
+        $key = "HKCU:\Software\Classes\CLSID\$guid\InprocServer32"
+        New-Item -Path $key -Force | Out-Null
+        Set-Item -Path $key -Value ''
+    }
+    Write-Host '[+] Classic right-click menu enabled (this user only).' -ForegroundColor Green
+}
+Restart-Explorer
+Write-Host '[*] Closing in 5 seconds...' -ForegroundColor Yellow
+Start-Sleep -Seconds 5
+'@
+    Set-Content -Path $Config.ClassicTogglePath -Value $toggleContent -Encoding UTF8 -Force
+    Write-Status "Classic-menu toggle deployed to $($Config.ClassicTogglePath)" '+'
 }
 function Remove-EdgeToolsMenu {
     foreach ($root in $Config.Roots) {
@@ -225,6 +286,18 @@ function Install-EdgeToolsMenu {
         if ($lastToolKey) {
             Set-RegDword -Path $lastToolKey -Name 'CommandFlags' -Value 0x40
         }
+        # --- classic / Win11 context-menu toggle ---
+        # Per-user only. Local -File script; Explorer is restarted by the
+        # helper (started again only if it does not come back on its own).
+        $classicKey = "$shellKey\{0:D2}_ClassicMenu" -f $menuIndex
+        New-Item -Path $classicKey -Force | Out-Null
+        Set-ItemProperty -Path $classicKey -Name 'MUIVerb' -Value 'Toggle Classic Right-Click'
+        Set-ItemProperty -Path $classicKey -Name 'Icon' -Value $Config.Icon
+        $menuIndex++
+        $classicCmdKey = "$classicKey\command"
+        New-Item -Path $classicCmdKey -Force | Out-Null
+        $classicCmd = "powershell.exe -ExecutionPolicy Bypass -File `"$($Config.ClassicTogglePath)`""
+        Set-Item -Path $classicCmdKey -Value $classicCmd
         # --- self-refresh entry ---
         # Downloads the latest installer to disk first, then runs it via
         # -File. The previous "irm ... | iex" cradle (fetch-and-evaluate
@@ -275,6 +348,7 @@ if ($Config.Tools.Count -eq 0) {
 }
 Deploy-Launcher
 Deploy-Uninstaller
+Deploy-ClassicToggle
 Remove-EdgeToolsMenu
 Install-EdgeToolsMenu -Tools $Config.Tools
 Write-Status "Done. Right-click a folder or its background to see 'Edge Tools'." '+'
