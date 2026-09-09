@@ -1,4 +1,4 @@
-#    Network Scanner  (Windows)  v1.7
+Network Scanner  (Windows)  v1.7
 #    ===================================
 #    Discovers every device on the local subnet using a layered approach:
 #    ICMP ping sweep, ARP/neighbor cache, reverse DNS, OUI vendor lookup,
@@ -315,7 +315,7 @@ if ($Elevated -and -not $Limited) {
     wh "standard user" Yellow
 }
 if (-not $Elevated) {
-    wh "  Admin is not required. MAC addresses may be missing for hosts" DarkGray
+    wh "  Admin is not required, however MAC addresses may be missing for hosts" DarkGray
     wh "  that never ARP'd this PC. UDP prime + SendARP will still run." DarkGray
 }
 divider
