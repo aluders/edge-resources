@@ -68,7 +68,8 @@ $Config = @{
         @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
         @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
         @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
-        @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $true  }
+        @{ name = 'Network Scanner'; url = 'https://netscan.vcc.net'; admin = $false  }
+        @{ name = 'Network Scanner (Admin)'; url = 'https://netscan.vcc.net'; admin = $true  }
         @{ name = 'Office Key Manager'; url = 'https://office.vcc.net'; admin = $true  }
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
         @{ name = 'Print Spooler Clear'; url = 'https://spooler.vcc.net'; admin = $true  }
