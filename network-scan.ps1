@@ -12,10 +12,10 @@
 #
 #    VERSION HISTORY
 #    ---------------
-#    1.6 - Standard-user mode: no admin required. Detects elevation, optional
-#          interactive confirm on a real console (skipped for irm | iex),
-#          UDP ARP prime to populate the neighbor cache without privileges,
-#          SendARP / Get-NetNeighbor treated as best-effort. New -Limited flag.
+#    1.6 - Standard-user mode: no admin required. Detects elevation, UDP ARP
+#          prime to populate the neighbor cache without privileges, SendARP /
+#          Get-NetNeighbor treated as best-effort. New -Limited flag. Header
+#          warns when unelevated; no interactive confirm.
 #    1.5 - Cache paths moved to %LOCALAPPDATA%\EdgeTools\netscan\
 #    1.4 - Unicode symbol safety: auto-detects terminal capability and falls
 #          back to ASCII in classic conhost; tightened column widths to
@@ -96,13 +96,6 @@ function Test-IsElevated {
     } catch { return $false }
 }
 $Elevated = Test-IsElevated
-# Real TTY only — irm | iex and redirected stdin must never block on Read-Host
-$IsInteractive = $false
-try {
-    $IsInteractive = [Environment]::UserInteractive -and
-                     -not [Console]::IsInputRedirected -and
-                     -not [Console]::IsOutputRedirected
-} catch { $IsInteractive = $false }
 # -Limited forces the non-admin code path even in an elevated window
 $UseSendARP = (-not $Limited)   # SendARP itself is user-mode; Limited skips the extra pass
 # ── Usage ──────────────────────────────────────────────────────────────────────
@@ -283,22 +276,6 @@ $BcastInt = $NetInt -bor ((-bnot $MaskInt) -band 0xFFFFFFFFL)
 $Subnet   = "$NetAddr/$Prefix"
 $AllIPs   = @(); for ($h=$NetInt+1; $h -lt $BcastInt; $h++) { $AllIPs += int2ip $h }
 $Total    = $AllIPs.Count
-# ── Optional interactive confirm (local file run only) ─────────────────────────
-if (-not $Elevated -and $IsInteractive) {
-    Write-Host ""
-    wh "  NETWORK SCANNER" Cyan
-    divider
-    wh "  Running as a standard user — admin is not required." Yellow
-    wh "  MAC addresses may be missing for hosts that never ARP'd this PC." DarkGray
-    wh "  A UDP prime + SendARP will still be attempted." DarkGray
-    Write-Host ""
-    try {
-        $ans = Read-Host "  Continue without elevation? [Y/n]"
-        if ($ans -match '^[Nn]') { Write-Host ""; exit 0 }
-    } catch {
-        # If Read-Host fails (weird host), just continue
-    }
-}
 # ── Header ─────────────────────────────────────────────────────────────────────
 Write-Host ""
 wh "  NETWORK SCANNER" Cyan
