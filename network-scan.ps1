@@ -1,4 +1,4 @@
-#    Network Scanner  (Windows)  v1.6
+#    Network Scanner  (Windows)  v1.7
 #    ===================================
 #    Discovers every device on the local subnet using a layered approach:
 #    ICMP ping sweep, ARP/neighbor cache, reverse DNS, OUI vendor lookup,
@@ -12,10 +12,11 @@
 #
 #    VERSION HISTORY
 #    ---------------
+#    1.7 - Unelevated header explanation restored (no Y/n prompt); DEVICE
+#          column truncated to 30 characters for narrow consoles.
 #    1.6 - Standard-user mode: no admin required. Detects elevation, UDP ARP
 #          prime to populate the neighbor cache without privileges, SendARP /
-#          Get-NetNeighbor treated as best-effort. New -Limited flag. Header
-#          warns when unelevated; no interactive confirm.
+#          Get-NetNeighbor treated as best-effort. New -Limited flag.
 #    1.5 - Cache paths moved to %LOCALAPPDATA%\EdgeTools\netscan\
 #    1.4 - Unicode symbol safety: auto-detects terminal capability and falls
 #          back to ASCII in classic conhost; tightened column widths to
@@ -40,6 +41,23 @@
 #    - macvendors.com API is rate-limited; the script waits 1.5s between
 #      uncached lookups. A /24 with 20 unique OUIs takes ~30s on first run,
 #      then instant from cache on every subsequent run.
+#
+#    FLAGS
+#    -----
+#    -Interface NIC   Use this adapter instead of auto-detect
+#                     (must match Get-NetAdapter InterfaceAlias).
+#    -Network CIDR    Scan this subnet instead of the local interface's
+#                     (e.g. 10.1.0.0/24). Still works without admin.
+#    -Timeout MS      ICMP ping timeout per host in milliseconds
+#                     (default: 1000).
+#    -Verbose         Extra progress for vendor lookups and a method
+#                     summary in the footer.
+#    -Limited         Skip the SendARP pass. MACs come only from the
+#                     neighbor cache, arp -a, and a light ping prime.
+#                     Quieter and slightly faster; more blank MACs for
+#                     silent hosts. Not required for standard-user runs —
+#                     those already work without this flag.
+#    -Help            Print usage and exit.
 #
 #    USAGE
 #    -----
@@ -109,7 +127,7 @@ if ($Help) {
     wh "  -Network    " Yellow  -n; wh "Subnet CIDR   " White -n; wh "(e.g. 10.1.0.0/24)" DarkGray
     wh "  -Timeout    " Magenta -n; wh "Ping timeout  " White -n; wh "(ms, default: 1000)" DarkGray
     wh "  -Verbose    " DarkGray -n; wh "Show verbose lookup progress" DarkGray
-    wh "  -Limited    " DarkGray -n; wh "Skip SendARP pass (standard-user / quieter ARP)" DarkGray
+    wh "  -Limited    " DarkGray -n; wh "Skip SendARP; MACs from cache + ping only" DarkGray
     wh "  -Help       " DarkGray -n; wh "Show this help message" DarkGray
     Write-Host ""
     wh "  Admin rights are optional. Remote run:" DarkGray
@@ -294,6 +312,10 @@ if ($Elevated -and -not $Limited) {
     wh "limited (SendARP skipped)" Yellow
 } else {
     wh "standard user" Yellow
+}
+if (-not $Elevated) {
+    wh "  Admin is not required. MAC addresses may be missing for hosts" DarkGray
+    wh "  that never ARP'd this PC. UDP prime + SendARP will still run." DarkGray
 }
 divider
 # ── Temp dir + cleanup trap ────────────────────────────────────────────────────
@@ -677,6 +699,7 @@ foreach ($ip in $AliveIPs) {
     $hn     = if ($hostMap.ContainsKey($ip))   { $hostMap[$ip] }   else { "" }
     $ports  = if ($portMap.ContainsKey($ip))   { $portMap[$ip] }   else { "" }
     $device = if ($deviceMap.ContainsKey($ip)) { $deviceMap[$ip] } else { "" }
+    if ($device.Length -gt 30) { $device = $device.Substring(0,30) }
     # ▶ for local machine (red), spaces otherwise
     if ($ip -eq $LocalIP) { wh "$SYM_ARR " Red -n } else { Write-Host -NoNewline "  " }
     # IP — blue
