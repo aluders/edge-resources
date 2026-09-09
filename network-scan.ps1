@@ -1,4 +1,4 @@
-Network Scanner  (Windows)  v1.7
+#    Network Scanner  (Windows)  v1.8
 #    ===================================
 #    Discovers every device on the local subnet using a layered approach:
 #    ICMP ping sweep, ARP/neighbor cache, reverse DNS, OUI vendor lookup,
@@ -12,6 +12,8 @@ Network Scanner  (Windows)  v1.7
 #
 #    VERSION HISTORY
 #    ---------------
+#    1.8 - IEX-safe entry: no file-scope param() so `irm | iex` and
+#          Invoke-EdgeTool work; flags parsed from $args into a function.
 #    1.7 - Unelevated header explanation restored (no Y/n prompt); DEVICE
 #          column truncated to 24 characters; version shown in run title.
 #    1.6 - Standard-user mode: no admin required. Detects elevation, UDP ARP
@@ -71,6 +73,12 @@ Network Scanner  (Windows)  v1.7
 #        & ([scriptblock]::Create((irm netscan.vcc.net))) -Help
 # netscan.ps1 — Network device discovery for Windows
 # Usage:  .\netscan.ps1 [-Interface NIC] [-Network CIDR] [-Timeout MS] [-Verbose] [-Limited] [-Help]
+#
+# File-scope param() is illegal under Invoke-Expression (irm | iex /
+# Invoke-EdgeTool). Keep all parameters on the function below and bind
+# flags from $args so both local files and remote iex work.
+$ScriptVersion = "1.8"
+function Invoke-NetScan {
 param(
     [string]$Interface = "",
     [string]$Network   = "",
@@ -79,7 +87,6 @@ param(
     [switch]$Limited,
     [switch]$Help
 )
-$ScriptVersion = "1.7"
 # ── Console encoding + symbol safety ─────────────────────────────────────────
 # Force UTF-8 output so Unicode symbols render correctly in modern terminals.
 # Old conhost.exe (classic PowerShell window) often can't render them even with
@@ -751,3 +758,28 @@ if ($Verbose) {
 }
 divider; Write-Host ""
 Remove-Item $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Convert-NetScanArgs {
+    param([object[]]$List)
+    $p = @{}
+    if (-not $List) { return $p }
+    for ($i = 0; $i -lt $List.Count; $i++) {
+        $t = [string]$List[$i]
+        switch -Regex ($t) {
+            '^-Interface:(.+)$' { $p.Interface = $Matches[1]; continue }
+            '^-Network:(.+)$'   { $p.Network   = $Matches[1]; continue }
+            '^-Timeout:(.+)$'   { $p.Timeout   = [int]$Matches[1]; continue }
+            '^-Interface$'      { if ($i+1 -lt $List.Count) { $p.Interface = [string]$List[++$i] }; continue }
+            '^-Network$'        { if ($i+1 -lt $List.Count) { $p.Network   = [string]$List[++$i] }; continue }
+            '^-Timeout$'        { if ($i+1 -lt $List.Count) { $p.Timeout   = [int]$List[++$i] }; continue }
+            '^-Verbose$'        { $p.Verbose = $true; continue }
+            '^-Limited$'        { $p.Limited = $true; continue }
+            '^-Help$'           { $p.Help    = $true; continue }
+        }
+    }
+    return $p
+}
+
+$script:NetScanBound = Convert-NetScanArgs $args
+Invoke-NetScan @script:NetScanBound
