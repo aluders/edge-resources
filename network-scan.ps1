@@ -13,7 +13,7 @@
 #    VERSION HISTORY
 #    ---------------
 #    1.7 - Unelevated header explanation restored (no Y/n prompt); DEVICE
-#          column truncated to 30 characters for narrow consoles.
+#          column truncated to 24 characters; version shown in run title.
 #    1.6 - Standard-user mode: no admin required. Detects elevation, UDP ARP
 #          prime to populate the neighbor cache without privileges, SendARP /
 #          Get-NetNeighbor treated as best-effort. New -Limited flag.
@@ -79,6 +79,7 @@ param(
     [switch]$Limited,
     [switch]$Help
 )
+$ScriptVersion = "1.7"
 # ── Console encoding + symbol safety ─────────────────────────────────────────
 # Force UTF-8 output so Unicode symbols render correctly in modern terminals.
 # Old conhost.exe (classic PowerShell window) often can't render them even with
@@ -119,7 +120,7 @@ $UseSendARP = (-not $Limited)   # SendARP itself is user-mode; Limited skips the
 # ── Usage ──────────────────────────────────────────────────────────────────────
 if ($Help) {
     Write-Host ""
-    wh "  NETWORK SCANNER" Cyan; divider
+    wh "  NETWORK SCANNER  v$ScriptVersion" Cyan; divider
     wh "  Usage:  " White -n; wh ".\netscan.ps1 " Cyan -n
     wh "[-Interface NIC] [-Network CIDR] " Yellow -n; wh "[-Timeout MS] [-Verbose] [-Limited] [-Help]" DarkGray
     Write-Host ""
@@ -296,7 +297,7 @@ $AllIPs   = @(); for ($h=$NetInt+1; $h -lt $BcastInt; $h++) { $AllIPs += int2ip 
 $Total    = $AllIPs.Count
 # ── Header ─────────────────────────────────────────────────────────────────────
 Write-Host ""
-wh "  NETWORK SCANNER" Cyan
+wh "  NETWORK SCANNER  v$ScriptVersion" Cyan
 divider
 wh "  Interface:  " White -n; wh $LocalIface Cyan
 wh "  Local IP:   " White -n; wh $LocalIP    Cyan
@@ -699,7 +700,7 @@ foreach ($ip in $AliveIPs) {
     $hn     = if ($hostMap.ContainsKey($ip))   { $hostMap[$ip] }   else { "" }
     $ports  = if ($portMap.ContainsKey($ip))   { $portMap[$ip] }   else { "" }
     $device = if ($deviceMap.ContainsKey($ip)) { $deviceMap[$ip] } else { "" }
-    if ($device.Length -gt 30) { $device = $device.Substring(0,30) }
+    if ($device.Length -gt 24) { $device = $device.Substring(0,24) }
     # ▶ for local machine (red), spaces otherwise
     if ($ip -eq $LocalIP) { wh "$SYM_ARR " Red -n } else { Write-Host -NoNewline "  " }
     # IP — blue
