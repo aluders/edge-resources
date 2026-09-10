@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# MESHCENTRAL + CLOUDFLARE TUNNEL SETUP v1.5
+# MESHCENTRAL + CLOUDFLARE TUNNEL SETUP v1.7
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -140,8 +140,13 @@
 #     Mode 0600, owned by that user. Contains the tunnel token — treat it
 #     like a secret. --restore FILE unpacks over the live paths, stops
 #     meshcentral while it writes, then starts it again if the unit exists.
-#     Type "restore" to confirm unless -y. Combine --backup with
-#     --uninstall to snapshot first, then tear down.
+#     Type "restore" to confirm unless -y. On a bare box (Node/MeshCentral
+#     not installed) --restore bootstraps nodejs + meshcentral +
+#     cloudflared first with the tunnel left down, restores data, then
+#     starts MeshCentral and the connector — so agents never hit an
+#     empty server. Combine --backup with --uninstall to snapshot first,
+#     then tear down. An interactive run on a box with no runtime asks
+#     Fresh install vs Restore from backup; -y skips that and installs.
 #   - First browser visit to https://<hostname> creates the admin
 #     account. Do that before exposing the URL widely if NewAccounts is
 #     left on. Then re-run with --new-accounts no --plugins no.
@@ -153,6 +158,12 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.7 - Interactive run on a bare box asks Fresh install vs Restore
+#          from backup (skipped with -y or when --restore is already set).
+#   v1.6 - --restore on a bare box bootstraps Node/MeshCentral/cloudflared
+#          first (tunnel stays down), unpacks the archive, then starts
+#          MeshCentral and the connector so agents never see an empty
+#          server on the live hostname.
 #   v1.5 - --plugins yes|no pins settings.plugins.enabled (default off).
 #          Same apply-when-flagged behavior as --new-accounts.
 #   v1.4 - --new-accounts no actually runs meshconfig even when the rest
@@ -176,7 +187,7 @@
 # ==============================================================================
 set -uo pipefail
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="1.5"
+SCRIPT_VERSION="1.7"
 NODE_MAJOR="22"
 NODE_SETUP_URL="https://deb.nodesource.com/setup_${NODE_MAJOR}.x"
 MESH_DIR="/opt/meshcentral"
@@ -1341,6 +1352,110 @@ do_restore() {
   fi
   log_ok "Restore complete. Previous live data was copied aside as *.pre-restore.*"
 }
+runtime_stack_present() {
+  # True once the MeshCentral package + unit exist. Data dirs alone do
+  # not count — that is exactly the "nuked box, leftover disk" case.
+  [[ -f "${MESH_DIR}/node_modules/meshcentral/package.json" && -f "$MESH_UNIT" ]]
+}
+bootstrap_stack_for_restore() {
+  echo
+  log_info "No MeshCentral runtime on this box — installing packages before restore."
+  log_info "Tunnel stays down until the archive is in place."
+  echo
+  log_info "=== nodejs ==="
+  if status_nodejs; then
+    log_ok "nodejs already configured correctly — nothing to do."
+  else
+    install_nodejs
+  fi
+  echo
+  log_info "=== meshcentral ==="
+  # install_meshcentral will not start the unit if config.json is missing,
+  # which is what we want on a bare box.
+  if [[ -f "${MESH_DIR}/node_modules/meshcentral/package.json" && -f "$MESH_UNIT" ]]; then
+    log_ok "meshcentral package and unit already present."
+    systemctl stop meshcentral.service >/dev/null 2>&1 || true
+  else
+    install_meshcentral
+    systemctl stop meshcentral.service >/dev/null 2>&1 || true
+  fi
+  echo
+  log_info "=== cloudflared ==="
+  if status_cloudflared; then
+    log_ok "cloudflared already configured correctly — nothing to do."
+  else
+    install_cloudflared
+  fi
+  systemctl stop cloudflared-meshcentral.service >/dev/null 2>&1 || true
+}
+prompt_fresh_or_restore() {
+  if runtime_stack_present; then
+    return 0
+  fi
+  if [[ -n "$RESTORE_FILE" ]]; then
+    return 0
+  fi
+  if [[ $STATUS_ONLY -eq 1 || $UPDATE_MODE -eq 1 || $UNINSTALL_MODE -eq 1 || $BACKUP_MODE -eq 1 ]]; then
+    return 0
+  fi
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    log_info "No MeshCentral runtime and --yes set — fresh install."
+    return 0
+  fi
+  echo
+  log_info "This box does not have a MeshCentral runtime."
+  echo "    1) Fresh install"
+  echo "    2) Restore from a meshcentral.sh backup archive"
+  local choice
+  read -r -p "    Choose [1/2, default 1]: " choice
+  case "${choice:-1}" in
+    2|restore|r|R)
+      local path home=""
+      if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+      fi
+      echo
+      read -r -p "    Path to backup archive: " path
+      if [[ "$path" == ~/* && -n "$home" ]]; then
+        path="${home}/${path#~/}"
+      fi
+      if [[ ! -f "$path" ]]; then
+        log_err "Backup file not found: ${path}"
+        exit 1
+      fi
+      RESTORE_FILE="$path"
+      log_info "Will restore from ${RESTORE_FILE}"
+      ;;
+    1|fresh|f|F|"")
+      log_info "Fresh install."
+      ;;
+    *)
+      log_err "Not a choice. Use 1 or 2."
+      exit 1
+      ;;
+  esac
+}
+start_after_restore() {
+  load_state_file
+  [[ -n "$ARG_TOKEN" ]] && CF_TUNNEL_TOKEN="$ARG_TOKEN"
+  [[ -n "$ARG_HOSTNAME" ]] && MESH_HOSTNAME="$ARG_HOSTNAME"
+  MESH_PORT="${MESH_PORT:-$MESH_DEFAULT_PORT}"
+  CF_TUNNEL_MODE="${CF_TUNNEL_MODE:-token}"
+  if [[ -f "$MESH_UNIT" ]]; then
+    log_info "Starting meshcentral.service..."
+    systemctl enable meshcentral.service >/dev/null 2>&1 || true
+    systemctl start meshcentral.service >/dev/null 2>&1 || true
+    sleep 2
+  fi
+  echo
+  log_info "=== tunnel ==="
+  if [[ -n "$CF_TUNNEL_TOKEN" || "$CF_TUNNEL_MODE" == "named" || -f "$CF_ENV_FILE" || -f "$CF_NAMED_CONFIG" ]]; then
+    install_tunnel
+  else
+    log_warn "No tunnel token in the archive or flags — MeshCentral is restored but unpublished."
+    log_warn "Re-run: sudo $0 --only tunnel --token <TOKEN>"
+  fi
+}
 # ==============================================================================
 # UNINSTALL (--uninstall)
 # ==============================================================================
@@ -1485,6 +1600,7 @@ uninstall_nodejs() {
 # MAIN
 # ==============================================================================
 check_os
+prompt_fresh_or_restore
 gather_runtime_config
 if [[ $STATUS_ONLY -eq 1 ]]; then
   print_status_report
@@ -1495,8 +1611,16 @@ if [[ -n "$RESTORE_FILE" ]]; then
     log_err "Cannot combine --restore with --backup, --uninstall, or --update."
     exit 1
   fi
+  if ! runtime_stack_present; then
+    bootstrap_stack_for_restore
+  else
+    log_info "MeshCentral runtime already present — restore only."
+    systemctl stop cloudflared-meshcentral.service >/dev/null 2>&1 || true
+  fi
   do_restore "$RESTORE_FILE"
+  start_after_restore
   echo
+  print_status_report
   log_ok "Done. (meshcentral v${SCRIPT_VERSION})"
   exit 0
 fi
