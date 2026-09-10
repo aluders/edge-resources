@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# MESHCENTRAL + CLOUDFLARE TUNNEL SETUP v1.4
+# MESHCENTRAL + CLOUDFLARE TUNNEL SETUP v1.5
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -76,7 +76,8 @@
 #   --token TOKEN         Cloudflare remotely-managed tunnel token
 #   --named-tunnel        Use a locally-managed named tunnel instead of a token
 #   --tunnel-name NAME    Named-tunnel name (default: meshcentral)
-#   --new-accounts yes|no First-write value for domains."".NewAccounts
+#   --new-accounts yes|no domains."".NewAccounts (pass flag to update live config)
+#   --plugins yes|no      settings.plugins.enabled (default no; pass flag to update)
 #   -h, --help            Show usage and exit
 #
 #   LIST is a comma-separated list drawn from: nodejs, meshcentral,
@@ -90,6 +91,7 @@
 #   sudo ./meshcentral.sh --update --only meshcentral
 #   sudo ./meshcentral.sh --hostname mesh.example.com --token eyJ...
 #   sudo ./meshcentral.sh --named-tunnel --hostname mesh.example.com
+#   sudo ./meshcentral.sh --new-accounts no --plugins no
 #   sudo ./meshcentral.sh --only meshconfig,tunnel
 #   sudo ./meshcentral.sh --uninstall
 #   sudo ./meshcentral.sh --uninstall --purge -y
@@ -142,10 +144,17 @@
 #     --uninstall to snapshot first, then tear down.
 #   - First browser visit to https://<hostname> creates the admin
 #     account. Do that before exposing the URL widely if NewAccounts is
-#     left on.
+#     left on. Then re-run with --new-accounts no --plugins no.
+#   - --new-accounts / --plugins only rewrite those keys when the flag is
+#     passed, or on first write (NewAccounts defaults yes so you can
+#     create the first admin; plugins defaults no). Passing either flag
+#     forces the meshconfig component even if the rest of the Cloudflare
+#     keys already look correct.
 #
 # VERSION HISTORY
 # ----------------
+#   v1.5 - --plugins yes|no pins settings.plugins.enabled (default off).
+#          Same apply-when-flagged behavior as --new-accounts.
 #   v1.4 - --new-accounts no actually runs meshconfig even when the rest
 #          of the Cloudflare keys already look correct (v1.3 wrote the
 #          value only if install_meshconfig ran, and status skipped it).
@@ -167,7 +176,7 @@
 # ==============================================================================
 set -uo pipefail
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="1.4"
+SCRIPT_VERSION="1.5"
 NODE_MAJOR="22"
 NODE_SETUP_URL="https://deb.nodesource.com/setup_${NODE_MAJOR}.x"
 MESH_DIR="/opt/meshcentral"
@@ -210,6 +219,7 @@ ARG_TITLE=""
 ARG_TOKEN=""
 ARG_TUNNEL_NAME=""
 ARG_NEW_ACCOUNTS=""
+ARG_PLUGINS=""
 # Runtime state (loaded from file + flags + prompts)
 MESH_HOSTNAME=""
 MESH_PORT=""
@@ -218,6 +228,7 @@ CF_TUNNEL_TOKEN=""
 CF_TUNNEL_NAME=""
 CF_TUNNEL_MODE=""   # token | named
 MESH_NEW_ACCOUNTS=""
+MESH_PLUGINS=""
 # ------------------------------------------------------------------ USAGE --
 usage() {
   cat <<EOF
@@ -243,7 +254,8 @@ Flags:
   --token TOKEN         Remotely-managed Cloudflare tunnel token
   --named-tunnel        Locally-managed named tunnel (login/create/route)
   --tunnel-name NAME    Named-tunnel name (default ${CF_DEFAULT_TUNNEL_NAME})
-  --new-accounts yes|no NewAccounts on first config write (default yes)
+  --new-accounts yes|no NewAccounts (pass flag to update live config)
+  --plugins yes|no      plugins.enabled (default no; pass flag to update)
   -h, --help            Show this help
   LIST is a comma-separated list drawn from: $(IFS=,; echo "${ALL_COMPONENTS[*]}" | sed 's/,/, /g')
 Usage:
@@ -253,6 +265,7 @@ Usage:
   sudo ./meshcentral.sh --update --only meshcentral
   sudo ./meshcentral.sh --hostname mesh.example.com --token eyJ...
   sudo ./meshcentral.sh --named-tunnel --hostname mesh.example.com
+  sudo ./meshcentral.sh --new-accounts no --plugins no
   sudo ./meshcentral.sh --only meshconfig,tunnel
   sudo ./meshcentral.sh --uninstall
   sudo ./meshcentral.sh --uninstall --purge -y
@@ -282,6 +295,7 @@ while [[ $# -gt 0 ]]; do
     --named-tunnel) NAMED_TUNNEL=1; shift ;;
     --tunnel-name) ARG_TUNNEL_NAME="$2"; shift 2 ;;
     --new-accounts) ARG_NEW_ACCOUNTS="$2"; shift 2 ;;
+    --plugins) ARG_PLUGINS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) log_err "Unknown argument: $1"; usage; exit 1 ;;
   esac
@@ -351,6 +365,7 @@ MESH_HOSTNAME='${MESH_HOSTNAME//\'/\'\\\'\'}'
 MESH_PORT='${MESH_PORT}'
 MESH_TITLE='${MESH_TITLE//\'/\'\\\'\'}'
 MESH_NEW_ACCOUNTS='${MESH_NEW_ACCOUNTS}'
+MESH_PLUGINS='${MESH_PLUGINS}'
 CF_TUNNEL_MODE='${CF_TUNNEL_MODE}'
 CF_TUNNEL_NAME='${CF_TUNNEL_NAME//\'/\'\\\'\'}'
 CF_TUNNEL_TOKEN='${CF_TUNNEL_TOKEN//\'/\'\\\'\'}'
@@ -396,6 +411,7 @@ gather_runtime_config() {
   [[ -n "$ARG_TOKEN" ]] && CF_TUNNEL_TOKEN="$ARG_TOKEN"
   [[ -n "$ARG_TUNNEL_NAME" ]] && CF_TUNNEL_NAME="$ARG_TUNNEL_NAME"
   [[ -n "$ARG_NEW_ACCOUNTS" ]] && MESH_NEW_ACCOUNTS="$ARG_NEW_ACCOUNTS"
+  [[ -n "$ARG_PLUGINS" ]] && MESH_PLUGINS="$ARG_PLUGINS"
   if [[ $NAMED_TUNNEL -eq 1 ]]; then
     CF_TUNNEL_MODE="named"
   fi
@@ -403,6 +419,7 @@ gather_runtime_config() {
   CF_TUNNEL_NAME="${CF_TUNNEL_NAME:-$CF_DEFAULT_TUNNEL_NAME}"
   MESH_TITLE="${MESH_TITLE:-MeshCentral}"
   MESH_NEW_ACCOUNTS="${MESH_NEW_ACCOUNTS:-yes}"
+  MESH_PLUGINS="${MESH_PLUGINS:-no}"
   CF_TUNNEL_MODE="${CF_TUNNEL_MODE:-token}"
   if [[ $STATUS_ONLY -eq 1 || $UPDATE_MODE -eq 1 || $UNINSTALL_MODE -eq 1 || $BACKUP_MODE -eq 1 || -n "$RESTORE_FILE" ]]; then
     return 0
@@ -592,24 +609,37 @@ install_meshcentral() {
 status_meshconfig() {
   [[ -f "$MESH_CONFIG" ]] || return 1
   local want_accounts="any"
+  local want_plugins="any"
   case "${MESH_NEW_ACCOUNTS,,}" in
     no|false|0) want_accounts="false" ;;
   esac
-  # An explicit --new-accounts always has to be reflected in config.
+  case "${MESH_PLUGINS,,}" in
+    no|false|0) want_plugins="false" ;;
+    yes|true|1) want_plugins="true" ;;
+  esac
+  # An explicit --new-accounts / --plugins always has to be reflected.
   if [[ -n "$ARG_NEW_ACCOUNTS" ]]; then
     case "${ARG_NEW_ACCOUNTS,,}" in
       no|false|0) want_accounts="false" ;;
       yes|true|1) want_accounts="true" ;;
     esac
   fi
-  python3 - "$MESH_CONFIG" "${MESH_HOSTNAME:-}" "${MESH_PORT:-$MESH_DEFAULT_PORT}" "$want_accounts" <<'PY' >/dev/null 2>&1
+  if [[ -n "$ARG_PLUGINS" ]]; then
+    case "${ARG_PLUGINS,,}" in
+      no|false|0) want_plugins="false" ;;
+      yes|true|1) want_plugins="true" ;;
+    esac
+  fi
+  python3 - "$MESH_CONFIG" "${MESH_HOSTNAME:-}" "${MESH_PORT:-$MESH_DEFAULT_PORT}" "$want_accounts" "$want_plugins" <<'PY' >/dev/null 2>&1
 import json, sys
-path, host, port, want_accounts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+path, host, port, want_accounts, want_plugins = sys.argv[1:6]
 with open(path) as f:
     cfg = json.load(f)
 s = cfg.get("settings") or {}
 d = ((cfg.get("domains") or {}).get("") or {})
 def get(m, *names):
+    if not isinstance(m, dict):
+        return None
     for n in names:
         if n in m:
             return m[n]
@@ -638,6 +668,16 @@ if want_accounts != "any":
         ok = False
     if want_accounts == "true" and not is_true:
         ok = False
+if want_plugins != "any":
+    pl = get(s, "plugins")
+    enabled = get(pl, "enabled") if isinstance(pl, dict) else pl
+    is_true = enabled in (True, "true", "True", 1, "1")
+    is_false = enabled in (False, "false", "False", 0, "0")
+    # Missing plugins key counts as off (MeshCentral default).
+    if want_plugins == "false" and enabled is not None and not is_false:
+        ok = False
+    if want_plugins == "true" and not is_true:
+        ok = False
 sys.exit(0 if ok else 1)
 PY
 }
@@ -652,20 +692,31 @@ write_or_merge_meshconfig() {
   fi
   local new_accounts="true"
   local apply_new_accounts="0"
+  local plugins_on="false"
+  local apply_plugins="0"
   case "${MESH_NEW_ACCOUNTS,,}" in
     no|false|0) new_accounts="false" ;;
   esac
-  # Only force NewAccounts when the operator passed --new-accounts, or
-  # when the key does not exist yet (first write defaults to yes).
+  case "${MESH_PLUGINS,,}" in
+    yes|true|1) plugins_on="true" ;;
+    *) plugins_on="false" ;;
+  esac
+  # Only force NewAccounts/plugins when the operator passed the flag, or
+  # when the key does not exist yet (NewAccounts defaults yes; plugins no).
   if [[ -n "$ARG_NEW_ACCOUNTS" ]]; then
     apply_new_accounts="1"
   fi
-  python3 - "$MESH_CONFIG" "$MESH_HOSTNAME" "$MESH_PORT" "$MESH_TITLE" "$new_accounts" "$apply_new_accounts" <<'PY'
+  if [[ -n "$ARG_PLUGINS" ]]; then
+    apply_plugins="1"
+  fi
+  python3 - "$MESH_CONFIG" "$MESH_HOSTNAME" "$MESH_PORT" "$MESH_TITLE" "$new_accounts" "$apply_new_accounts" "$plugins_on" "$apply_plugins" <<'PY'
 import json, os, secrets, sys
-path, host, port, title, new_accounts, apply_new = sys.argv[1:7]
+path, host, port, title, new_accounts, apply_new, plugins_on, apply_plugins = sys.argv[1:9]
 port = int(port)
 new_accounts = new_accounts.lower() == "true"
 apply_new = apply_new == "1"
+plugins_on = plugins_on.lower() == "true"
+apply_plugins = apply_plugins == "1"
 cfg = {}
 if os.path.isfile(path):
     with open(path) as f:
@@ -718,6 +769,18 @@ if "title" not in {k.lower() for k in blank}:
 set_ci(blank, "certUrl", f"https://{host}")
 if apply_new or "newaccounts" not in {k.lower() for k in blank}:
     set_ci(blank, "NewAccounts", new_accounts)
+if apply_plugins or not any(k.lower() == "plugins" for k in settings):
+    pl = None
+    pl_key = "plugins"
+    for k, v in list(settings.items()):
+        if k.lower() == "plugins":
+            pl_key = k
+            pl = v
+            break
+    if not isinstance(pl, dict):
+        pl = {}
+    set_ci(pl, "enabled", plugins_on)
+    settings[pl_key] = pl
 if "$schema" not in cfg:
     cfg["$schema"] = "https://raw.githubusercontent.com/Ylianst/MeshCentral/master/meshcentral-config-schema.json"
 tmp = path + ".tmp"
@@ -1088,10 +1151,11 @@ print_next_steps() {
   echo "       pointing at http://127.0.0.1:${MESH_PORT:-$MESH_DEFAULT_PORT}"
   echo "    2. Open https://${MESH_HOSTNAME:-<hostname>} and create the first"
   echo "       (admin) account before sharing the URL."
-  echo "    3. Re-run this script any time; it is idempotent."
-  echo "    4. To update later: sudo $0 --update"
-  echo "    5. To tear down:    sudo $0 --uninstall"
-  echo "    6. To snapshot:     sudo $0 --backup"
+  echo "    3. After the admin exists: sudo $0 --new-accounts no --plugins no"
+  echo "    4. Re-run this script any time; it is idempotent."
+  echo "    5. To update later: sudo $0 --update"
+  echo "    6. To tear down:    sudo $0 --uninstall"
+  echo "    7. To snapshot:     sudo $0 --backup"
   echo
 }
 # ==============================================================================
@@ -1489,8 +1553,9 @@ for c in "${ALL_COMPONENTS[@]}"; do
   else
     echo
     log_info "=== ${c} ==="
-    if [[ "$c" == "meshconfig" && -n "$ARG_NEW_ACCOUNTS" ]]; then
-      log_info "Applying --new-accounts ${ARG_NEW_ACCOUNTS}..."
+    if [[ "$c" == "meshconfig" && ( -n "$ARG_NEW_ACCOUNTS" || -n "$ARG_PLUGINS" ) ]]; then
+      [[ -n "$ARG_NEW_ACCOUNTS" ]] && log_info "Applying --new-accounts ${ARG_NEW_ACCOUNTS}..."
+      [[ -n "$ARG_PLUGINS" ]] && log_info "Applying --plugins ${ARG_PLUGINS}..."
       "install_${c}"
     elif "status_${c}"; then
       log_ok "${c} already configured correctly — nothing to do."
