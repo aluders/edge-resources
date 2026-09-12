@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.0
+# KALI SCRIPT v1.2
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -31,9 +31,12 @@
 # -----
 #   --status          Print status of all components and exit
 #   --update          Version-only update pass (no config repair)
+#   --backup          Write a config/db/tunnel archive to the script owner's home
+#   --restore FILE    Restore from a --backup archive
+#   --backup-dir DIR  Override where --backup writes the archive
 #   --only LIST       Only act on LIST
 #   --skip LIST       Act on all except LIST
-#   -y, --yes         Don't pause before gvm-setup (fresh-db path only)
+#   -y, --yes         Don't pause before gvm-setup / restore confirm
 #   -h, --help        Show usage
 #
 #   LIST: openvas, cloudflared, fastfetch, speedtest
@@ -45,8 +48,10 @@
 #   sudo ./kali-script.sh --update
 #   sudo ./kali-script.sh --update --only speedtest
 #   sudo ./kali-script.sh --only cloudflared,fastfetch
+#   sudo ./kali-script.sh --backup
+#   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.0
+# NOTES — Kali Script v1.2
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
@@ -60,14 +65,35 @@
 #   - gsad listen address/port is treated as config we own: 0.0.0.0:443
 #     via /etc/systemd/system/gsad.service.d/override.conf. Change
 #     GSAD_LISTEN / GSAD_PORT at the top if the tunnel target moves.
+#   - --backup writes kali-backup-YYYYMMDD-HHMMSS.tar.gz into the home
+#     directory of the user who owns this script (sudo ./kali.sh --backup
+#     from /home/you/kali.sh lands in /home/you, not /root). Override
+#     with --backup-dir. The archive contains /etc/gvm, /etc/openvas,
+#     the gsad systemd drop-in, GVM CA/private certs, a pg_dump of the
+#     gvmd database (users, tasks, configs — not the NVT feed tree),
+#     and /etc/cloudflared (config.yml + credential JSON). Feeds under
+#     /var/lib/openvas/plugins and /var/lib/notus are NOT included —
+#     they are large and regenerated with greenbone-feed-sync.
+#     Mode 0600. Contains tunnel credentials and the GVM postgres dump
+#     — treat it like a secret. --restore FILE unpacks over the live
+#     paths, stops gvmd/gsad while it writes, restores the database,
+#     then starts the stack again. Type "restore" unless -y. On a bare
+#     box it bootstraps the gvm + cloudflared packages first.
+#   - Interactive run on a bare box (no GVM runtime) asks Fresh install
+#     vs Restore from backup. Skipped with -y or when --restore is set.
 #
 # VERSION HISTORY
 # ----------------
+#   v1.2 - Interactive run on a bare box asks Fresh install vs Restore
+#          from backup (skipped with -y or when --restore is already set).
+#   v1.1 - --backup / --restore / --backup-dir. Archive lands in the
+#          script owner's home. Includes GVM config, certs, gvmd
+#          pg_dump, and cloudflared connector files. Not the feeds.
 #   v1.0 - Initial release from live recon of the existing Kali GVM VM.
 # ==============================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="1.0"
+SCRIPT_VERSION="1.2"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -88,6 +114,9 @@ log_err()  { echo -e "${RED}[x]${NC} $*"; }
 
 STATUS_ONLY=0
 UPDATE_MODE=0
+BACKUP_MODE=0
+RESTORE_FILE=""
+BACKUP_DIR_ARG=""
 ASSUME_YES=0
 ONLY_LIST=""
 SKIP_LIST=""
@@ -100,12 +129,15 @@ cloudflared (official apt, existing tunnel config left alone),
 fastfetch (latest GitHub .deb), Ookla speedtest (static binary).
 Idempotent — safe to re-run.
 Flags:
-  --status        Print status of all components and exit
-  --update        Force an update pass, even if status already passes
-  --only LIST     Only act on the components in LIST
-  --skip LIST     Act on all components except those in LIST
-  -y, --yes       Don't pause before gvm-setup (fresh database only)
-  -h, --help      Show this help
+  --status          Print status of all components and exit
+  --update          Force an update pass, even if status already passes
+  --backup          Write config/db/tunnel archive to the script owner's home
+  --restore FILE    Restore from a --backup archive
+  --backup-dir DIR  Override --backup destination directory
+  --only LIST       Only act on the components in LIST
+  --skip LIST       Act on all components except those in LIST
+  -y, --yes         Don't pause before gvm-setup / restore confirm
+  -h, --help        Show this help
   LIST is a comma-separated list drawn from: $(IFS=,; echo "${ALL_COMPONENTS[*]}" | sed 's/,/, /g')
 Usage:
   sudo ./kali-script.sh
@@ -114,6 +146,8 @@ Usage:
   sudo ./kali-script.sh --update --only speedtest
   sudo ./kali-script.sh --only cloudflared,fastfetch
   sudo ./kali-script.sh --skip openvas
+  sudo ./kali-script.sh --backup
+  sudo ./kali-script.sh --restore /home/you/kali-backup-20260911-193000.tar.gz
 EOF
 }
 
@@ -121,6 +155,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --status) STATUS_ONLY=1; shift ;;
     --update) UPDATE_MODE=1; shift ;;
+    --backup) BACKUP_MODE=1; shift ;;
+    --restore) RESTORE_FILE="$2"; shift 2 ;;
+    --backup-dir) BACKUP_DIR_ARG="$2"; shift 2 ;;
     --only) ONLY_LIST="$2"; shift 2 ;;
     --skip) SKIP_LIST="$2"; shift 2 ;;
     -y|--yes) ASSUME_YES=1; shift ;;
@@ -482,6 +519,310 @@ update_speedtest() {
 }
 
 # ==============================================================================
+# BACKUP / RESTORE
+# ==============================================================================
+script_path() { readlink -f "$0" 2>/dev/null || echo "$0"; }
+
+script_owner_home() {
+  local owner home dest
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    [[ -n "$home" ]] && echo "$home" && return
+  fi
+  owner=$(stat -c '%U' "$(script_path)" 2>/dev/null || true)
+  if [[ -n "$owner" && "$owner" != "root" ]]; then
+    home=$(getent passwd "$owner" | cut -d: -f6)
+    [[ -n "$home" ]] && echo "$home" && return
+  fi
+  echo "/root"
+}
+
+backup_dest_dir() {
+  if [[ -n "$BACKUP_DIR_ARG" ]]; then
+    echo "$BACKUP_DIR_ARG"
+    return
+  fi
+  script_owner_home
+}
+
+backup_chown_user() {
+  local dest
+  dest=$(backup_dest_dir)
+  if [[ "$dest" =~ ^/home/([^/]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return
+  fi
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    echo "$SUDO_USER"
+    return
+  fi
+  local owner
+  owner=$(stat -c '%U' "$(script_path)" 2>/dev/null || true)
+  if [[ -n "$owner" && "$owner" != "root" ]]; then
+    echo "$owner"
+    return
+  fi
+  echo "root"
+}
+
+stop_gvm_stack() {
+  systemctl stop gsad.service gvmd.service ospd-openvas.service notus-scanner.service >/dev/null 2>&1 || true
+}
+
+start_gvm_stack() {
+  systemctl start postgresql >/dev/null 2>&1 || true
+  systemctl start redis-server@openvas mosquitto notus-scanner ospd-openvas gvmd gsad >/dev/null 2>&1 || true
+}
+
+copy_if_exists() {
+  local src="$1" dest="$2"
+  if [[ -e "$src" ]]; then
+    mkdir -p "$(dirname "$dest")"
+    cp -a "$src" "$dest"
+    return 0
+  fi
+  return 1
+}
+
+do_backup() {
+  local dest stamp archive tmp
+  dest=$(backup_dest_dir)
+  mkdir -p "$dest"
+  stamp=$(date +%Y%m%d-%H%M%S)
+  archive="${dest}/kali-backup-${stamp}.tar.gz"
+  tmp=$(mktemp -d)
+  mkdir -p "$tmp/backup"
+
+  {
+    echo "kali-script backup v${SCRIPT_VERSION}"
+    echo "created=$(date -Is)"
+    echo "host=$(hostname -f 2>/dev/null || hostname)"
+    echo "gsad=${GSAD_LISTEN}:${GSAD_PORT}"
+  } > "$tmp/backup/MANIFEST.txt"
+
+  copy_if_exists /etc/gvm "$tmp/backup/etc/gvm" && log_info "Added /etc/gvm"
+  copy_if_exists /etc/openvas "$tmp/backup/etc/openvas" && log_info "Added /etc/openvas"
+  copy_if_exists "$GSAD_OVERRIDE_DIR" "$tmp/backup/etc/systemd/system/gsad.service.d" && log_info "Added gsad drop-in"
+  copy_if_exists /etc/cloudflared "$tmp/backup/etc/cloudflared" && log_info "Added /etc/cloudflared"
+
+  if [[ -d /var/lib/gvm/CA ]]; then
+    mkdir -p "$tmp/backup/var/lib/gvm"
+    cp -a /var/lib/gvm/CA "$tmp/backup/var/lib/gvm/"
+    [[ -d /var/lib/gvm/private ]] && cp -a /var/lib/gvm/private "$tmp/backup/var/lib/gvm/"
+    log_info "Added GVM CA/private certs"
+  fi
+
+  if gvm_db_exists; then
+    log_info "Dumping gvmd PostgreSQL database..."
+    if sudo -u postgres pg_dump --format=custom --file="$tmp/backup/gvmd.dump" gvmd 2>/dev/null \
+       || sudo -u postgres pg_dump --format=plain --file="$tmp/backup/gvmd.sql" gvmd; then
+      log_ok "gvmd database dumped"
+    else
+      log_err "pg_dump gvmd failed"
+      rm -rf "$tmp"
+      return 1
+    fi
+  else
+    log_warn "No gvmd database — archive will not include scan users/tasks."
+  fi
+
+  if [[ ! -d "$tmp/backup/etc/gvm" && ! -f "$tmp/backup/gvmd.dump" && ! -f "$tmp/backup/gvmd.sql" && ! -d "$tmp/backup/etc/cloudflared" ]]; then
+    rm -rf "$tmp"
+    log_err "Nothing to back up — GVM and cloudflared do not look installed."
+    return 1
+  fi
+
+  tar -C "$tmp/backup" -czf "$archive" .
+  chmod 600 "$archive"
+  local owner
+  owner=$(backup_chown_user)
+  if id "$owner" >/dev/null 2>&1; then
+    chown "$owner:$owner" "$archive" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+  log_ok "Backup written to ${archive}"
+  log_info "Contains GVM config, certs, gvmd database, cloudflared connector files."
+  log_info "Does NOT contain NVT/notus feeds — re-sync with --update --only openvas if needed."
+  log_warn "This archive includes tunnel credentials and the GVM database. Keep it private."
+}
+
+runtime_stack_present() {
+  dpkg -s gvm >/dev/null 2>&1 && dpkg -s gvmd >/dev/null 2>&1 && command -v gsad >/dev/null 2>&1
+}
+
+prompt_fresh_or_restore() {
+  if runtime_stack_present; then
+    return 0
+  fi
+  if [[ -n "$RESTORE_FILE" ]]; then
+    return 0
+  fi
+  if [[ $STATUS_ONLY -eq 1 || $UPDATE_MODE -eq 1 || $BACKUP_MODE -eq 1 ]]; then
+    return 0
+  fi
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    log_info "No GVM runtime and --yes set — fresh install."
+    return 0
+  fi
+  echo
+  log_info "This box does not have a GVM / OpenVAS runtime."
+  echo "    1) Fresh install"
+  echo "    2) Restore from a kali-script backup archive"
+  local choice
+  read -r -p "    Choose [1/2, default 1]: " choice
+  case "${choice:-1}" in
+    2|restore|r|R)
+      local path home=""
+      if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+      fi
+      echo
+      read -r -p "    Path to backup archive: " path
+      if [[ "$path" == ~/* && -n "$home" ]]; then
+        path="${home}/${path#~/}"
+      fi
+      if [[ ! -f "$path" ]]; then
+        log_err "Backup file not found: ${path}"
+        exit 1
+      fi
+      RESTORE_FILE="$path"
+      log_info "Will restore from ${RESTORE_FILE}"
+      ;;
+    1|fresh|f|F|"")
+      log_info "Fresh install."
+      ;;
+    *)
+      log_err "Not a choice. Use 1 or 2."
+      exit 1
+      ;;
+  esac
+}
+
+bootstrap_stack_for_restore() {
+  echo
+  log_info "No GVM runtime on this box — installing packages before restore."
+  echo
+  log_info "=== openvas ==="
+  install_openvas
+  stop_gvm_stack
+  echo
+  log_info "=== cloudflared ==="
+  if ! command -v cloudflared >/dev/null 2>&1; then
+    install_cloudflared
+  fi
+  systemctl stop cloudflared >/dev/null 2>&1 || true
+}
+
+do_restore() {
+  local archive="$1"
+  if [[ ! -f "$archive" ]]; then
+    log_err "Backup file not found: ${archive}"
+    exit 1
+  fi
+  if [[ $ASSUME_YES -ne 1 ]]; then
+    echo
+    log_warn "Restore will overwrite live GVM config, certs, gvmd database, and cloudflared files."
+    echo "    Archive: ${archive}"
+    local reply
+    read -r -p "    Type 'restore' to continue: " reply
+    if [[ "$reply" != "restore" ]]; then
+      log_err "Aborted."
+      exit 1
+    fi
+  fi
+
+  local tmp
+  tmp=$(mktemp -d)
+  if ! tar -tzf "$archive" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    log_err "Not a readable tar.gz archive: ${archive}"
+    exit 1
+  fi
+  tar -C "$tmp" -xzf "$archive"
+  if [[ ! -f "$tmp/MANIFEST.txt" && ! -d "$tmp/etc/gvm" ]]; then
+    rm -rf "$tmp"
+    log_err "Archive does not look like a kali-script backup."
+    exit 1
+  fi
+  if [[ -f "$tmp/MANIFEST.txt" ]]; then
+    log_info "Archive manifest:"
+    sed 's/^/    /' "$tmp/MANIFEST.txt"
+  fi
+
+  stop_gvm_stack
+  systemctl stop cloudflared >/dev/null 2>&1 || true
+
+  if [[ -d "$tmp/etc/gvm" ]]; then
+    [[ -d /etc/gvm ]] && cp -a /etc/gvm "/etc/gvm.pre-restore.$(date +%s)"
+    rm -rf /etc/gvm
+    cp -a "$tmp/etc/gvm" /etc/gvm
+    log_ok "Restored /etc/gvm"
+  fi
+  if [[ -d "$tmp/etc/openvas" ]]; then
+    [[ -d /etc/openvas ]] && cp -a /etc/openvas "/etc/openvas.pre-restore.$(date +%s)"
+    rm -rf /etc/openvas
+    cp -a "$tmp/etc/openvas" /etc/openvas
+    log_ok "Restored /etc/openvas"
+  fi
+  if [[ -d "$tmp/etc/systemd/system/gsad.service.d" ]]; then
+    mkdir -p /etc/systemd/system
+    [[ -d "$GSAD_OVERRIDE_DIR" ]] && cp -a "$GSAD_OVERRIDE_DIR" "${GSAD_OVERRIDE_DIR}.pre-restore.$(date +%s)"
+    rm -rf "$GSAD_OVERRIDE_DIR"
+    cp -a "$tmp/etc/systemd/system/gsad.service.d" "$GSAD_OVERRIDE_DIR"
+    systemctl daemon-reload
+    log_ok "Restored gsad drop-in"
+  fi
+  if [[ -d "$tmp/etc/cloudflared" ]]; then
+    mkdir -p /etc/cloudflared
+    if [[ -d /etc/cloudflared ]]; then
+      mkdir -p "/etc/cloudflared.pre-restore.$(date +%s)"
+      cp -a /etc/cloudflared/. "/etc/cloudflared.pre-restore.$(date +%s)/" 2>/dev/null || true
+    fi
+    cp -a "$tmp/etc/cloudflared/." /etc/cloudflared/
+    chmod 600 /etc/cloudflared/*.json 2>/dev/null || true
+    log_ok "Restored /etc/cloudflared"
+  fi
+  if [[ -d "$tmp/var/lib/gvm/CA" ]]; then
+    mkdir -p /var/lib/gvm
+    [[ -d /var/lib/gvm/CA ]] && cp -a /var/lib/gvm/CA "/var/lib/gvm/CA.pre-restore.$(date +%s)"
+    rm -rf /var/lib/gvm/CA
+    cp -a "$tmp/var/lib/gvm/CA" /var/lib/gvm/CA
+    if [[ -d "$tmp/var/lib/gvm/private" ]]; then
+      [[ -d /var/lib/gvm/private ]] && cp -a /var/lib/gvm/private "/var/lib/gvm/private.pre-restore.$(date +%s)"
+      rm -rf /var/lib/gvm/private
+      cp -a "$tmp/var/lib/gvm/private" /var/lib/gvm/private
+    fi
+    chown -R _gvm:_gvm /var/lib/gvm/CA /var/lib/gvm/private 2>/dev/null || true
+    log_ok "Restored GVM certificates"
+  fi
+
+  systemctl start postgresql >/dev/null 2>&1 || true
+  sleep 1
+  if [[ -f "$tmp/gvmd.dump" || -f "$tmp/gvmd.sql" ]]; then
+    log_info "Restoring gvmd database..."
+    if gvm_db_exists; then
+      sudo -u postgres pg_dump --format=custom --file="/var/tmp/gvmd.pre-restore.$(date +%s).dump" gvmd 2>/dev/null || true
+      sudo -u postgres dropdb gvmd
+    fi
+    sudo -u postgres createdb -O _gvm gvmd 2>/dev/null || sudo -u postgres createdb gvmd
+    if [[ -f "$tmp/gvmd.dump" ]]; then
+      sudo -u postgres pg_restore --no-owner --role=_gvm -d gvmd "$tmp/gvmd.dump" >/dev/null 2>&1 \
+        || sudo -u postgres pg_restore -d gvmd "$tmp/gvmd.dump" || log_warn "pg_restore reported errors (often harmless with custom format)."
+    else
+      sudo -u postgres psql -d gvmd -f "$tmp/gvmd.sql" >/dev/null || log_err "psql restore failed"
+    fi
+    log_ok "Restored gvmd database"
+  fi
+
+  rm -rf "$tmp"
+  start_gvm_stack
+  if [[ -f /etc/cloudflared/config.yml ]]; then
+    systemctl enable --now cloudflared >/dev/null 2>&1 || systemctl start cloudflared || true
+  fi
+  log_ok "Restore complete. Previous live data was copied aside as *.pre-restore.*"
+}
+
+# ==============================================================================
 # STATUS REPORT / MAIN
 # ==============================================================================
 print_status_report() {
@@ -500,8 +841,37 @@ print_status_report() {
 }
 
 check_os
+prompt_fresh_or_restore
 if [[ $STATUS_ONLY -eq 1 ]]; then
   print_status_report
+  exit 0
+fi
+
+if [[ -n "$RESTORE_FILE" ]]; then
+  if [[ $BACKUP_MODE -eq 1 || $UPDATE_MODE -eq 1 ]]; then
+    log_err "Cannot combine --restore with --backup or --update."
+    exit 1
+  fi
+  if [[ "$RESTORE_FILE" == ~/* && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    RESTORE_FILE="${home}/${RESTORE_FILE#~/}"
+  fi
+  if ! runtime_stack_present; then
+    bootstrap_stack_for_restore
+  else
+    log_info "GVM runtime already present — restore only."
+  fi
+  do_restore "$RESTORE_FILE"
+  echo
+  print_status_report
+  log_ok "Done. (Kali Script v${SCRIPT_VERSION})"
+  exit 0
+fi
+
+if [[ $BACKUP_MODE -eq 1 ]]; then
+  do_backup || exit 1
+  echo
+  log_ok "Done. (Kali Script v${SCRIPT_VERSION})"
   exit 0
 fi
 
