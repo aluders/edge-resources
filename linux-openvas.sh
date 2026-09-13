@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.2
+# KALI SCRIPT v1.3
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -51,7 +51,7 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.2
+# NOTES — Kali Script v1.3
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
@@ -84,6 +84,9 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.3 - --backup pg_dump writes to a postgres-owned temp file first.
+#          mktemp's 0700 dir is root-only, so `sudo -u postgres pg_dump
+#          --file=$tmp/...` failed with Permission denied.
 #   v1.2 - Interactive run on a bare box asks Fresh install vs Restore
 #          from backup (skipped with -y or when --restore is already set).
 #   v1.1 - --backup / --restore / --backup-dir. Archive lands in the
@@ -93,7 +96,7 @@
 # ==============================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="1.2"
+SCRIPT_VERSION="1.3"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -614,10 +617,15 @@ do_backup() {
 
   if gvm_db_exists; then
     log_info "Dumping gvmd PostgreSQL database..."
-    if sudo -u postgres pg_dump --format=custom --file="$tmp/backup/gvmd.dump" gvmd 2>/dev/null \
-       || sudo -u postgres pg_dump --format=plain --file="$tmp/backup/gvmd.sql" gvmd; then
+    local pgdump
+    pgdump=$(sudo -u postgres mktemp /tmp/gvmd.dump.XXXXXX)
+    # postgres cannot write into root's 0700 mktemp tree — dump aside, then copy.
+    if sudo -u postgres pg_dump --format=custom --file="$pgdump" gvmd; then
+      cp -a "$pgdump" "$tmp/backup/gvmd.dump"
+      rm -f "$pgdump"
       log_ok "gvmd database dumped"
     else
+      rm -f "$pgdump"
       log_err "pg_dump gvmd failed"
       rm -rf "$tmp"
       return 1
