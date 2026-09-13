@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.3
+# KALI SCRIPT v1.4
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -31,7 +31,8 @@
 # -----
 #   --status          Print status of all components and exit
 #   --update          Version-only update pass (no config repair)
-#   --backup          Write a config/db/tunnel archive to the script owner's home
+#   --backup          Config-only archive (GVM settings + tunnel; no scan history)
+#   --backup-full     Same archive plus full gvmd dump (reports/results)
 #   --restore FILE    Restore from a --backup archive
 #   --backup-dir DIR  Override where --backup writes the archive
 #   --only LIST       Only act on LIST
@@ -51,7 +52,7 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.3
+# NOTES — Kali Script v1.4
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
@@ -84,6 +85,10 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.4 - --backup is config-only by default: pg_dump excludes data in
+#          results/reports/NVT/SCAP tables (the multi-GB history). Use
+#          --backup-full to include scan history. Dump still writes via
+#          a postgres-owned temp file.
 #   v1.3 - --backup pg_dump writes to a postgres-owned temp file first.
 #          mktemp's 0700 dir is root-only, so `sudo -u postgres pg_dump
 #          --file=$tmp/...` failed with Permission denied.
@@ -96,7 +101,7 @@
 # ==============================================================================
 set -uo pipefail
 
-SCRIPT_VERSION="1.3"
+SCRIPT_VERSION="1.4"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -118,6 +123,7 @@ log_err()  { echo -e "${RED}[x]${NC} $*"; }
 STATUS_ONLY=0
 UPDATE_MODE=0
 BACKUP_MODE=0
+BACKUP_FULL=0
 RESTORE_FILE=""
 BACKUP_DIR_ARG=""
 ASSUME_YES=0
@@ -134,7 +140,8 @@ Idempotent — safe to re-run.
 Flags:
   --status          Print status of all components and exit
   --update          Force an update pass, even if status already passes
-  --backup          Write config/db/tunnel archive to the script owner's home
+  --backup          Config-only archive (no scan history / NVT rows)
+  --backup-full     Archive including full gvmd dump (reports + results)
   --restore FILE    Restore from a --backup archive
   --backup-dir DIR  Override --backup destination directory
   --only LIST       Only act on the components in LIST
@@ -159,6 +166,7 @@ while [[ $# -gt 0 ]]; do
     --status) STATUS_ONLY=1; shift ;;
     --update) UPDATE_MODE=1; shift ;;
     --backup) BACKUP_MODE=1; shift ;;
+    --backup-full) BACKUP_MODE=1; BACKUP_FULL=1; shift ;;
     --restore) RESTORE_FILE="$2"; shift 2 ;;
     --backup-dir) BACKUP_DIR_ARG="$2"; shift 2 ;;
     --only) ONLY_LIST="$2"; shift 2 ;;
@@ -616,11 +624,25 @@ do_backup() {
   fi
 
   if gvm_db_exists; then
-    log_info "Dumping gvmd PostgreSQL database..."
-    local pgdump
+    local pgdump dump_args=()
     pgdump=$(sudo -u postgres mktemp /tmp/gvmd.dump.XXXXXX)
     # postgres cannot write into root's 0700 mktemp tree — dump aside, then copy.
-    if sudo -u postgres pg_dump --format=custom --file="$pgdump" gvmd; then
+    if [[ $BACKUP_FULL -eq 1 ]]; then
+      log_info "Dumping FULL gvmd database (includes scan history — this can take a while)..."
+    else
+      log_info "Dumping gvmd configuration only (excluding results/reports/NVT data)..."
+      local t
+      while IFS= read -r t; do
+        [[ -z "$t" ]] && continue
+        dump_args+=(--exclude-table-data="$t")
+      done < <(sudo -u postgres psql -d gvmd -Atc \
+        "SELECT tablename FROM pg_tables WHERE schemaname='public'
+         AND tablename ~ '^(results|reports|report_|nvts|nvt_cves|nvt_severities|vt_refs|cves|cpes|oval|cert_|scap|epss|cpe_)'")
+      echo "config-only" > "$tmp/backup/DUMP_MODE.txt"
+      printf '%s\n' "${dump_args[@]}" | sed 's/^--exclude-table-data=/skipped data: /' >> "$tmp/backup/DUMP_MODE.txt"
+      log_info "Skipping data in ${#dump_args[@]} history/feed tables."
+    fi
+    if sudo -u postgres pg_dump --format=custom --file="$pgdump" "${dump_args[@]}" gvmd; then
       cp -a "$pgdump" "$tmp/backup/gvmd.dump"
       rm -f "$pgdump"
       log_ok "gvmd database dumped"
