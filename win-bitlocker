@@ -1,5 +1,4 @@
-# disable bitlocker
-# also handy to remove bitlocker padlock and exclamation point...
+# bitlocker commands
 
 # elevated command prompt
 manage-bde -status c:
