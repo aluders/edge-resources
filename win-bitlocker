@@ -2,8 +2,9 @@
 # also handy to remove bitlocker padlock and exclamation point...
 
 # elevated command prompt
-manage-bde -off c:
+
 manage-bde -status c:
+manage-bde -off c:
 manage-bde -on c: -used
 manage-bde -protectors -add c: -recoverypassword
 manage-bde -protectors -get c:
