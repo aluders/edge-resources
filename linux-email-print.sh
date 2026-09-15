@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v3.5
+#  emailprint.sh  —  Email-to-Print  v3.6
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer as PWG-Raster (raw), avoiding Brother
@@ -25,6 +25,7 @@
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    3.6  — Backup mail subject "Email Print Backup"; real newline in body
 #    3.5  — Fetch with BODY.PEEK so a failed print stays unread
 #    3.4  — Point cupsfilter at the real PPD; simplify gs PWG fallback
 #    3.3  — Fix IMAP SELECT quoting so SEARCH is legal (Gmail Fax folder)
@@ -490,9 +491,10 @@ timestamp    = datetime.now().strftime('%Y-%m-%d %H:%M')
 msg = MIMEMultipart()
 msg['From']    = imap_user
 msg['To']      = backup_email
-msg['Subject'] = 'Email-to-Print Config Backup ({})'.format(timestamp)
+msg['Subject'] = 'Email Print Backup'
 msg.attach(MIMEText(
-    'Email-to-Print configuration backup.\\nRestore with: sudo ./emailprint.sh --restore emailprint.conf',
+    "Email-to-Print configuration backup.\n"
+    "Restore with: sudo ./emailprint.sh --restore emailprint.conf\n",
     'plain'
 ))
 with open(config_path, 'rb') as f:
