@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.5
+# KALI SCRIPT v1.6
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -26,6 +26,11 @@
 #   speedtest   - official Ookla static binary in /usr/local/bin/speedtest.
 #                 Removes the Debian `speedtest-cli` impostor (this box had
 #                 it providing /usr/bin/speedtest).
+#   exim        - Debian exim4 satellite via Amazon SES
+#                 (email-smtp.us-west-2.amazonaws.com:587). Hides the local
+#                 mailname behind edgeintegrated.net. Does not invent the
+#                 SES SMTP password; writes /etc/exim4/passwd.client only
+#                 when EXIM_SMTP_USER + EXIM_SMTP_PASSWORD are set.
 #
 # FLAGS
 # -----
@@ -40,7 +45,7 @@
 #   -y, --yes         Don't pause before gvm-setup / restore confirm
 #   -h, --help        Show usage
 #
-#   LIST: openvas, cloudflared, fastfetch, speedtest
+#   LIST: openvas, exim, cloudflared, fastfetch, speedtest
 #
 # USAGE
 # -----
@@ -52,15 +57,22 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.5
+# NOTES — Kali Script v1.6
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
 #     shipped by kali-rolling. Other rolling snapshots should be fine.
 #   - Feed sync is NOT part of --update. Packages are upgraded; feeds
-#     are left to the existing weekly greenbone-feed-sync schedule.
-#     A normal run never pulls feeds either. `gvm-setup` on a missing
-#     DB will still sync feeds, and that is slow on purpose.
+#     are left to /etc/cron.d/streams-update (Wednesday 00:00 as _gvm:
+#     greenbone-nvt-sync && feed-sync SCAP/CERT/GVMD_DATA). A normal
+#     run never pulls feeds either. `gvm-setup` on a missing DB will
+#     still sync feeds, and that is slow on purpose.
+#   - Cron stdout is mailed as _gvm@kali.edge.local, rewritten by the
+#     exim satellite to _gvm@edgeintegrated.net, and handed to SES.
+#     No MAILTO= line — that is how the live box already works.
+#   - exim --update upgrades the packages and reapplies the satellite
+#     template if type/smarthost/readhost drifted. passwd.client is
+#     never overwritten once it has a real credential line.
 #   - cloudflared on this box was originally a local .deb (2024.12.2) with
 #     no Cloudflare apt source. First install/update adds the official
 #     repo so later --update can see newer versions.
@@ -86,6 +98,9 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.6 - Fresh-box / repair support for /etc/cron.d/streams-update
+#          and the exim4 SES satellite. exim is a real --update target.
+#          No backup cron. MAILTO left unset so cron still mails _gvm.
 #   v1.5 - --update no longer runs greenbone-feed-sync. Feeds are owned
 #          by the weekly schedule; this pass only upgrades packages.
 #   v1.4 - --backup is config-only by default: pg_dump excludes data in
@@ -103,7 +118,7 @@
 #   v1.0 - Initial release from live recon of the existing Kali GVM VM.
 # ==============================================================================
 set -uo pipefail
-SCRIPT_VERSION="1.5"
+SCRIPT_VERSION="1.6"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -111,8 +126,21 @@ GSAD_OVERRIDE="${GSAD_OVERRIDE_DIR}/override.conf"
 CF_KEYRING="/usr/share/keyrings/cloudflare-main.gpg"
 CF_LIST="/etc/apt/sources.list.d/cloudflared.list"
 CF_CONFIG="/etc/cloudflared/config.yml"
-ALL_COMPONENTS=(openvas cloudflared fastfetch speedtest)
-UPDATABLE_COMPONENTS=(openvas cloudflared fastfetch speedtest)
+FEED_CRON_FILE="/etc/cron.d/streams-update"
+FEED_CRON_SCHEDULE="0 0 * * 3"
+FEED_CRON_USER="_gvm"
+FEED_CRON_CMD="greenbone-nvt-sync && greenbone-feed-sync --type SCAP && greenbone-feed-sync --type CERT && greenbone-feed-sync --type GVMD_DATA"
+MAIL_LOCAL_NAME="kali.edge.local"
+MAIL_PUBLIC_DOMAIN="edgeintegrated.net"
+MAIL_SMARTHOST="email-smtp.us-west-2.amazonaws.com:587"
+MAIL_ROOT_ALIAS="edgeadmin"
+EXIM_CONF="/etc/exim4/update-exim4.conf.conf"
+EXIM_PASSWD_CLIENT="/etc/exim4/passwd.client"
+EXIM_MAILNAME="/etc/mailname"
+EXIM_ALIASES="/etc/aliases"
+EXIM_PKGS=(exim4 exim4-base exim4-config exim4-daemon-light)
+ALL_COMPONENTS=(openvas exim cloudflared fastfetch speedtest)
+UPDATABLE_COMPONENTS=(openvas exim cloudflared fastfetch speedtest)
 GVM_PKGS=(gvm gsad gvmd gvmd-common openvas-scanner ospd-openvas notus-scanner greenbone-security-assistant greenbone-feed-sync gvm-tools)
 GVM_UNITS=(redis-server@openvas mosquitto notus-scanner ospd-openvas gvmd gsad)
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -132,7 +160,8 @@ SKIP_LIST=""
 usage() {
   cat <<EOF
 KALI SCRIPT (v${SCRIPT_VERSION})
-Installs/repairs: openvas (gvm stack + units + gsad :${GSAD_PORT}),
+Installs/repairs: openvas (gvm stack + units + gsad :${GSAD_PORT}
++ Wednesday feed cron), exim4 SES satellite (${MAIL_PUBLIC_DOMAIN}),
 cloudflared (official apt, existing tunnel config left alone),
 fastfetch (latest GitHub .deb), Ookla speedtest (static binary).
 Idempotent — safe to re-run.
@@ -240,7 +269,33 @@ status_openvas() {
   grep -q -- "--listen ${GSAD_LISTEN}" "$GSAD_OVERRIDE" || return 1
   grep -q -- "--port ${GSAD_PORT}" "$GSAD_OVERRIDE" || return 1
   gvm_db_exists || return 1
+  feed_cron_ok || return 1
   return 0
+}
+feed_cron_line() {
+  echo "${FEED_CRON_SCHEDULE} ${FEED_CRON_USER} ${FEED_CRON_CMD}"
+}
+feed_cron_ok() {
+  [[ -f "$FEED_CRON_FILE" ]] || return 1
+  grep -qxF "$(feed_cron_line)" "$FEED_CRON_FILE"
+}
+ensure_feed_cron() {
+  local desired
+  desired=$(feed_cron_line)
+  if feed_cron_ok && grep -qxF "$desired" "$FEED_CRON_FILE"; then
+    log_ok "Feed cron already in place (${FEED_CRON_FILE})."
+    return 0
+  fi
+  log_info "Writing ${FEED_CRON_FILE} (Wed 00:00 as ${FEED_CRON_USER})..."
+  cat > "$FEED_CRON_FILE" <<EOF
+# Managed by kali-script v${SCRIPT_VERSION}
+# Weekly Greenbone community feed sync. Cron mails stdout to ${FEED_CRON_USER}.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+${desired}
+EOF
+  chmod 644 "$FEED_CRON_FILE"
+  log_ok "Feed cron installed."
 }
 install_openvas() {
   ensure_apt_updated
@@ -271,6 +326,7 @@ EOF
     fi
     gvm-setup
   fi
+  ensure_feed_cron
   systemctl restart ospd-openvas gvmd gsad >/dev/null 2>&1 || true
   sleep 2
   if status_openvas; then
@@ -298,6 +354,154 @@ update_openvas() {
     log_ok "GVM packages updated."
   else
     log_ok "GVM packages already at latest apt candidate."
+  fi
+  ensure_feed_cron
+}
+# ==============================================================================
+# COMPONENT: exim (SES satellite)
+# ==============================================================================
+exim_passwd_has_secret() {
+  [[ -f "$EXIM_PASSWD_CLIENT" ]] || return 1
+  grep -vE '^[[:space:]]*(#|$)' "$EXIM_PASSWD_CLIENT" | grep -q ':'
+}
+exim_conf_matches() {
+  [[ -f "$EXIM_CONF" ]] || return 1
+  grep -q "dc_eximconfig_configtype='satellite'" "$EXIM_CONF" || return 1
+  grep -q "dc_readhost='${MAIL_PUBLIC_DOMAIN}'" "$EXIM_CONF" || return 1
+  grep -q "dc_smarthost='${MAIL_SMARTHOST}'" "$EXIM_CONF" || return 1
+  grep -q "dc_hide_mailname='true'" "$EXIM_CONF" || return 1
+  grep -q "dc_other_hostnames='${MAIL_LOCAL_NAME}'" "$EXIM_CONF" || return 1
+  return 0
+}
+status_exim() {
+  dpkg -s exim4 >/dev/null 2>&1 || return 1
+  dpkg -s exim4-daemon-light >/dev/null 2>&1 || return 1
+  unit_active exim4 || return 1
+  unit_enabled exim4 || return 1
+  exim_conf_matches || return 1
+  [[ -f "$EXIM_MAILNAME" ]] || return 1
+  grep -qxF "$MAIL_LOCAL_NAME" "$EXIM_MAILNAME" || return 1
+  grep -qE "^root:[[:space:]]*${MAIL_ROOT_ALIAS}[[:space:]]*$" "$EXIM_ALIASES" || return 1
+  exim_passwd_has_secret || return 1
+  return 0
+}
+write_exim_satellite_conf() {
+  mkdir -p /etc/exim4
+  cat > "$EXIM_CONF" <<EOF
+# Managed by kali-script v${SCRIPT_VERSION}
+# Edit this file and /etc/mailname by hand and execute update-exim4.conf
+dc_eximconfig_configtype='satellite'
+dc_other_hostnames='${MAIL_LOCAL_NAME}'
+dc_local_interfaces='127.0.0.1 ; ::1'
+dc_readhost='${MAIL_PUBLIC_DOMAIN}'
+dc_relay_domains=''
+dc_minimaldns='false'
+dc_relay_nets=''
+dc_smarthost='${MAIL_SMARTHOST}'
+CFILEMODE='644'
+dc_use_split_config='false'
+dc_hide_mailname='true'
+dc_mailname_in_oh='true'
+dc_localdelivery='mail_spool'
+EOF
+  echo "$MAIL_LOCAL_NAME" > "$EXIM_MAILNAME"
+}
+ensure_root_alias() {
+  if [[ -f "$EXIM_ALIASES" ]] && grep -qE '^root:' "$EXIM_ALIASES"; then
+    if grep -qE "^root:[[:space:]]*${MAIL_ROOT_ALIAS}[[:space:]]*$" "$EXIM_ALIASES"; then
+      return 0
+    fi
+    sed -i -E "s/^root:.*/root: ${MAIL_ROOT_ALIAS}/" "$EXIM_ALIASES"
+  else
+    echo "root: ${MAIL_ROOT_ALIAS}" >> "$EXIM_ALIASES"
+  fi
+  command -v newaliases >/dev/null 2>&1 && newaliases >/dev/null 2>&1 || true
+}
+ensure_exim_passwd_client() {
+  if exim_passwd_has_secret; then
+    return 0
+  fi
+  mkdir -p /etc/exim4
+  if [[ -n "${EXIM_SMTP_USER:-}" && -n "${EXIM_SMTP_PASSWORD:-}" ]]; then
+    log_info "Writing ${EXIM_PASSWD_CLIENT} from EXIM_SMTP_USER."
+    cat > "$EXIM_PASSWD_CLIENT" <<EOF
+# Managed by kali-script v${SCRIPT_VERSION}
+# SES SMTP credentials. Mode 640, group Debian-exim.
+*:${EXIM_SMTP_USER}:${EXIM_SMTP_PASSWORD}
+EOF
+  elif [[ ! -f "$EXIM_PASSWD_CLIENT" ]]; then
+    log_warn "No ${EXIM_PASSWD_CLIENT}. Writing a stub — fill in SES SMTP user/password."
+    cat > "$EXIM_PASSWD_CLIENT" <<EOF
+# Managed by kali-script v${SCRIPT_VERSION}
+# SES client auth for ${MAIL_SMARTHOST}
+# Format: *:SMTP_USERNAME:SMTP_PASSWORD
+# Or set EXIM_SMTP_USER / EXIM_SMTP_PASSWORD and re-run.
+#*:AKIA...:replace-me
+EOF
+  else
+    log_warn "${EXIM_PASSWD_CLIENT} has no usable credential line."
+    log_warn "Add '*:USER:PASS' or re-run with EXIM_SMTP_USER and EXIM_SMTP_PASSWORD."
+  fi
+  if getent group Debian-exim >/dev/null 2>&1; then
+    chown root:Debian-exim "$EXIM_PASSWD_CLIENT" 2>/dev/null || true
+  fi
+  chmod 640 "$EXIM_PASSWD_CLIENT" 2>/dev/null || chmod 600 "$EXIM_PASSWD_CLIENT"
+}
+reload_exim() {
+  if command -v update-exim4.conf >/dev/null 2>&1; then
+    update-exim4.conf
+  fi
+  systemctl enable exim4 >/dev/null 2>&1 || true
+  systemctl restart exim4 >/dev/null 2>&1 || systemctl start exim4 || log_err "exim4 failed to start."
+}
+install_exim() {
+  ensure_apt_updated
+  log_info "Installing exim4 satellite stack..."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y "${EXIM_PKGS[@]}"
+  write_exim_satellite_conf
+  ensure_root_alias
+  ensure_exim_passwd_client
+  reload_exim
+  if status_exim; then
+    log_ok "exim4 satellite ready (${MAIL_LOCAL_NAME} → ${MAIL_PUBLIC_DOMAIN} via SES)."
+  else
+    log_warn "exim4 installed but status is incomplete."
+    if ! exim_passwd_has_secret; then
+      log_warn "SES auth is missing — cron mail will not leave the box until ${EXIM_PASSWD_CLIENT} is filled in."
+    else
+      log_err "exim4 did not verify cleanly. Check: systemctl status exim4"
+    fi
+  fi
+}
+update_exim() {
+  if ! dpkg -s exim4 >/dev/null 2>&1; then
+    log_warn "exim4 not installed — run without --update first."
+    return
+  fi
+  local before after
+  before=$(dpkg-query -W -f='${Package}=${Version}\n' "${EXIM_PKGS[@]}" 2>/dev/null | sort | sha256sum | awk '{print $1}')
+  log_info "Checking for newer exim4 packages..."
+  apt-get update -qq >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y "${EXIM_PKGS[@]}" >/dev/null
+  after=$(dpkg-query -W -f='${Package}=${Version}\n' "${EXIM_PKGS[@]}" 2>/dev/null | sort | sha256sum | awk '{print $1}')
+  if [[ "$before" != "$after" ]]; then
+    log_ok "exim4 packages updated."
+  else
+    log_ok "exim4 packages already at latest apt candidate."
+  fi
+  if ! exim_conf_matches; then
+    log_info "exim satellite template drifted — rewriting ${EXIM_CONF}."
+    write_exim_satellite_conf
+    reload_exim
+  fi
+  ensure_root_alias
+  if ! exim_passwd_has_secret; then
+    ensure_exim_passwd_client
+    log_warn "SES client auth still missing in ${EXIM_PASSWD_CLIENT}."
+  fi
+  if ! unit_active exim4; then
+    log_warn "exim4 is not active — starting..."
+    systemctl start exim4 || log_err "exim4.service failed to start."
   fi
 }
 # ==============================================================================
@@ -585,6 +789,10 @@ do_backup() {
   copy_if_exists /etc/openvas "$tmp/backup/etc/openvas" && log_info "Added /etc/openvas"
   copy_if_exists "$GSAD_OVERRIDE_DIR" "$tmp/backup/etc/systemd/system/gsad.service.d" && log_info "Added gsad drop-in"
   copy_if_exists /etc/cloudflared "$tmp/backup/etc/cloudflared" && log_info "Added /etc/cloudflared"
+  copy_if_exists /etc/exim4 "$tmp/backup/etc/exim4" && log_info "Added /etc/exim4"
+  copy_if_exists "$EXIM_ALIASES" "$tmp/backup/etc/aliases" && log_info "Added /etc/aliases"
+  copy_if_exists "$EXIM_MAILNAME" "$tmp/backup/etc/mailname" && log_info "Added /etc/mailname"
+  copy_if_exists "$FEED_CRON_FILE" "$tmp/backup/etc/cron.d/streams-update" && log_info "Added ${FEED_CRON_FILE}"
   if [[ -d /var/lib/gvm/CA ]]; then
     mkdir -p "$tmp/backup/var/lib/gvm"
     cp -a /var/lib/gvm/CA "$tmp/backup/var/lib/gvm/"
@@ -699,6 +907,9 @@ bootstrap_stack_for_restore() {
   install_openvas
   stop_gvm_stack
   echo
+  log_info "=== exim ==="
+  install_exim
+  echo
   log_info "=== cloudflared ==="
   if ! command -v cloudflared >/dev/null 2>&1; then
     install_cloudflared
@@ -770,6 +981,37 @@ do_restore() {
     cp -a "$tmp/etc/cloudflared/." /etc/cloudflared/
     chmod 600 /etc/cloudflared/*.json 2>/dev/null || true
     log_ok "Restored /etc/cloudflared"
+  fi
+  if [[ -d "$tmp/etc/exim4" ]]; then
+    mkdir -p /etc/exim4
+    [[ -d /etc/exim4 ]] && cp -a /etc/exim4 "/etc/exim4.pre-restore.$(date +%s)"
+    rm -rf /etc/exim4
+    cp -a "$tmp/etc/exim4" /etc/exim4
+    if getent group Debian-exim >/dev/null 2>&1 && [[ -f /etc/exim4/passwd.client ]]; then
+      chown root:Debian-exim /etc/exim4/passwd.client 2>/dev/null || true
+      chmod 640 /etc/exim4/passwd.client
+    fi
+    log_ok "Restored /etc/exim4"
+  fi
+  if [[ -f "$tmp/etc/aliases" ]]; then
+    [[ -f /etc/aliases ]] && cp -a /etc/aliases "/etc/aliases.pre-restore.$(date +%s)"
+    cp -a "$tmp/etc/aliases" /etc/aliases
+    command -v newaliases >/dev/null 2>&1 && newaliases >/dev/null 2>&1 || true
+    log_ok "Restored /etc/aliases"
+  fi
+  if [[ -f "$tmp/etc/mailname" ]]; then
+    cp -a "$tmp/etc/mailname" /etc/mailname
+    log_ok "Restored /etc/mailname"
+  fi
+  if [[ -f "$tmp/etc/cron.d/streams-update" ]]; then
+    mkdir -p /etc/cron.d
+    cp -a "$tmp/etc/cron.d/streams-update" "$FEED_CRON_FILE"
+    chmod 644 "$FEED_CRON_FILE"
+    log_ok "Restored ${FEED_CRON_FILE}"
+  fi
+  if [[ -d "$tmp/etc/exim4" ]] && command -v update-exim4.conf >/dev/null 2>&1; then
+    update-exim4.conf
+    systemctl restart exim4 >/dev/null 2>&1 || true
   fi
   if [[ -d "$tmp/var/lib/gvm/CA" ]]; then
     mkdir -p /var/lib/gvm
