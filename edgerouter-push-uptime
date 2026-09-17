@@ -1,0 +1,20 @@
+*** create script ***
+
+#!/bin/sh
+# /config/scripts/kuma-push.sh
+curl -fsS --max-time 15 \
+  "https://uptimekuma.push.url/api/push/YOURTOKEN?status=up&msg=er12&ping=" \
+  >/dev/null 2>&1
+
+*** set executable ***
+
+chmod +x /config/scripts/kuma-push.sh
+
+*** configure task ***
+
+configure
+set system task-scheduler task kuma-push interval 1m
+set system task-scheduler task kuma-push executable path /config/scripts/kuma-push.sh
+commit
+save
+exit
