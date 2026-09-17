@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.4
+# KALI SCRIPT v1.5
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -30,7 +30,7 @@
 # FLAGS
 # -----
 #   --status          Print status of all components and exit
-#   --update          Version-only update pass (no config repair)
+#   --update          Version-only update pass (no config repair, no feed sync)
 #   --backup          Config-only archive (GVM settings + tunnel; no scan history)
 #   --backup-full     Same archive plus full gvmd dump (reports/results)
 #   --restore FILE    Restore from a --backup archive
@@ -52,14 +52,15 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.4
+# NOTES — Kali Script v1.5
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
 #     shipped by kali-rolling. Other rolling snapshots should be fine.
-#   - Feed sync is `--update` only (`greenbone-feed-sync`). A normal run
-#     never pulls feeds; `gvm-setup` on a missing DB will, and that is
-#     slow on purpose.
+#   - Feed sync is NOT part of --update. Packages are upgraded; feeds
+#     are left to the existing weekly greenbone-feed-sync schedule.
+#     A normal run never pulls feeds either. `gvm-setup` on a missing
+#     DB will still sync feeds, and that is slow on purpose.
 #   - cloudflared on this box was originally a local .deb (2024.12.2) with
 #     no Cloudflare apt source. First install/update adds the official
 #     repo so later --update can see newer versions.
@@ -85,6 +86,8 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.5 - --update no longer runs greenbone-feed-sync. Feeds are owned
+#          by the weekly schedule; this pass only upgrades packages.
 #   v1.4 - --backup is config-only by default: pg_dump excludes data in
 #          results/reports/NVT/SCAP tables (the multi-GB history). Use
 #          --backup-full to include scan history. Dump still writes via
@@ -100,8 +103,7 @@
 #   v1.0 - Initial release from live recon of the existing Kali GVM VM.
 # ==============================================================================
 set -uo pipefail
-
-SCRIPT_VERSION="1.4"
+SCRIPT_VERSION="1.5"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -113,13 +115,11 @@ ALL_COMPONENTS=(openvas cloudflared fastfetch speedtest)
 UPDATABLE_COMPONENTS=(openvas cloudflared fastfetch speedtest)
 GVM_PKGS=(gvm gsad gvmd gvmd-common openvas-scanner ospd-openvas notus-scanner greenbone-security-assistant greenbone-feed-sync gvm-tools)
 GVM_UNITS=(redis-server@openvas mosquitto notus-scanner ospd-openvas gvmd gsad)
-
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log_ok()   { echo -e "${GREEN}[+]${NC} $*"; }
 log_info() { echo -e "${BLUE}[*]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 log_err()  { echo -e "${RED}[x]${NC} $*"; }
-
 STATUS_ONLY=0
 UPDATE_MODE=0
 BACKUP_MODE=0
@@ -129,7 +129,6 @@ BACKUP_DIR_ARG=""
 ASSUME_YES=0
 ONLY_LIST=""
 SKIP_LIST=""
-
 usage() {
   cat <<EOF
 KALI SCRIPT (v${SCRIPT_VERSION})
@@ -139,7 +138,7 @@ fastfetch (latest GitHub .deb), Ookla speedtest (static binary).
 Idempotent — safe to re-run.
 Flags:
   --status          Print status of all components and exit
-  --update          Force an update pass, even if status already passes
+  --update          Force a version-only update pass (no config repair, no feeds)
   --backup          Config-only archive (no scan history / NVT rows)
   --backup-full     Archive including full gvmd dump (reports + results)
   --restore FILE    Restore from a --backup archive
@@ -160,7 +159,6 @@ Usage:
   sudo ./kali-script.sh --restore /home/you/kali-backup-20260911-193000.tar.gz
 EOF
 }
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --status) STATUS_ONLY=1; shift ;;
@@ -176,7 +174,6 @@ while [[ $# -gt 0 ]]; do
     *) log_err "Unknown argument: $1"; usage; exit 1 ;;
   esac
 done
-
 component_selected() {
   local c="$1"
   if [[ -n "$ONLY_LIST" ]]; then
@@ -194,12 +191,10 @@ component_updatable() {
   done
   return 1
 }
-
 if [[ $EUID -ne 0 ]]; then
   log_info "Re-running with sudo..."
   exec sudo -E bash "$0" "$@"
 fi
-
 check_os() {
   if [[ -r /etc/os-release ]]; then
     . /etc/os-release
@@ -210,7 +205,6 @@ check_os() {
     log_warn "Could not read /etc/os-release; skipping OS check."
   fi
 }
-
 apt_updated=0
 ensure_apt_updated() {
   if [[ $apt_updated -eq 0 ]]; then
@@ -218,17 +212,14 @@ ensure_apt_updated() {
     apt-get update -qq && apt_updated=1
   fi
 }
-
 unit_active() { systemctl is-active --quiet "$1"; }
 unit_enabled() { systemctl is-enabled --quiet "$1"; }
-
 # ==============================================================================
 # COMPONENT: openvas
 # ==============================================================================
 gvm_db_exists() {
   sudo -u postgres psql -Atc "SELECT 1 FROM pg_database WHERE datname='gvmd'" 2>/dev/null | grep -q 1
 }
-
 status_openvas() {
   dpkg -s gvm >/dev/null 2>&1 || return 1
   dpkg -s gsad >/dev/null 2>&1 || return 1
@@ -251,19 +242,16 @@ status_openvas() {
   gvm_db_exists || return 1
   return 0
 }
-
 install_openvas() {
   ensure_apt_updated
   log_info "Installing GVM metapackage and stack..."
   DEBIAN_FRONTEND=noninteractive apt-get install -y "${GVM_PKGS[@]}" postgresql
-
   log_info "Enabling GVM runtime units..."
   systemctl enable --now postgresql >/dev/null 2>&1 || systemctl start postgresql >/dev/null 2>&1 || true
   systemctl enable --now redis-server@openvas >/dev/null 2>&1 || true
   systemctl enable --now mosquitto >/dev/null 2>&1 || true
   systemctl enable --now notus-scanner >/dev/null 2>&1 || true
   systemctl enable --now ospd-openvas gvmd gsad >/dev/null 2>&1 || true
-
   log_info "Writing gsad listen override (${GSAD_LISTEN}:${GSAD_PORT})..."
   mkdir -p "$GSAD_OVERRIDE_DIR"
   cat > "$GSAD_OVERRIDE" <<EOF
@@ -273,7 +261,6 @@ ExecStart=/usr/sbin/gsad --foreground --listen ${GSAD_LISTEN} --port ${GSAD_PORT
 EOF
   systemctl daemon-reload
   systemctl restart gsad
-
   if gvm_db_exists; then
     log_ok "gvmd database already exists — not running gvm-setup (would start a feed sync and can reset nothing useful)."
   else
@@ -284,7 +271,6 @@ EOF
     fi
     gvm-setup
   fi
-
   systemctl restart ospd-openvas gvmd gsad >/dev/null 2>&1 || true
   sleep 2
   if status_openvas; then
@@ -295,7 +281,6 @@ EOF
     log_err "        gvm-check-setup   (slow; do not run gvm-setup -h)"
   fi
 }
-
 update_openvas() {
   if ! dpkg -s gvm >/dev/null 2>&1; then
     log_warn "GVM not installed — run without --update first."
@@ -314,14 +299,8 @@ update_openvas() {
   else
     log_ok "GVM packages already at latest apt candidate."
   fi
-  if command -v greenbone-feed-sync >/dev/null 2>&1; then
-    log_info "Syncing Greenbone community feeds (greenbone-feed-sync) — this can take a while..."
-    greenbone-feed-sync && log_ok "Feed sync finished." || log_warn "Feed sync reported an error."
-  else
-    log_warn "greenbone-feed-sync not installed."
-  fi
+  log_info "Skipping Greenbone feed sync — handled by the weekly schedule."
 }
-
 # ==============================================================================
 # COMPONENT: cloudflared
 # ==============================================================================
@@ -334,7 +313,6 @@ status_cloudflared() {
   unit_enabled cloudflared || return 1
   return 0
 }
-
 install_cloudflare_apt_repo() {
   mkdir -p --mode=0755 /usr/share/keyrings
   if [[ ! -f "$CF_KEYRING" ]]; then
@@ -347,7 +325,6 @@ install_cloudflare_apt_repo() {
     apt_updated=0
   fi
 }
-
 install_cloudflared() {
   install_cloudflare_apt_repo
   ensure_apt_updated
@@ -358,7 +335,6 @@ install_cloudflared() {
     log_info "cloudflared binary present — ensuring it is apt-tracked..."
     DEBIAN_FRONTEND=noninteractive apt-get install -y cloudflared >/dev/null || true
   fi
-
   if [[ -f "$CF_CONFIG" ]]; then
     log_info "Existing ${CF_CONFIG} left untouched."
     systemctl enable --now cloudflared >/dev/null 2>&1 || true
@@ -371,7 +347,6 @@ install_cloudflared() {
     log_warn "This script will not run 'cloudflared tunnel login' or write credentials."
     log_warn "Drop a config.yml + credentials JSON in /etc/cloudflared and re-run."
   fi
-
   if status_cloudflared; then
     log_ok "cloudflared installed and running ($(cloudflared --version 2>/dev/null | head -n1))."
   else
@@ -382,7 +357,6 @@ install_cloudflared() {
     fi
   fi
 }
-
 update_cloudflared() {
   if ! command -v cloudflared >/dev/null 2>&1; then
     log_warn "cloudflared not installed — run without --update first."
@@ -402,14 +376,12 @@ update_cloudflared() {
     log_ok "cloudflared already at latest (${after})."
   fi
 }
-
 # ==============================================================================
 # COMPONENT: fastfetch
 # ==============================================================================
 status_fastfetch() {
   command -v fastfetch >/dev/null 2>&1
 }
-
 fastfetch_install_latest_deb() {
   local tmp deb_url
   tmp=$(mktemp -d)
@@ -426,7 +398,6 @@ fastfetch_install_latest_deb() {
   fi
   rm -rf "$tmp"
 }
-
 install_fastfetch() {
   log_info "Installing fastfetch (latest GitHub release)..."
   fastfetch_install_latest_deb
@@ -436,7 +407,6 @@ install_fastfetch() {
     log_err "fastfetch install failed."
   fi
 }
-
 update_fastfetch() {
   if ! command -v fastfetch >/dev/null 2>&1; then
     log_warn "fastfetch not installed — run without --update first."
@@ -454,7 +424,6 @@ update_fastfetch() {
     log_ok "fastfetch already up to date (${cur})."
   fi
 }
-
 # ==============================================================================
 # COMPONENT: speedtest (official Ookla CLI)
 # ==============================================================================
@@ -463,7 +432,6 @@ status_speedtest() {
   speedtest --version 2>/dev/null | grep -qi "ookla" || return 1
   return 0
 }
-
 speedtest_latest_tgz_url() {
   local arch
   case "$(uname -m)" in
@@ -476,7 +444,6 @@ speedtest_latest_tgz_url() {
     | grep -Eo "https://install\.speedtest\.net/app/cli/ookla-speedtest-[0-9.]+-${arch}\.tgz" \
     | head -n1
 }
-
 install_speedtest_static() {
   local tgz_url tmp
   tgz_url=$(speedtest_latest_tgz_url)
@@ -493,7 +460,6 @@ install_speedtest_static() {
   fi
   rm -rf "$tmp"
 }
-
 install_speedtest() {
   if command -v speedtest >/dev/null 2>&1 && ! speedtest --version 2>/dev/null | grep -qi "ookla"; then
     log_warn "Found a non-Ookla 'speedtest' (likely speedtest-cli) — removing it first."
@@ -506,7 +472,6 @@ install_speedtest() {
     log_err "Ookla speedtest install failed."
   fi
 }
-
 update_speedtest() {
   if ! command -v speedtest >/dev/null 2>&1; then
     log_warn "speedtest not installed — run without --update first."
@@ -528,12 +493,10 @@ update_speedtest() {
     log_ok "Ookla speedtest already up to date (${cur:-unknown})."
   fi
 }
-
 # ==============================================================================
 # BACKUP / RESTORE
 # ==============================================================================
 script_path() { readlink -f "$0" 2>/dev/null || echo "$0"; }
-
 script_owner_home() {
   local owner home dest
   if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
@@ -547,7 +510,6 @@ script_owner_home() {
   fi
   echo "/root"
 }
-
 backup_dest_dir() {
   if [[ -n "$BACKUP_DIR_ARG" ]]; then
     echo "$BACKUP_DIR_ARG"
@@ -555,7 +517,6 @@ backup_dest_dir() {
   fi
   script_owner_home
 }
-
 backup_chown_user() {
   local dest
   dest=$(backup_dest_dir)
@@ -575,16 +536,13 @@ backup_chown_user() {
   fi
   echo "root"
 }
-
 stop_gvm_stack() {
   systemctl stop gsad.service gvmd.service ospd-openvas.service notus-scanner.service >/dev/null 2>&1 || true
 }
-
 start_gvm_stack() {
   systemctl start postgresql >/dev/null 2>&1 || true
   systemctl start redis-server@openvas mosquitto notus-scanner ospd-openvas gvmd gsad >/dev/null 2>&1 || true
 }
-
 copy_if_exists() {
   local src="$1" dest="$2"
   if [[ -e "$src" ]]; then
@@ -594,7 +552,6 @@ copy_if_exists() {
   fi
   return 1
 }
-
 do_backup() {
   local dest stamp archive tmp
   dest=$(backup_dest_dir)
@@ -603,26 +560,22 @@ do_backup() {
   archive="${dest}/kali-backup-${stamp}.tar.gz"
   tmp=$(mktemp -d)
   mkdir -p "$tmp/backup"
-
   {
     echo "kali-script backup v${SCRIPT_VERSION}"
     echo "created=$(date -Is)"
     echo "host=$(hostname -f 2>/dev/null || hostname)"
     echo "gsad=${GSAD_LISTEN}:${GSAD_PORT}"
   } > "$tmp/backup/MANIFEST.txt"
-
   copy_if_exists /etc/gvm "$tmp/backup/etc/gvm" && log_info "Added /etc/gvm"
   copy_if_exists /etc/openvas "$tmp/backup/etc/openvas" && log_info "Added /etc/openvas"
   copy_if_exists "$GSAD_OVERRIDE_DIR" "$tmp/backup/etc/systemd/system/gsad.service.d" && log_info "Added gsad drop-in"
   copy_if_exists /etc/cloudflared "$tmp/backup/etc/cloudflared" && log_info "Added /etc/cloudflared"
-
   if [[ -d /var/lib/gvm/CA ]]; then
     mkdir -p "$tmp/backup/var/lib/gvm"
     cp -a /var/lib/gvm/CA "$tmp/backup/var/lib/gvm/"
     [[ -d /var/lib/gvm/private ]] && cp -a /var/lib/gvm/private "$tmp/backup/var/lib/gvm/"
     log_info "Added GVM CA/private certs"
   fi
-
   if gvm_db_exists; then
     local pgdump dump_args=()
     pgdump=$(sudo -u postgres mktemp /tmp/gvmd.dump.XXXXXX)
@@ -655,13 +608,11 @@ do_backup() {
   else
     log_warn "No gvmd database — archive will not include scan users/tasks."
   fi
-
   if [[ ! -d "$tmp/backup/etc/gvm" && ! -f "$tmp/backup/gvmd.dump" && ! -f "$tmp/backup/gvmd.sql" && ! -d "$tmp/backup/etc/cloudflared" ]]; then
     rm -rf "$tmp"
     log_err "Nothing to back up — GVM and cloudflared do not look installed."
     return 1
   fi
-
   tar -C "$tmp/backup" -czf "$archive" .
   chmod 600 "$archive"
   local owner
@@ -672,14 +623,12 @@ do_backup() {
   rm -rf "$tmp"
   log_ok "Backup written to ${archive}"
   log_info "Contains GVM config, certs, gvmd database, cloudflared connector files."
-  log_info "Does NOT contain NVT/notus feeds — re-sync with --update --only openvas if needed."
+  log_info "Does NOT contain NVT/notus feeds — re-sync with greenbone-feed-sync if needed."
   log_warn "This archive includes tunnel credentials and the GVM database. Keep it private."
 }
-
 runtime_stack_present() {
   dpkg -s gvm >/dev/null 2>&1 && dpkg -s gvmd >/dev/null 2>&1 && command -v gsad >/dev/null 2>&1
 }
-
 prompt_fresh_or_restore() {
   if runtime_stack_present; then
     return 0
@@ -727,7 +676,6 @@ prompt_fresh_or_restore() {
       ;;
   esac
 }
-
 bootstrap_stack_for_restore() {
   echo
   log_info "No GVM runtime on this box — installing packages before restore."
@@ -742,7 +690,6 @@ bootstrap_stack_for_restore() {
   fi
   systemctl stop cloudflared >/dev/null 2>&1 || true
 }
-
 do_restore() {
   local archive="$1"
   if [[ ! -f "$archive" ]]; then
@@ -760,7 +707,6 @@ do_restore() {
       exit 1
     fi
   fi
-
   local tmp
   tmp=$(mktemp -d)
   if ! tar -tzf "$archive" >/dev/null 2>&1; then
@@ -778,10 +724,8 @@ do_restore() {
     log_info "Archive manifest:"
     sed 's/^/    /' "$tmp/MANIFEST.txt"
   fi
-
   stop_gvm_stack
   systemctl stop cloudflared >/dev/null 2>&1 || true
-
   if [[ -d "$tmp/etc/gvm" ]]; then
     [[ -d /etc/gvm ]] && cp -a /etc/gvm "/etc/gvm.pre-restore.$(date +%s)"
     rm -rf /etc/gvm
@@ -825,7 +769,6 @@ do_restore() {
     chown -R _gvm:_gvm /var/lib/gvm/CA /var/lib/gvm/private 2>/dev/null || true
     log_ok "Restored GVM certificates"
   fi
-
   systemctl start postgresql >/dev/null 2>&1 || true
   sleep 1
   if [[ -f "$tmp/gvmd.dump" || -f "$tmp/gvmd.sql" ]]; then
@@ -843,7 +786,6 @@ do_restore() {
     fi
     log_ok "Restored gvmd database"
   fi
-
   rm -rf "$tmp"
   start_gvm_stack
   if [[ -f /etc/cloudflared/config.yml ]]; then
@@ -851,7 +793,6 @@ do_restore() {
   fi
   log_ok "Restore complete. Previous live data was copied aside as *.pre-restore.*"
 }
-
 # ==============================================================================
 # STATUS REPORT / MAIN
 # ==============================================================================
@@ -869,14 +810,12 @@ print_status_report() {
   done
   echo
 }
-
 check_os
 prompt_fresh_or_restore
 if [[ $STATUS_ONLY -eq 1 ]]; then
   print_status_report
   exit 0
 fi
-
 if [[ -n "$RESTORE_FILE" ]]; then
   if [[ $BACKUP_MODE -eq 1 || $UPDATE_MODE -eq 1 ]]; then
     log_err "Cannot combine --restore with --backup or --update."
@@ -897,14 +836,12 @@ if [[ -n "$RESTORE_FILE" ]]; then
   log_ok "Done. (Kali Script v${SCRIPT_VERSION})"
   exit 0
 fi
-
 if [[ $BACKUP_MODE -eq 1 ]]; then
   do_backup || exit 1
   echo
   log_ok "Done. (Kali Script v${SCRIPT_VERSION})"
   exit 0
 fi
-
 for c in "${ALL_COMPONENTS[@]}"; do
   component_selected "$c" || continue
   if [[ $UPDATE_MODE -eq 1 ]]; then
@@ -929,7 +866,6 @@ for c in "${ALL_COMPONENTS[@]}"; do
     fi
   fi
 done
-
 if [[ $UPDATE_MODE -eq 1 ]]; then
   echo
   log_ok "Update pass complete. (Kali Script v${SCRIPT_VERSION})"
