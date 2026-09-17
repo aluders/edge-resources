@@ -13,7 +13,7 @@
 # Explorer is restarted so the change takes effect immediately.
 #
 # Run:
-#   irm https://classic.vcc.net | iex
+#   irm https://right-click.vcc.net | iex
 # =====================================================================
 #
 # CHANGELOG (newest first)
