@@ -299,7 +299,6 @@ update_openvas() {
   else
     log_ok "GVM packages already at latest apt candidate."
   fi
-  log_info "Skipping Greenbone feed sync — handled by the weekly schedule."
 }
 # ==============================================================================
 # COMPONENT: cloudflared
@@ -427,10 +426,26 @@ update_fastfetch() {
 # ==============================================================================
 # COMPONENT: speedtest (official Ookla CLI)
 # ==============================================================================
+speedtest_bin() {
+  if [[ -x /usr/local/bin/speedtest ]]; then
+    echo /usr/local/bin/speedtest
+    return 0
+  fi
+  command -v speedtest 2>/dev/null || return 1
+}
+speedtest_is_ookla() {
+  local bin
+  bin=$(speedtest_bin) || return 1
+  # --version is just "1.2.0.84" — the Ookla string lives in --help.
+  "$bin" --help 2>&1 | grep -qi "ookla"
+}
+speedtest_version_string() {
+  local bin
+  bin=$(speedtest_bin) || return 1
+  "$bin" --version 2>/dev/null | head -n1
+}
 status_speedtest() {
-  command -v speedtest >/dev/null 2>&1 || return 1
-  speedtest --version 2>/dev/null | grep -qi "ookla" || return 1
-  return 0
+  speedtest_is_ookla
 }
 speedtest_latest_tgz_url() {
   local arch
@@ -461,34 +476,34 @@ install_speedtest_static() {
   rm -rf "$tmp"
 }
 install_speedtest() {
-  if command -v speedtest >/dev/null 2>&1 && ! speedtest --version 2>/dev/null | grep -qi "ookla"; then
+  if command -v speedtest >/dev/null 2>&1 && ! speedtest_is_ookla; then
     log_warn "Found a non-Ookla 'speedtest' (likely speedtest-cli) — removing it first."
     apt-get remove -y speedtest-cli >/dev/null 2>&1 || true
   fi
   install_speedtest_static
   if status_speedtest; then
-    log_ok "Ookla Speedtest CLI installed ($(speedtest --version 2>/dev/null | head -n1))."
+    log_ok "Ookla Speedtest CLI installed ($(speedtest_version_string))."
   else
     log_err "Ookla speedtest install failed."
   fi
 }
 update_speedtest() {
-  if ! command -v speedtest >/dev/null 2>&1; then
+  if ! command -v speedtest >/dev/null 2>&1 && [[ ! -x /usr/local/bin/speedtest ]]; then
     log_warn "speedtest not installed — run without --update first."
     return
   fi
-  if ! speedtest --version 2>/dev/null | grep -qi "ookla"; then
+  if ! speedtest_is_ookla; then
     log_warn "Installed speedtest is not Ookla — run without --update to replace it."
     return
   fi
   local cur latest_url latest_ver
-  cur=$(speedtest --version 2>/dev/null | head -n1 | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+  cur=$(speedtest_version_string | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n1)
   latest_url=$(speedtest_latest_tgz_url)
   latest_ver=$(echo "$latest_url" | grep -Eo 'speedtest-[0-9.]+' | grep -Eo '[0-9.]+$')
-  if [[ -n "$latest_ver" && "$latest_ver" != "$cur" ]]; then
+  if [[ -n "$latest_ver" && "$latest_ver" != "$cur" && "$latest_ver" != "${cur}."* && "$cur" != "${latest_ver}."* ]]; then
     log_info "Newer Ookla speedtest available (${latest_ver}, currently ${cur}) — installing..."
     install_speedtest_static
-    log_ok "Ookla Speedtest CLI updated ($(speedtest --version 2>/dev/null | head -n1))."
+    log_ok "Ookla Speedtest CLI updated ($(speedtest_version_string))."
   else
     log_ok "Ookla speedtest already up to date (${cur:-unknown})."
   fi
