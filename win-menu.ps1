@@ -68,6 +68,7 @@ $Config = @{
         'Drive\Background\shell'
     )
     Tools = @(
+        @{ name = 'CTT Toolbox'; url = 'https://christitus.com/win'; admin = $true }
         @{ name = 'Chrome Search Fix'; url = 'https://chrome.vcc.net'; admin = $false }
         @{ name = 'DNS Clear Cache'; url = 'https://dns.vcc.net'; admin = $true  }
         @{ name = 'Encompass Print Fix'; url = 'https://encompass.vcc.net'; admin = $true  }
