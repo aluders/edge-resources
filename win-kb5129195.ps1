@@ -2,13 +2,15 @@
 # Usage: irm kb5129195.vcc.net | iex
 #
 # Terminates background servicing workers, clears the Windows Update
-# download cache, and marks KB5129195 as hidden via the native COM API
-# to prevent reboot loops and automatic reinstallation.
+# download cache, marks KB5129195 as hidden via native COM API, and
+# triggers an orchestrator scan to clear stale UI failure banners.
 #
 # Requirements:
 #   - Run as Administrator
 #
 # Version History:
+#   1.2 - Fixed color readability, suppressed service wait warnings,
+#         and added USOClient refresh to wipe stale UI error cards.
 #   1.1 - Added lock clearing and pipeline loops
 #         - Force-killed TiWorker, trustedinstaller, and MoUsoCoreWorker
 #         - Switched to index-based loops to eliminate web cradle parsing errors
@@ -17,12 +19,13 @@
 #         - Stopped wuauserv and purged SoftwareDistribution download cache
 #         - Used Microsoft.Update.Session COM searcher to set IsHidden = $true
 
-$scriptVersion = "1.1"
+$scriptVersion = "1.2"
+$WarningPreference = 'SilentlyContinue'
 
-Write-Host "------------------------------------" -ForegroundColor Gray
-Write-Host "     SUPPRESS UPDATE KB5129195      " -ForegroundColor Black -BackgroundColor Cyan
-Write-Host "             v$scriptVersion                   " -ForegroundColor Gray
-Write-Host "------------------------------------" -ForegroundColor Gray
+Write-Host "------------------------------------" -ForegroundColor DarkGray
+Write-Host "     SUPPRESS UPDATE KB5129195      " -ForegroundColor Cyan
+Write-Host "               v$scriptVersion                " -ForegroundColor Gray
+Write-Host "------------------------------------" -ForegroundColor DarkGray
 
 $KBTarget = "5129195"
 
@@ -54,7 +57,7 @@ Write-Host " [~] Starting Windows Update Agent session..." -ForegroundColor Yell
 Start-Service -Name "wuauserv", "cryptsvc" -ErrorAction SilentlyContinue
 
 # --- Hide Target KB ---
-Write-Host " [~] Searching for KB$KBTarget..." -ForegroundColor Yellow
+Write-Host " [~] Querying update catalog for KB$KBTarget..." -ForegroundColor Yellow
 try {
     $session = New-Object -ComObject Microsoft.Update.Session
     $searcher = $session.CreateUpdateSearcher()
@@ -80,7 +83,7 @@ try {
             $hUpdate = $hiddenResults.Updates.Item($j)
             if ($hUpdate.Title -match $KBTarget -or ($hUpdate.KBArticleIDs -contains $KBTarget)) {
                 $alreadyHidden = $true
-                Write-Host " [i] KB$KBTarget is already hidden." -ForegroundColor Yellow
+                Write-Host " [+] KB$KBTarget is already hidden." -ForegroundColor Green
                 break
             }
         }
@@ -99,6 +102,11 @@ Write-Host " [~] Restoring background network services..." -ForegroundColor Yell
 Get-Service -Name "bits", "dosvc", "usoScv" -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue
 Write-Host " [+] Services restored." -ForegroundColor Green
 
-Write-Host "------------------------------------" -ForegroundColor Gray
+# --- Refresh Windows Update Orchestrator UI ---
+Write-Host " [~] Refreshing Windows Update detection state..." -ForegroundColor Yellow
+Start-Process -FilePath "usoclient.exe" -ArgumentList "StartScan" -WindowStyle Hidden -ErrorAction SilentlyContinue
+Write-Host " [+] Scan triggered." -ForegroundColor Green
+
+Write-Host "------------------------------------" -ForegroundColor DarkGray
 Write-Host " Done!" -ForegroundColor Cyan
-Write-Host "------------------------------------" -ForegroundColor Gray
+Write-Host "------------------------------------" -ForegroundColor DarkGray
