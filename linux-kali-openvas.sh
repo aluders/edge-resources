@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.6
+# KALI SCRIPT v1.7
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -57,7 +57,7 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.6
+# NOTES — Kali Script v1.7
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
@@ -98,6 +98,9 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.7 - --backup stages on /var/tmp (not tmpfs /tmp) and fails if
+#          the dump copy or tar runs out of space instead of claiming
+#          success.
 #   v1.6 - Fresh-box / repair support for /etc/cron.d/streams-update
 #          and the exim4 SES satellite. exim is a real --update target.
 #          No backup cron. MAILTO left unset so cron still mails _gvm.
@@ -118,7 +121,7 @@
 #   v1.0 - Initial release from live recon of the existing Kali GVM VM.
 # ==============================================================================
 set -uo pipefail
-SCRIPT_VERSION="1.6"
+SCRIPT_VERSION="1.7"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -777,7 +780,7 @@ do_backup() {
   mkdir -p "$dest"
   stamp=$(date +%Y%m%d-%H%M%S)
   archive="${dest}/kali-backup-${stamp}.tar.gz"
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d /var/tmp/kali-backup.XXXXXX)
   mkdir -p "$tmp/backup"
   {
     echo "kali-script backup v${SCRIPT_VERSION}"
@@ -801,8 +804,9 @@ do_backup() {
   fi
   if gvm_db_exists; then
     local pgdump dump_args=()
-    pgdump=$(sudo -u postgres mktemp /tmp/gvmd.dump.XXXXXX)
-    # postgres cannot write into root's 0700 mktemp tree — dump aside, then copy.
+    pgdump=$(sudo -u postgres mktemp /var/tmp/gvmd.dump.XXXXXX)
+    # postgres cannot write into root's 0700 mktemp tree — dump aside on disk, then copy.
+    # /tmp is often a small tmpfs on this VM; keep both files on /var/tmp.
     if [[ $BACKUP_FULL -eq 1 ]]; then
       log_info "Dumping FULL gvmd database (includes scan history — this can take a while)..."
     else
@@ -819,9 +823,15 @@ do_backup() {
       log_info "Skipping data in ${#dump_args[@]} history/feed tables."
     fi
     if sudo -u postgres pg_dump --format=custom --file="$pgdump" "${dump_args[@]}" gvmd; then
-      cp -a "$pgdump" "$tmp/backup/gvmd.dump"
-      rm -f "$pgdump"
-      log_ok "gvmd database dumped"
+      if cp -a "$pgdump" "$tmp/backup/gvmd.dump"; then
+        rm -f "$pgdump"
+        log_ok "gvmd database dumped"
+      else
+        rm -f "$pgdump"
+        log_err "Could not copy gvmd dump into the archive staging dir (disk full?)"
+        rm -rf "$tmp"
+        return 1
+      fi
     else
       rm -f "$pgdump"
       log_err "pg_dump gvmd failed"
@@ -836,7 +846,12 @@ do_backup() {
     log_err "Nothing to back up — GVM and cloudflared do not look installed."
     return 1
   fi
-  tar -C "$tmp/backup" -czf "$archive" .
+  if ! tar -C "$tmp/backup" -czf "$archive" .; then
+    rm -rf "$tmp"
+    rm -f "$archive"
+    log_err "tar failed writing ${archive} (disk full?)"
+    return 1
+  fi
   chmod 600 "$archive"
   local owner
   owner=$(backup_chown_user)
