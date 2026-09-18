@@ -6,9 +6,11 @@
 # folders, clearing stale BITS queue files, and starting the
 # services again. Forces Windows to re-download update
 # metadata instead of using a corrupted local cache.
-# Includes dosvc (Delivery Optimization) on the default
-# stop/start list - it can hold files in the WU pipeline
-# on Windows 10/11.
+# Includes dosvc (Delivery Optimization), usosvc (Update
+# Orchestrator), and WaaSMedicSvc on the default stop/start
+# list. Those last two are why SoftwareDistribution often
+# stays locked after wuauserv alone is stopped: Medic
+# restarts WU, Orchestrator keeps handles in the cache.
 #
 # USAGE:
 #   .\Reset-WindowsUpdate.ps1
@@ -26,6 +28,15 @@
 #       & ([scriptblock]::Create((irm wu.vcc.net))) -IncludeOptional
 #
 # CHANGELOG (newest first):
+#   v1.3 - Stop-Service was still dumping "Waiting for service
+#          to stop..." warnings (same class as the BITS start
+#          spam in v1.2). Now silenced on stop too. Access
+#          denied on SoftwareDistribution is usually usosvc
+#          or WaaSMedicSvc holding the folder / restarting
+#          wuauserv behind us - both added to the default
+#          list, Medic stopped first. Folder reset now
+#          deletes contents then the folder, with a short
+#          retry, instead of one-shot Remove-Item.
 #   v1.2 - Default is now delete the cache folders, not rename
 #          to .bak. The .bak copies were the same size as the
 #          live cache and just sat there until someone cleaned
@@ -98,7 +109,16 @@ Write-Status "Running elevated." "Success"
 # ============================================================
 Write-Section "Stopping Services"
 
-$coreServices = @("wuauserv", "bits", "cryptsvc", "dosvc")
+# WaaSMedic first so it can't restart wuauserv mid-stop.
+# usosvc holds SoftwareDistribution on Win10/11.
+$coreServices = @(
+    "WaaSMedicSvc",
+    "usosvc",
+    "wuauserv",
+    "bits",
+    "cryptsvc",
+    "dosvc"
+)
 $optionalServices = @("msiserver", "appidsvc")
 $services = @($coreServices)
 if ($IncludeOptional) {
@@ -119,7 +139,7 @@ foreach ($name in $services) {
 
     Write-Status "Stopping $name..." "Info"
     try {
-        Stop-Service -Name $name -Force -ErrorAction Stop
+        Stop-Service -Name $name -Force -WarningAction SilentlyContinue -ErrorAction Stop
         Start-Sleep -Milliseconds 500
         $svc.Refresh()
         if ($svc.Status -eq "Stopped") {
@@ -161,20 +181,45 @@ function Reset-CacheFolder {
         return $true
     }
 
-    Write-Status "Deleting $Path..." "Info"
-    try {
-        Remove-Item -LiteralPath $Path -Recurse -Force
-        if (Test-Path -LiteralPath $Path) {
-            Write-Status "Could not clear $Path - a service may still hold a lock." "Error"
-            return $false
+    Write-Status "Clearing $Path..." "Info"
+
+    # Prefer emptying the folder over deleting the directory
+    # itself. The directory object is what stays locked; the
+    # files inside are what actually need to go so WU rebuilds.
+    $cleared = $false
+    for ($attempt = 1; $attempt -le 3 -and -not $cleared; $attempt++) {
+        if ($attempt -gt 1) {
+            Write-Status "Retry $attempt/3 after short wait..." "Info"
+            Start-Sleep -Seconds 2
         }
-        Write-Status "Deleted $Path" "Success"
+
+        Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+
+        $left = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
+        if ($left.Count -eq 0) {
+            # Folder is empty - try to remove the directory too
+            # so WU recreates it clean. Failure here is fine.
+            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+            $cleared = $true
+        }
+    }
+
+    if ($cleared) {
+        if (Test-Path -LiteralPath $Path) {
+            Write-Status "Emptied $Path (folder left in place)" "Success"
+        }
+        else {
+            Write-Status "Deleted $Path" "Success"
+        }
         return $true
     }
-    catch {
-        Write-Status "Delete failed: $($_.Exception.Message)" "Error"
-        return $false
-    }
+
+    $left = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
+    Write-Status "Could not fully clear $Path - $($left.Count) item(s) still locked." "Error"
+    return $false
 }
 
 $folderOk = $true
@@ -216,12 +261,12 @@ else {
 # ============================================================
 Write-Section "Starting Services"
 
-# cryptsvc first, then bits/dosvc, then optional, then wuauserv last
-$startOrder = @("cryptsvc", "bits", "dosvc")
+# cryptsvc first, then transfer services, then WU + orchestrator.
+# Leave WaaSMedic for last so it doesn't wake WU before we're done.
+$startOrder = @("cryptsvc", "bits", "dosvc", "wuauserv", "usosvc", "WaaSMedicSvc")
 if ($IncludeOptional) {
-    $startOrder += $optionalServices
+    $startOrder = @("cryptsvc", "bits", "dosvc") + $optionalServices + @("wuauserv", "usosvc", "WaaSMedicSvc")
 }
-$startOrder += "wuauserv"
 
 $startFailed = 0
 foreach ($name in $startOrder) {
