@@ -14,32 +14,77 @@
 #   copies the agent to "%ProgramFiles%\Mesh Agent", registers the
 #   "Mesh Agent" service, and starts it.
 #
+# Deployment chain (GPO → BAT → PS1 → EXE)
+#   GPO Computer Startup runs the .bat as SYSTEM at boot.
+#   The .bat only launches PowerShell (bypass execution policy).
+#   This .ps1 checks if the agent is already installed.
+#   If not, this .ps1 runs the MeshAgent EXE with -fullinstall.
+#   Do not pass -fullinstall in the GPO or the .bat; it is baked in here.
+#
+#   GPO  →  Deploy-MeshCentralAgent.bat
+#        →  powershell.exe -NoProfile -ExecutionPolicy Bypass -File ...ps1
+#        →  Deploy-MeshCentralAgent.ps1
+#        →  \\share\meshagent64-<Group>.exe -fullinstall
+#
+# Companion BAT (archive copy — save as Deploy-MeshCentralAgent.bat)
+#   @echo off
+#   REM =============================================================================
+#   REM Deploy-MeshCentralAgent.bat
+#   REM MeshCentral Agent — GPO Computer Startup wrapper
+#   REM =============================================================================
+#   REM Purpose
+#   REM   GPO hook only. Launches the PowerShell deploy script as SYSTEM.
+#   REM
+#   REM Deployment chain
+#   REM   GPO Computer Startup
+#   REM     → this .bat
+#   REM     → powershell.exe -NoProfile -ExecutionPolicy Bypass -File <ps1>
+#   REM     → Deploy-MeshCentralAgent.ps1
+#   REM     → meshagent64-<Group>.exe -fullinstall
+#   REM
+#   REM   Do not pass -fullinstall here. The .ps1 bakes that in.
+#   REM
+#   REM Implementation
+#   REM   1. Put this .bat, the .ps1, and the MeshAgent EXE on the same share
+#   REM      Domain Computers can READ and EXECUTE, e.g.
+#   REM        \\CONTOSO\NETLOGON\MeshCentral
+#   REM   2. Change the UNC below to match your share and .ps1 name.
+#   REM   3. GPO: Computer Configuration → Policies → Windows Settings
+#   REM      → Scripts → Startup → Add this .bat. No parameters.
+#   REM   4. Link the GPO to a computer OU. Filter on Domain Computers.
+#   REM   5. Reboot to test. gpupdate /force does not run startup scripts.
+#   REM =============================================================================
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\\CONTOSO\NETLOGON\MeshCentral\Deploy-MeshCentralAgent.ps1"
+#
 # Implementation
 #   1. Download the Windows x64 (and x86 if needed) agent EXE for the target
 #      device group. Names look like meshagent64-<GroupName>.exe.
-#   2. Place the EXE(s) on a share Domain Computers (or Authenticated Users)
-#      can READ and EXECUTE. Recommended: \\<DOMAIN>\NETLOGON\MeshCentral
+#   2. Place these files on a share Domain Computers can READ and EXECUTE
+#      (recommended: \\<DOMAIN>\NETLOGON\MeshCentral):
+#        Deploy-MeshCentralAgent.bat
+#        Deploy-MeshCentralAgent.ps1
+#        meshagent64-<GroupName>.exe
 #      Do not put large EXEs only in SYSVOL unless you want them on every DC.
-#   3. Attach this script as a Computer Startup script:
+#   3. Edit this .ps1 configuration block: $InstallerShare, $Installer64
+#      (and $Installer32 only if you still have 32-bit PCs).
+#      Edit the UNC inside the .bat so it points at this .ps1.
+#   4. Attach the .bat as a Computer Startup script (not Software Installation,
+#      and not the PowerShell Scripts tab):
 #        Computer Configuration → Policies → Windows Settings → Scripts
-#        → Startup → PowerShell Scripts
-#      Or keep it on the same share and point the GPO at the UNC path.
-#   4. GPO targeting
+#        → Startup → Add → Deploy-MeshCentralAgent.bat
+#      No script parameters. -fullinstall is not a GPO argument.
+#   5. GPO targeting
 #        - Link to the OU that holds COMPUTER objects (not users).
 #        - Security Filtering: Domain Computers (or a computer group).
 #        - Optional: Computer Configuration → Administrative Templates
 #          → System → Scripts → Run startup scripts asynchronously = Enabled
 #          (avoids blocking logon if the share is slow).
-#        - If execution policy blocks .ps1, set GPO script parameters to:
-#            -ExecutionPolicy Bypass -File Deploy-MeshCentralAgent.ps1
-#          or wrap with a .cmd:
-#            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Deploy-MeshCentralAgent.ps1"
-#   5. Test: gpupdate /force, then reboot (startup scripts run at boot).
+#   6. Test: gpupdate /force, then reboot (startup scripts run at boot).
 #        Get-Service "Mesh Agent"
 #        Test-Path "${env:ProgramFiles}\Mesh Agent\MeshAgent.exe"
 #        Get-Content C:\Windows\Temp\MeshCentral-GPO-Deploy.log
 #        Get-Content "${env:ProgramFiles}\Mesh Agent\meshagent.log" -Tail 30
-#   6. Leave the GPO linked. Script is idempotent; already-installed machines
+#   7. Leave the GPO linked. Script is idempotent; already-installed machines
 #      exit immediately. New domain-joined PCs install on first boot that can
 #      reach the share.
 #
@@ -66,8 +111,10 @@
 $InstallerShare = '\\CONTOSO\NETLOGON\MeshCentral'
 
 # File names exactly as downloaded from MeshCentral for this device group.
+# Leave $Installer32 blank ($Installer32 = '') if you have no 32-bit clients.
+# 32-bit machines will then log and skip instead of attempting an install.
 $Installer64    = 'meshagent64-Workstations.exe'
-$Installer32    = 'meshagent32-Workstations.exe'
+$Installer32    = ''
 
 # Extra arguments appended after -fullinstall (usually leave empty).
 $ExtraInstallArgs = @()
@@ -138,6 +185,12 @@ if (Test-MeshAgentPresent) {
 
 $arch = Get-AgentArchitecture
 $exeName = if ($arch -eq 'x86') { $Installer32 } else { $Installer64 }
+
+if ([string]::IsNullOrWhiteSpace($exeName)) {
+    Write-DeployLog "No installer configured for architecture $arch. Skipping."
+    exit 0
+}
+
 $installer = Join-Path $InstallerShare $exeName
 
 Write-DeployLog "Agent not found. Architecture=$arch  Installer=$installer"
