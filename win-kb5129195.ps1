@@ -1,24 +1,23 @@
 # Hide-KB5129195.ps1
 # Usage: irm kb5129195.vcc.net | iex
 #
-# Terminates servicing processes, purges both DataStore and USOPrivate
-# database trees, flags KB5129195 as hidden via COM, and executes an
-# active catalog check to clear frozen UI failure banners.
+# Terminates servicing processes, purges DataStore and USOPrivate databases,
+# aggressively clears the cached UX registry state, flags KB5129195 as hidden, 
+# and executes an active catalog check to clear frozen UI failure banners.
 #
 # Requirements:
 #   - Run as Administrator
 #
 # Version History:
-#   1.4 - Purged full DataStore.edb and USOPrivate transaction trees;
-#         forced GUI process termination and automated interactive rescan.
-#   1.3 - Cleared USOShared database and WindowsUpdate Orchestrator registry
-#         state to wipe frozen "Updates failed" UI cards.
-#   1.2 - Fixed color readability, suppressed service wait warnings,
-#         and added USOClient refresh to wipe stale UI error cards.
-#   1.1 - Added lock clearing and pipeline loops
-#   1.0 - Initial release
+#   1.5 - Added aggressive wipe of HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\State 
+#         to destroy the cached UI error card.
+#   1.4 - Purged DataStore.edb and USOPrivate transaction trees.
+#   1.3 - Cleared USOShared database and WindowsUpdate Orchestrator registry.
+#   1.2 - Fixed color readability, suppressed service wait warnings.
+#   1.1 - Added lock clearing and pipeline loops.
+#   1.0 - Initial release.
 
-$scriptVersion = "1.4"
+$scriptVersion = "1.5"
 $WarningPreference = 'SilentlyContinue'
 
 Write-Host "------------------------------------" -ForegroundColor DarkGray
@@ -28,13 +27,9 @@ Write-Host "------------------------------------" -ForegroundColor DarkGray
 
 $KBTarget = "5129195"
 
-# --- Close Settings Window to Release UI Handles ---
-Write-Host " [~] Closing Settings window..." -ForegroundColor Yellow
-Get-Process -Name "SystemSettings" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-
 # --- Terminate Servicing Processes ---
 Write-Host " [~] Terminating background update processes..." -ForegroundColor Yellow
-$lockingProcesses = @("TiWorker", "trustedinstaller", "usoclient", "MoUsoCoreWorker")
+$lockingProcesses = @("TiWorker", "trustedinstaller", "usoclient", "MoUsoCoreWorker", "SystemSettings")
 Get-Process -Name $lockingProcesses -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Write-Host " [+] Processes cleared." -ForegroundColor Green
 
@@ -45,6 +40,22 @@ Get-Service -Name $services -ErrorAction SilentlyContinue | Stop-Service -Force 
 Start-Sleep -Seconds 2
 Write-Host " [+] Update services stopped." -ForegroundColor Green
 
+# --- Destroy Cached Settings UI State (The Fix) ---
+Write-Host " [~] Clearing frozen Settings UX registry state..." -ForegroundColor Yellow
+$uxRegPaths = @(
+    "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\State",
+    "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UpdatePolicy\PolicyState",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Orchestrator\InstallAtShutdown",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Orchestrator\FailedUpdates"
+)
+foreach ($reg in $uxRegPaths) {
+    if (Test-Path $reg) {
+        Remove-Item -Path $reg -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+Write-Host " [+] UX cache destroyed." -ForegroundColor Green
+
 # --- Purge Caches and Orchestrator Databases ---
 Write-Host " [~] Purging update databases and transaction logs..." -ForegroundColor Yellow
 $targets = @(
@@ -53,7 +64,6 @@ $targets = @(
     "$env:ProgramData\USOShared",
     "$env:ProgramData\USOPrivate"
 )
-
 foreach ($target in $targets) {
     if (Test-Path $target) {
         Remove-Item -Path "$target\*" -Recurse -Force -ErrorAction SilentlyContinue
@@ -72,7 +82,7 @@ try {
     $searcher = $session.CreateUpdateSearcher()
     $searcher.ServerSelection = 2
 
-    # Query active updates
+    # Apply suppression
     $results = $searcher.Search("IsHidden=0 and Type='Software'")
     for ($i = 0; $i -lt $results.Updates.Count; $i++) {
         $update = $results.Updates.Item($i)
@@ -93,10 +103,6 @@ try {
             break
         }
     }
-
-    if (-not $confirmed) {
-        Write-Host " [i] Target update is not present in online catalog search." -ForegroundColor Gray
-    }
 } catch {
     Write-Host " [!] Windows Update API error: $_" -ForegroundColor Red
 }
@@ -104,11 +110,11 @@ try {
 # --- Restore Background Services ---
 Write-Host " [~] Restoring background network services..." -ForegroundColor Yellow
 Get-Service -Name "bits", "dosvc" -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue
-Write-Host " [+] Services restored." -ForegroundColor Green
 
 # --- Force Fresh Scan Cycle ---
 Write-Host " [~] Triggering clean detection scan..." -ForegroundColor Yellow
 Start-Process -FilePath "usoclient.exe" -ArgumentList "StartScan" -WindowStyle Hidden -ErrorAction SilentlyContinue
+Write-Host " [+] Services restored and scan initialized." -ForegroundColor Green
 
 Write-Host "------------------------------------" -ForegroundColor DarkGray
 Write-Host " Done!" -ForegroundColor Cyan
