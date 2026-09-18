@@ -78,6 +78,7 @@ $Config = @{
         @{ name = 'PDF Clear Metadata'; url = 'https://pdf.vcc.net'; admin = $false }
         @{ name = 'Print Spooler Clear'; url = 'https://spooler.vcc.net'; admin = $true  }
         @{ name = 'QB Entitlement Reset'; url = 'https://qb-reset.vcc.net'; admin = $true  }
+        @{ name = 'Windows KB Hide'; url = 'https://kb.vcc.net'; admin = $true  }
         @{ name = 'Windows Update Reset'; url = 'https://wu.vcc.net'; admin = $true  }
         @{ name = 'Toggle Classic Right Click'; url = 'https://right-click.vcc.net'; admin = $false }
         # Add more tools here. Push to GitHub, then click "Refresh Tool
