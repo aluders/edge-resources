@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.7
+# KALI SCRIPT v1.8
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -57,7 +57,7 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.7
+# NOTES — Kali Script v1.8
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
@@ -98,6 +98,9 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.8 - Config-only --backup also strips scap.* / cert.* and the
+#          remaining public NVT/result catalog tables. nvt_selectors
+#          (scan configs) stay. Use --backup-full for scan history.
 #   v1.7 - --backup stages on /var/tmp (not tmpfs /tmp) and fails if
 #          the dump copy or tar runs out of space instead of claiming
 #          success.
@@ -121,7 +124,7 @@
 #   v1.0 - Initial release from live recon of the existing Kali GVM VM.
 # ==============================================================================
 set -uo pipefail
-SCRIPT_VERSION="1.7"
+SCRIPT_VERSION="1.8"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -810,14 +813,17 @@ do_backup() {
     if [[ $BACKUP_FULL -eq 1 ]]; then
       log_info "Dumping FULL gvmd database (includes scan history — this can take a while)..."
     else
-      log_info "Dumping gvmd configuration only (excluding results/reports/NVT data)..."
+      log_info "Dumping gvmd configuration only (excluding results/reports and SCAP/CERT/NVT catalogs)..."
       local t
       while IFS= read -r t; do
         [[ -z "$t" ]] && continue
         dump_args+=(--exclude-table-data="$t")
       done < <(sudo -u postgres psql -d gvmd -Atc \
-        "SELECT tablename FROM pg_tables WHERE schemaname='public'
-         AND tablename ~ '^(results|reports|report_|nvts|nvt_cves|nvt_severities|vt_refs|cves|cpes|oval|cert_|scap|epss|cpe_)'")
+        "SELECT schemaname || '.' || tablename
+           FROM pg_tables
+          WHERE schemaname IN ('scap','cert')
+             OR (schemaname = 'public' AND tablename ~
+                 '^(results|result_|reports|report_|nvts\$|nvt_cves|nvt_severities|nvt_preferences|vt_refs|vt_|cves|cpes|oval|cert_|scap|epss|cpe_)')")
       echo "config-only" > "$tmp/backup/DUMP_MODE.txt"
       printf '%s\n' "${dump_args[@]}" | sed 's/^--exclude-table-data=/skipped data: /' >> "$tmp/backup/DUMP_MODE.txt"
       log_info "Skipping data in ${#dump_args[@]} history/feed tables."
