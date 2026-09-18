@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.8
+# KALI SCRIPT v1.9
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -57,7 +57,7 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.8
+# NOTES — Kali Script v1.9
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
@@ -98,6 +98,8 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v1.9 - Config-only --backup also strips scap2.* (post-upgrade
+#          duplicate SCAP schema) and any scap*/cert* schema.
 #   v1.8 - Config-only --backup also strips scap.* / cert.* and the
 #          remaining public NVT/result catalog tables. nvt_selectors
 #          (scan configs) stay. Use --backup-full for scan history.
@@ -124,7 +126,7 @@
 #   v1.0 - Initial release from live recon of the existing Kali GVM VM.
 # ==============================================================================
 set -uo pipefail
-SCRIPT_VERSION="1.8"
+SCRIPT_VERSION="1.9"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -821,7 +823,8 @@ do_backup() {
       done < <(sudo -u postgres psql -d gvmd -Atc \
         "SELECT schemaname || '.' || tablename
            FROM pg_tables
-          WHERE schemaname IN ('scap','cert')
+          WHERE schemaname LIKE 'scap%'
+             OR schemaname LIKE 'cert%'
              OR (schemaname = 'public' AND tablename ~
                  '^(results|result_|reports|report_|nvts\$|nvt_cves|nvt_severities|nvt_preferences|vt_refs|vt_|cves|cpes|oval|cert_|scap|epss|cpe_)')")
       echo "config-only" > "$tmp/backup/DUMP_MODE.txt"
