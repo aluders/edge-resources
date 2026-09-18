@@ -1,14 +1,16 @@
 # Hide-KB5129195.ps1
 # Usage: irm kb5129195.vcc.net | iex
 #
-# Terminates background servicing workers, clears the Windows Update
-# download cache, marks KB5129195 as hidden via native COM API, and
-# triggers an orchestrator scan to clear stale UI failure banners.
+# Terminates background servicing workers, clears SoftwareDistribution
+# and USOShared databases, resets pending orchestrator failure keys,
+# marks KB5129195 as hidden via COM, and forces an immediate catalog re-eval.
 #
 # Requirements:
 #   - Run as Administrator
 #
 # Version History:
+#   1.3 - Cleared USOShared database and WindowsUpdate Orchestrator registry
+#         state to wipe frozen "Updates failed" UI cards.
 #   1.2 - Fixed color readability, suppressed service wait warnings,
 #         and added USOClient refresh to wipe stale UI error cards.
 #   1.1 - Added lock clearing and pipeline loops
@@ -19,7 +21,7 @@
 #         - Stopped wuauserv and purged SoftwareDistribution download cache
 #         - Used Microsoft.Update.Session COM searcher to set IsHidden = $true
 
-$scriptVersion = "1.2"
+$scriptVersion = "1.3"
 $WarningPreference = 'SilentlyContinue'
 
 Write-Host "------------------------------------" -ForegroundColor DarkGray
@@ -31,38 +33,58 @@ $KBTarget = "5129195"
 
 # --- Terminate Lock-Holding Processes ---
 Write-Host " [~] Terminating background update processes..." -ForegroundColor Yellow
-$lockingProcesses = @("TiWorker", "trustedinstaller", "usoclient", "MoUsoCoreWorker")
+$lockingProcesses = @("TiWorker", "trustedinstaller", "usoclient", "MoUsoCoreWorker", "SystemSettings")
 Get-Process -Name $lockingProcesses -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Write-Host " [+] Processes cleared." -ForegroundColor Green
 
-# --- Stop Windows Update Services ---
+# --- Stop Windows Update & Orchestrator Services ---
 Write-Host " [~] Stopping update services..." -ForegroundColor Yellow
-$services = @("wuauserv", "WaaSMedicSvc", "dosvc", "cryptsvc", "bits", "usoScv")
+$services = @("wuauserv", "WaaSMedicSvc", "dosvc", "cryptsvc", "bits", "UsoSvc")
 Get-Service -Name $services -ErrorAction SilentlyContinue | Stop-Service -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 Write-Host " [+] Update services stopped." -ForegroundColor Green
 
-# --- Purge Staged Download Cache ---
-Write-Host " [~] Purging SoftwareDistribution download cache..." -ForegroundColor Yellow
-$downloadPath = "$env:SystemRoot\SoftwareDistribution\Download"
-if (Test-Path $downloadPath) {
-    Get-ChildItem -Path $downloadPath -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host " [+] Download cache purged." -ForegroundColor Green
-} else {
-    Write-Host " [i] Download folder not found, skipping." -ForegroundColor Gray
-}
+# --- Purge Staged Download & USO Caches ---
+Write-Host " [~] Purging update download and orchestrator state cache..." -ForegroundColor Yellow
+$pathsToClear = @(
+    "$env:SystemRoot\SoftwareDistribution\Download",
+    "$env:ProgramData\USOShared\Logs",
+    "$env:ProgramData\USOPrivate\UpdateStore"
+)
 
-# --- Start Query Services ---
-Write-Host " [~] Starting Windows Update Agent session..." -ForegroundColor Yellow
-Start-Service -Name "wuauserv", "cryptsvc" -ErrorAction SilentlyContinue
+foreach ($path in $pathsToClear) {
+    if (Test-Path $path) {
+        Get-ChildItem -Path $path -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+Write-Host " [+] Staged payloads and orchestrator history purged." -ForegroundColor Green
+
+# --- Clear Failed Update Registry Flags ---
+Write-Host " [~] Clearing failed transaction registry flags..." -ForegroundColor Yellow
+$regPaths = @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Orchestrator\InstallAtShutdown",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Orchestrator\FailedUpdates"
+)
+foreach ($reg in $regPaths) {
+    if (Test-Path $reg) {
+        Remove-Item -Path $reg -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+Write-Host " [+] Registry flags reset." -ForegroundColor Green
+
+# --- Start Services for COM Session ---
+Write-Host " [~] Initializing Windows Update Agent session..." -ForegroundColor Yellow
+Start-Service -Name "wuauserv", "cryptsvc", "UsoSvc" -ErrorAction SilentlyContinue
 
 # --- Hide Target KB ---
-Write-Host " [~] Querying update catalog for KB$KBTarget..." -ForegroundColor Yellow
+Write-Host " [~] Verifying suppression for KB$KBTarget..." -ForegroundColor Yellow
 try {
     $session = New-Object -ComObject Microsoft.Update.Session
     $searcher = $session.CreateUpdateSearcher()
     $searcher.ServerSelection = 2
 
+    # Query active updates first
     $results = $searcher.Search("IsHidden=0 and Type='Software'")
     $found = $false
 
@@ -71,11 +93,12 @@ try {
         if ($update.Title -match $KBTarget -or ($update.KBArticleIDs -contains $KBTarget)) {
             $found = $true
             $update.IsHidden = $true
-            Write-Host " [+] KB$KBTarget found and hidden: $($update.Title)" -ForegroundColor Green
+            Write-Host " [+] KB$KBTarget found and flagged as hidden: $($update.Title)" -ForegroundColor Green
         }
     }
 
     if (-not $found) {
+        # Check hidden list to confirm
         $hiddenResults = $searcher.Search("IsHidden=1 and Type='Software'")
         $alreadyHidden = $false
 
@@ -83,7 +106,7 @@ try {
             $hUpdate = $hiddenResults.Updates.Item($j)
             if ($hUpdate.Title -match $KBTarget -or ($hUpdate.KBArticleIDs -contains $KBTarget)) {
                 $alreadyHidden = $true
-                Write-Host " [+] KB$KBTarget is already hidden." -ForegroundColor Green
+                Write-Host " [+] KB$KBTarget is confirmed hidden." -ForegroundColor Green
                 break
             }
         }
@@ -99,13 +122,8 @@ try {
 
 # --- Restore Background Services ---
 Write-Host " [~] Restoring background network services..." -ForegroundColor Yellow
-Get-Service -Name "bits", "dosvc", "usoScv" -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue
+Get-Service -Name "bits", "dosvc" -ErrorAction SilentlyContinue | Start-Service -ErrorAction SilentlyContinue
 Write-Host " [+] Services restored." -ForegroundColor Green
-
-# --- Refresh Windows Update Orchestrator UI ---
-Write-Host " [~] Refreshing Windows Update detection state..." -ForegroundColor Yellow
-Start-Process -FilePath "usoclient.exe" -ArgumentList "StartScan" -WindowStyle Hidden -ErrorAction SilentlyContinue
-Write-Host " [+] Scan triggered." -ForegroundColor Green
 
 Write-Host "------------------------------------" -ForegroundColor DarkGray
 Write-Host " Done!" -ForegroundColor Cyan
