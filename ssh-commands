@@ -1,19 +1,19 @@
-no matching host key type found
+# no matching host key type found
 ssh -o HostKeyAlgorithms=+ssh-rsa username@123.123.123.123
 
-temporarily disable strict host key checking
+# temporarily disable strict host key checking
 ssh -o StrictHostKeyChecking=no username@123.123.123.123
 
-generate local key
+# generate local key
 ssh-keygen -t ed25519 -C "username"
 
-copy key to server
+# copy key to server
 ssh-copy-id username@123.123.123.123
 
-remove stored known host
+# remove stored known host
 ssh-keygen -R 123.123.123.123
 
-ssh login using key file
+# ssh login using key file
 ssh-add some-server.key
 ssh username@hostname-or-ip
 
@@ -22,10 +22,10 @@ scp username@server-ip:/path/to/remote/file.txt /path/to/local/
 scp -r ~/myfolder admin@192.168.4.20:/home/admin/
 scp -r admin@192.168.4.20:/var/log/myapp ~/Desktop/
 
-disable macos ssh host key checking...
-(might be easier to just do this using a shell alias)
+# disable macos ssh host key checking...
+# (might be easier to just do this using a shell alias)
 
-https://www.shellhacks.com/disable-ssh-host-key-checking/
+# https://www.shellhacks.com/disable-ssh-host-key-checking/
 
 nano ~/.ssh/config
 
