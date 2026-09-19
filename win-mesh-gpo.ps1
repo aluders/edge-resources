@@ -35,26 +35,35 @@
 #        Deploy-MeshCentralAgent.ps1
 #        meshagent64-<GroupName>.exe
 #      Do not put large EXEs only in SYSVOL unless you want them on every DC.
-#   3. Edit this .ps1 configuration block: $InstallerShare, $Installer64
+#   3. Unblock Zone.Identifier / MotW on the share copies (one-time, from an
+#      admin workstation). Interactive launches from UNC can prompt
+#      "We can't verify who created this file." GPO/SYSTEM will not show that
+#      dialog, but unblock anyway so test runs and SmartScreen stay clean:
+#        Unblock-File '\\<DOMAIN>\NETLOGON\MeshCentral\Deploy-MeshCentralAgent.bat'
+#        Unblock-File '\\<DOMAIN>\NETLOGON\MeshCentral\Deploy-MeshCentralAgent.ps1'
+#        Unblock-File '\\<DOMAIN>\NETLOGON\MeshCentral\meshagent64-<GroupName>.exe'
+#      Optional: GPO Site to Zone Assignment List — *.domain.tld → zone 1
+#      (Local Intranet) so domain UNC is not treated as Internet.
+#   4. Edit this .ps1 configuration block: $InstallerShare, $Installer64
 #      (and $Installer32 only if you still have 32-bit PCs).
 #      Edit the UNC inside the .bat so it points at this .ps1.
-#   4. Attach the .bat as a Computer Startup script (not Software Installation,
+#   5. Attach the .bat as a Computer Startup script (not Software Installation,
 #      and not the PowerShell Scripts tab):
 #        Computer Configuration → Policies → Windows Settings → Scripts
 #        → Startup → Add → Deploy-MeshCentralAgent.bat
 #      No script parameters. -fullinstall is not a GPO argument.
-#   5. GPO targeting
+#   6. GPO targeting
 #        - Link to the OU that holds COMPUTER objects (not users).
 #        - Security Filtering: Domain Computers (or a computer group).
 #        - Optional: Computer Configuration → Administrative Templates
 #          → System → Scripts → Run startup scripts asynchronously = Enabled
 #          (avoids blocking logon if the share is slow).
-#   6. Test: gpupdate /force, then reboot (startup scripts run at boot).
+#   7. Test: gpupdate /force, then reboot (startup scripts run at boot).
 #        Get-Service "Mesh Agent"
 #        Test-Path "${env:ProgramFiles}\Mesh Agent\MeshAgent.exe"
 #        Get-Content C:\Windows\Temp\MeshCentral-GPO-Deploy.log
 #        Get-Content "${env:ProgramFiles}\Mesh Agent\meshagent.log" -Tail 30
-#   7. Leave the GPO linked. Script is idempotent; already-installed machines
+#   8. Leave the GPO linked. Script is idempotent; already-installed machines
 #      exit immediately. New domain-joined PCs install on first boot that can
 #      reach the share.
 #
