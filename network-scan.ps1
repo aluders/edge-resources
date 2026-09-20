@@ -1,4 +1,4 @@
-#    Network Scanner  (Windows)  v1.8
+#    Network Scanner  (Windows)  v1.9
 #    ===================================
 #    Discovers every device on the local subnet using a layered approach:
 #    ICMP ping sweep, ARP/neighbor cache, reverse DNS, OUI vendor lookup,
@@ -12,6 +12,9 @@
 #
 #    VERSION HISTORY
 #    ---------------
+#    1.9 - NIC auto-detect: prefer default route, keep vEthernet when it is
+#          the only LAN, fall back to .NET NetworkInterface if Get-NetIPAddress
+#          is empty (fixes "No active network interface found" on Hyper-V/WSL).
 #    1.8 - IEX-safe entry: no file-scope param() so `irm | iex` and
 #          Invoke-EdgeTool work; flags parsed from $args into a function.
 #    1.7 - Unelevated header explanation restored (no Y/n prompt); DEVICE
@@ -77,7 +80,7 @@
 # File-scope param() is illegal under Invoke-Expression (irm | iex /
 # Invoke-EdgeTool). Keep all parameters on the function below and bind
 # flags from $args so both local files and remote iex work.
-$ScriptVersion = "1.8"
+$ScriptVersion = "1.9"
 function Invoke-NetScan {
 param(
     [string]$Interface = "",
@@ -273,29 +276,108 @@ function Get-MDNSDevices ([string[]]$AliveIPs) {
 }
 # ── Network detection ──────────────────────────────────────────────────────────
 $LocalIP=""; $LocalIface=""; $Prefix=24; $NetAddr=""; $MaskInt=[long]0; $Gateway="unknown"
+
+function Get-IPv4Candidates {
+    $list = [System.Collections.Generic.List[object]]::new()
+    try {
+        foreach ($nic in (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop)) {
+            if (-not $nic.IPAddress) { continue }
+            $list.Add([pscustomobject]@{
+                IP        = $nic.IPAddress
+                Prefix    = [int]$nic.PrefixLength
+                Alias     = $nic.InterfaceAlias
+                IfIndex   = $nic.InterfaceIndex
+            })
+        }
+    } catch {}
+    if ($list.Count -eq 0) {
+        # NetTCPIP missing / empty — .NET works without admin or that module
+        try {
+            foreach ($ni in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+                if ($ni.OperationalStatus -ne 'Up') { continue }
+                if ($ni.NetworkInterfaceType -eq 'Loopback') { continue }
+                $ipprops = $ni.GetIPProperties()
+                foreach ($uni in $ipprops.UnicastAddresses) {
+                    if ($uni.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+                    $maskBytes = $uni.IPv4Mask.GetAddressBytes()
+                    $maskInt = ([long]$maskBytes[0] -shl 24) -bor ([long]$maskBytes[1] -shl 16) -bor
+                               ([long]$maskBytes[2] -shl 8) -bor [long]$maskBytes[3]
+                    $pfx = 0; $bit = [long]0x80000000
+                    while ($pfx -lt 32 -and ($maskInt -band $bit) -ne 0) { $pfx++; $bit = $bit -shr 1 }
+                    $list.Add([pscustomobject]@{
+                        IP      = $uni.Address.ToString()
+                        Prefix  = $pfx
+                        Alias   = $ni.Name
+                        IfIndex = $ni.GetIPProperties().GetIPv4Properties().Index
+                    })
+                }
+            }
+        } catch {}
+    }
+    return $list
+}
+
+function Test-VirtualAlias ([string]$alias) {
+    return [bool]($alias -match '(?i)(Loopback|isatap|Teredo|6to4|Bluetooth)')
+}
+
 if ($Network -ne "") {
     $parts=$Network -split '/'; $NetAddr=$parts[0]; $Prefix=[int]$parts[1]
     $MaskInt=prefix2mask $Prefix; $NetInt=ip2int $NetAddr
-    foreach ($nic in (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
-        $ni=ip2int $nic.IPAddress; $nm=prefix2mask $nic.PrefixLength
+    foreach ($nic in (Get-IPv4Candidates)) {
+        $ni=ip2int $nic.IP; $nm=prefix2mask $nic.Prefix
         if (($ni -band $nm) -eq ($NetInt -band $MaskInt)) {
-            $LocalIP=$nic.IPAddress; $LocalIface=$nic.InterfaceAlias; $MaskInt=$nm; $Prefix=$nic.PrefixLength; break
+            $LocalIP=$nic.IP; $LocalIface=$nic.Alias; $MaskInt=$nm; $Prefix=$nic.Prefix; break
         }
     }
     if ($LocalIP -eq "") { $LocalIP="unknown" }
 } else {
-    $nics = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' } |
-        Where-Object { if ($Interface) { $_.InterfaceAlias -eq $Interface } else { $true } } |
-        Where-Object { $_.InterfaceAlias -notmatch '(?i)(vEthernet|Loopback|isatap|Teredo|6to4)' }
-    $best = $nics | Select-Object -First 1
-    if (-not $best) { wh "  Error: " Red -n; Write-Host "No active network interface found."; exit 1 }
-    $LocalIP=$best.IPAddress; $LocalIface=$best.InterfaceAlias
-    $Prefix=$best.PrefixLength; $MaskInt=prefix2mask $Prefix
+    $all = @(Get-IPv4Candidates)
+    if ($Interface) {
+        $all = @($all | Where-Object { $_.Alias -eq $Interface })
+    }
+    $real = @($all | Where-Object {
+        $_.IP -notmatch '^(127\.|169\.254\.)' -and -not (Test-VirtualAlias $_.Alias)
+    })
+    # Prefer a physical-looking NIC; keep vEthernet if that is all Windows has
+    # (Hyper-V Default Switch / external vSwitch / WSL often IS the LAN).
+    $preferred = @($real | Where-Object { $_.Alias -notmatch '(?i)vEthernet' })
+    if ($preferred.Count -eq 0) { $preferred = $real }
+
+    $best = $null
+    $gwMatch = $null
+    try {
+        $routes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
+            Sort-Object RouteMetric)
+        foreach ($r in $routes) {
+            $hit = $preferred | Where-Object { $_.Alias -eq $r.InterfaceAlias } | Select-Object -First 1
+            if ($hit) { $best = $hit; $gwMatch = $r.NextHop; break }
+        }
+    } catch {}
+    if (-not $best) { $best = $preferred | Select-Object -First 1 }
+
+    if (-not $best) {
+        wh "  Error: " Red -n; Write-Host "No active network interface found."
+        if ($all.Count -gt 0) {
+            wh "  Seen:" DarkGray
+            foreach ($n in $all) { wh ("    {0,-16}  {1}" -f $n.IP, $n.Alias) DarkGray }
+            wh "  Workaround: pass the subnet explicitly:" DarkGray
+            wh "      -Network 192.168.1.0/24" Cyan
+        } else {
+            wh "  Get-NetIPAddress returned nothing. Check that the NIC has an IPv4 address." DarkGray
+        }
+        exit 1
+    }
+    $LocalIP=$best.IP; $LocalIface=$best.Alias
+    $Prefix=$best.Prefix; $MaskInt=prefix2mask $Prefix
     $NetInt=(ip2int $LocalIP) -band $MaskInt; $NetAddr=int2ip $NetInt
-    $gw=Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
-        Where-Object { $_.InterfaceAlias -eq $LocalIface } | Sort-Object RouteMetric | Select-Object -First 1
-    if ($gw) { $Gateway=$gw.NextHop }
+    if ($gwMatch) {
+        $Gateway = $gwMatch
+    } else {
+        $gw=Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+            Where-Object { $_.InterfaceAlias -eq $LocalIface } | Sort-Object RouteMetric | Select-Object -First 1
+        if ($gw) { $Gateway=$gw.NextHop }
+    }
 }
 $NetInt   = ip2int $NetAddr
 $BcastInt = $NetInt -bor ((-bnot $MaskInt) -band 0xFFFFFFFFL)
