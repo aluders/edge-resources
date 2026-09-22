@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#    Network Scanner  (macOS)  v1.0
+#    Network Scanner  (macOS)  v1.5
 #    ================================
 #    Discovers every device on the local subnet using a layered approach:
 #    ICMP ping sweep, ARP cache, reverse DNS, OUI vendor lookup,
@@ -12,7 +12,16 @@
 #
 #    VERSION HISTORY
 #    ---------------
-#    1.0 - Initial release
+#    1.5 - -p/--ports flag: replace or append (+) ports to the default scan list
+#    1.4 - Removed --nmap path; default engine is now always ping + ARP + /dev/tcp
+#    1.3 - SSDP fixed: bind to local interface, double M-SEARCH, 12s listen window,
+#          heredoc Python to avoid quoting issues; vendor API rate-limited to 1.5s
+#    1.2 - OUI vendor lookup via macvendors.com API with persistent disk cache;
+#          removed hardcoded OUI table; empty results never cached (retried next run)
+#    1.1 - Device identity cache keyed by MAC (survives IP changes); mDNS regex
+#          fixes for dns-sd -Z output; SSDP label cleaning; column alignment fixes
+#    1.0 - Initial release: ping sweep, ARP, hostnames, OUI vendors, port scan,
+#          mDNS, SSDP, HTTP title scrape, device identity merge
 #
 #    NOTES
 #    -----
@@ -59,11 +68,12 @@ usage() {
   echo
   echo -e "  ${BOLD}${CYAN}NETWORK SCANNER${RESET}"
   echo -e "${CYAN}${DIVIDER}${RESET}"
-  echo -e "  ${BOLD}Usage:${RESET}  netscan ${CYAN}[-i|--interface IFACE]${RESET} ${YELLOW}[-n|--network CIDR]${RESET} ${PURPLE}[-t|--timeout SEC]${RESET} ${DIM}[-v] [-h]${RESET}"
+  echo -e "  ${BOLD}Usage:${RESET}  netscan ${CYAN}[-i|--interface IFACE]${RESET} ${YELLOW}[-n|--network CIDR]${RESET} ${PURPLE}[-t|--timeout SEC]${RESET} ${DIM}[-p|--ports PORTS] [-v] [-h]${RESET}"
   echo
   echo -e "  ${CYAN}-i, --interface IFACE${RESET}   Network interface ${DIM}(default: auto-detect)${RESET}"
   echo -e "  ${YELLOW}-n, --network CIDR${RESET}      Subnet to scan ${DIM}(e.g. 10.1.0.0/24)${RESET}"
   echo -e "  ${PURPLE}-t, --timeout SEC${RESET}       Ping timeout in seconds ${DIM}(default: 1)${RESET}"
+  echo -e "  ${PURPLE}-p, --ports PORTS${RESET}       Ports to scan ${DIM}(e.g. 3389 or +3389 to append to defaults)${RESET}"
   echo -e "  ${DIM}-v, --verbose${RESET}           Show verbose vendor lookup progress${RESET}"
   echo -e "  ${DIM}-h, --help${RESET}              Show this help message"
   echo -e "${CYAN}${DIVIDER}${RESET}"
@@ -90,13 +100,34 @@ while [[ $# -gt 0 ]]; do
     -t|--timeout)       [[ -z "$2" ]] && { echo -e "  ${RED}Error:${RESET} $1 requires an argument." >&2; exit 1; }
                         TIMEOUT="$2"; shift ;;
     -t=*|--timeout=*)   TIMEOUT="${1#*=}" ;;
+    -p|--ports)         [[ -z "$2" ]] && { echo -e "  ${RED}Error:${RESET} $1 requires an argument." >&2; exit 1; }
+                        PORTS_ARG="$2"; shift ;;
+    -p=*|--ports=*)     PORTS_ARG="${1#*=}" ;;
     *)                  echo -e "  ${RED}Error:${RESET} Unknown option $1" >&2; exit 1 ;;
+
   esac
   shift
 done
 
 if ! [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
   echo -e "  ${RED}Error:${RESET} Timeout must be a positive integer." >&2; exit 1
+fi
+
+if [[ -n "${PORTS_ARG:-}" ]]; then
+  if [[ "$PORTS_ARG" == +* ]]; then
+    # Append to defaults
+    for P in ${PORTS_ARG#+}; do
+      [[ "$P" =~ ^[0-9]+$ ]] && [[ "$P" -ge 1 && "$P" -le 65535 ]] ||         { echo -e "  ${RED}Error:${RESET} Invalid port '$P'." >&2; exit 1; }
+      SCAN_PORTS+=("$P")
+    done
+  else
+    # Replace defaults
+    SCAN_PORTS=()
+    for P in $PORTS_ARG; do
+      [[ "$P" =~ ^[0-9]+$ ]] && [[ "$P" -ge 1 && "$P" -le 65535 ]] ||         { echo -e "  ${RED}Error:${RESET} Invalid port '$P'." >&2; exit 1; }
+      SCAN_PORTS+=("$P")
+    done
+  fi
 fi
 
 # ── OUI vendor lookup ─────────────────────────────────────────────────────────
