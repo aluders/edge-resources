@@ -15,3 +15,25 @@ under arguments:
 /c start "" /min "c:\Users\Admin\AppData\map.bat" ^& exit
 
 run at logon... delay 10 seconds
+
+# stored credential method...
+cmdkey /add:192.168.1.1 /user:admin /pass:password
+net use x: \\192.168.1.1\storage_1 /p:yes
+net use y: \\192.168.1.1\storage_2 /p:yes
+net use z: \\192.168.1.1\storage_3 /p:yes
+
+# alternate script method...
+
+@echo off
+:: Wait for the target server to be reachable before mapping
+:WAIT_FOR_NETWORK
+ping -n 1 192.168.1.1 >nul 2>&1
+if errorlevel 1 (
+    timeout /t 2 /nobreak >nul
+    goto WAIT_FOR_NETWORK
+)
+
+:: Reconnect drives using stored credentials (run `cmdkey` once beforehand)
+if not exist x:\ net use x: \\192.168.1.1\storage_1 /persistent:no
+if not exist y:\ net use y: \\192.168.1.1\storage_2 /persistent:no
+if not exist z:\ net use z: \\192.168.1.1\storage_3 /persistent:no
