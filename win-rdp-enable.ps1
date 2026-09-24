@@ -1,5 +1,5 @@
 # Enable-RDP-Workgroup.ps1
-# Version : 1.3
+# Version : 1.4
 # Date    : 2026-09-23
 # Invoke  : irm rdp.vcc.net | iex
 #
@@ -7,15 +7,17 @@
 # - For me only. Workgroup / LAN. Run elevated from one box on the LAN.
 # - Target needs a local admin. Pro/Ent/Edu/Server — not Home.
 # - Starts local WinRM quietly (no Y/N prompt), then sets TrustedHosts.
-# - DCOM/WMI first, classic WMI second, WSMan last.
+# - Order: DCOM CIM -> classic WMI -> WSMan -> admin$/IPC$ + schtasks/reg.
 # - Turns on RDP (SetAllowTSConnections + fDenyTSConnections=0), NLA on, firewall group.
 # - Optional: -AddUserToRdpGroup  -SkipTrustedHosts  -TargetIP  -Username  -Password
-# - Workgroup UAC: "Access is denied" on DCOM almost always means the target is
-#   filtering the local-admin token. Set LocalAccountTokenFilterPolicy=1 on the
-#   TARGET (Mesh terminal / SYSTEM) then rerun. Built-in Administrator is exempt.
+# - Workgroup UAC: "Access is denied" on DCOM is the token filter. Built-in
+#   Administrator bypasses it. Named local admins (rms02 etc) usually do not.
+# - admin$ fallback is how you stage Mesh onto boxes that are not in Mesh yet.
+#   Needs TCP 445 and File and Printer Sharing on the target.
 # - Does not publish RDP off the LAN. Confirm 3389 is not forwarded.
 #
 # Changelog:
+# 1.4  2026-09-23  admin$/IPC$ + remote schtasks/reg fallback when WMI/WinRM die
 # 1.3  2026-09-23  dropped Clear-Host so Mesh terminal keeps scrollback
 # 1.2  2026-09-23  silent local WinRM start, winrm TrustedHosts, WMI fallback, UAC notes
 # 1.1  2026-09-23  elevation check, registry/NLA/firewall fallback, params, TrustedHosts revert
@@ -33,7 +35,7 @@ param(
 )
 
 $ScriptName    = 'Enable-RDP-Workgroup'
-$ScriptVersion = '1.3'
+$ScriptVersion = '1.4'
 $ScriptDate    = '2026-09-23'
 
 function Test-IsElevated {
@@ -55,6 +57,87 @@ function Write-Ok {
 function Write-Fail {
     param([string]$Message)
     Write-Host "[!!] $Message" -ForegroundColor Red
+}
+
+function Get-PlainPassword {
+    param([System.Security.SecureString]$Secure)
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
+function Enable-RdpViaAdminShare {
+    param(
+        [string]$TargetIP,
+        [string]$Username,
+        [System.Security.SecureString]$Password
+    )
+
+    $plain = Get-PlainPassword -Secure $Password
+    $ipc   = "\\$TargetIP\IPC$"
+    $admin = "\\$TargetIP\admin$"
+    $mapped = $false
+
+    Write-Step "Probing TCP 445 (SMB) on $TargetIP..."
+    $smbPort = Test-NetConnection -ComputerName $TargetIP -Port 445 -WarningAction SilentlyContinue
+    if (-not $smbPort.TcpTestSucceeded) {
+        Write-Warning "TCP 445 is closed or filtered. admin$ path will not work."
+        return $false
+    }
+    Write-Ok "TCP 445 is open."
+
+    $userSpec = $Username
+    if ($Username -notmatch '\\' -and $Username -notmatch '@') {
+        $userSpec = ".\$Username"
+    }
+
+    Write-Step "Mapping $ipc as $userSpec..."
+    cmd /c "net use $ipc /delete /y" 2>$null | Out-Null
+    $netOut = cmd /c "net use $ipc /user:$userSpec $plain" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "IPC$ map failed: $($netOut -join ' ')"
+        Write-Host "    Retrying as $TargetIP\$Username ..." -ForegroundColor DarkYellow
+        $netOut = cmd /c "net use $ipc /user:$TargetIP\$Username $plain" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "IPC$ map failed again: $($netOut -join ' ')"
+            return $false
+        }
+    }
+    $mapped = $true
+    Write-Ok "IPC$ mapped."
+
+    try {
+        $tr = 'cmd /c reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f & reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f & netsh advfirewall firewall set rule group="remote desktop" new enable=Yes'
+
+        Write-Step "Creating one-shot SYSTEM task on target..."
+        $create = cmd /c "schtasks /Create /S $TargetIP /U $Username /P $plain /RU SYSTEM /RL HIGHEST /SC ONCE /ST 00:00 /TN VccEnableRdp /TR `"$tr`" /F" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "schtasks /Create failed: $($create -join ' ')"
+            Write-Step "Trying remote registry instead..."
+            $reg1 = cmd /c "reg add \\$TargetIP\HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server /v fDenyTSConnections /t REG_DWORD /d 0 /f" 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                cmd /c "reg add \\$TargetIP\HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp /v UserAuthentication /t REG_DWORD /d 1 /f" | Out-Null
+                Write-Ok "Remote registry updated fDenyTSConnections. Firewall rule may still be closed."
+                return $true
+            }
+            Write-Warning "Remote registry failed: $($reg1 -join ' ')"
+            return $false
+        }
+
+        cmd /c "schtasks /Run /S $TargetIP /U $Username /P $plain /TN VccEnableRdp" | Out-Null
+        Start-Sleep -Seconds 2
+        cmd /c "schtasks /Delete /S $TargetIP /U $Username /P $plain /TN VccEnableRdp /F" | Out-Null
+        Write-Ok "SYSTEM task ran (enable RDP + firewall group)."
+        return $true
+    } finally {
+        if ($mapped) {
+            cmd /c "net use $ipc /delete /y" 2>$null | Out-Null
+        }
+        $plain = $null
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -206,24 +289,39 @@ try {
             $session = New-CimSession -ComputerName $TargetIP -Credential $cred -ErrorAction Stop
             Write-Ok "WSMan session established."
         } catch {
-            Write-Fail "Failed to establish a remote session: $($_.Exception.Message)"
-            Write-Host ""
-            Write-Host "What that error actually means on this run:" -ForegroundColor Red
-            Write-Host "  - WSMan:\...TrustedHosts missing  = local WinRM was not running yet (script now starts it)."
-            Write-Host "  - DCOM Access is denied           = target UAC token filter or firewall, not a typo."
-            Write-Host "  - WinRM Kerberos/HTTPS message    = workgroup + TrustedHosts / no listener on target."
-            Write-Host ""
-            Write-Host "On the TARGET (Mesh terminal as SYSTEM or local Admin):" -ForegroundColor Yellow
-            Write-Host "  reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f"
-            Write-Host "  netsh advfirewall firewall set rule group=`"Windows Management Instrumentation (WMI)`" new enable=yes"
-            Write-Host "  netsh advfirewall firewall set rule group=`"Remote Administration`" new enable=yes"
-            Write-Host ""
-            Write-Host "Use the built-in Administrator account if you can — it bypasses the token filter."
-            Write-Host "Or enable RDP from Mesh on the target itself (no remoting needed):"
-            Write-Host "  reg add `"HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`" /v fDenyTSConnections /t REG_DWORD /d 0 /f"
-            Write-Host "  netsh advfirewall firewall set rule group=`"remote desktop`" new enable=Yes"
-            Write-Host ""
-            Write-Host "psexec fallback:  psexec \\$TargetIP -u $Username -p <pass> cmd"
+            Write-Warning "WSMan failed: $($_.Exception.Message)"
+            Write-Step "WMI/WinRM blocked (normal on workgroup). Trying admin$ / SMB..."
+            $smbOk = Enable-RdpViaAdminShare -TargetIP $TargetIP -Username $Username -Password $Password
+            if ($smbOk) {
+                Write-Step "Testing RDP listener (TCP 3389)..."
+                Start-Sleep -Seconds 2
+                $portCheck = Test-NetConnection -ComputerName $TargetIP -Port 3389 -WarningAction SilentlyContinue
+                if ($portCheck.TcpTestSucceeded) {
+                    Write-Ok "Port 3389 is open and reachable on $TargetIP."
+                    Write-Host "    mstsc /v:$TargetIP" -ForegroundColor White
+                    Write-Host "    User: $Username" -ForegroundColor White
+                } else {
+                    Write-Warning "Commands issued over admin$ but 3389 not open yet. Wait a few seconds and retry mstsc."
+                }
+            } else {
+                Write-Fail "No remote path worked (DCOM, WMI, WinRM, admin$)."
+                Write-Host ""
+                Write-Host "Access denied on WMI + failed admin$ means either:" -ForegroundColor Red
+                Write-Host "  1. Named local admin (rms02) is UAC-filtered — try built-in Administrator."
+                Write-Host "  2. TCP 445 / File and Printer Sharing is off on the target."
+                Write-Host "  3. Wrong password, or the account is not in Administrators on the target."
+                Write-Host ""
+                Write-Host "From a Mesh box that CAN see the target, check:" -ForegroundColor Yellow
+                Write-Host "  Test-NetConnection $TargetIP -Port 445"
+                Write-Host "  Test-NetConnection $TargetIP -Port 135"
+                Write-Host "  Test-NetConnection $TargetIP -Port 3389"
+                Write-Host ""
+                Write-Host "If 445 is open, remap and use built-in Administrator:"
+                Write-Host "  net use \\$TargetIP\IPC$ /user:Administrator <pass>"
+                Write-Host ""
+                Write-Host "If 445 is closed, you cannot stage RDP or Mesh from here until someone"
+                Write-Host "enables File and Printer Sharing on that PC (physically or via existing access)."
+            }
             return
         }
     }
