@@ -1,0 +1,3 @@
+# command can be executed via a remote access terminal like meraki or meshcentral to renew domain trust relationship
+
+powershell.exe -ExecutionPolicy Bypass -Command "$secpw = ConvertTo-SecureString 'YourDomainAdminPassword' -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential ('DOMAIN\AdminUser', $secpw); Test-ComputerSecureChannel -Repair -Credential $cred"
