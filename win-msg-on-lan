@@ -1,3 +1,7 @@
+# from a network computer
 cmdkey /add:192.168.1.2 /user:admin /password:123
 cmdkey /list
 msg * /server:192.168.1.2 Hello
+
+# from a local terminal like meshcentral terminal to all active sessions...
+msg * "sample message"
