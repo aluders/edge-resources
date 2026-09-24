@@ -1,20 +1,24 @@
 # Enable-RDP-Workgroup.ps1
-# Version : 1.1.0
+# Version : 1.2.0
 # Date    : 2026-09-23
 # Invoke  : irm rdp.vcc.net | iex
 #
 # Notes:
 # - For me only. Workgroup / LAN. Run elevated from one box on the LAN.
 # - Target needs a local admin. Pro/Ent/Edu/Server — not Home.
-# - DCOM/WMI first, WSMan fallback. Adds target to local TrustedHosts, asks to revert.
+# - Starts local WinRM quietly (no Y/N prompt), then sets TrustedHosts.
+# - DCOM/WMI first, classic WMI second, WSMan last.
 # - Turns on RDP (SetAllowTSConnections + fDenyTSConnections=0), NLA on, firewall group.
 # - Optional: -AddUserToRdpGroup  -SkipTrustedHosts  -TargetIP  -Username  -Password
-# - Workgroup UAC: if bind fails, LocalAccountTokenFilterPolicy=1 on target or use psexec.
+# - Workgroup UAC: "Access is denied" on DCOM almost always means the target is
+#   filtering the local-admin token. Set LocalAccountTokenFilterPolicy=1 on the
+#   TARGET (Mesh terminal / SYSTEM) then rerun. Built-in Administrator is exempt.
 # - Does not publish RDP off the LAN. Confirm 3389 is not forwarded.
 #
 # Changelog:
 # 1.0.0  2026-09-23  CIM/DCOM + WSMan, TrustedHosts, SetAllowTSConnections, 3389 check
 # 1.1.0  2026-09-23  elevation check, registry/NLA/firewall fallback, params, TrustedHosts revert
+# 1.2.0  2026-09-23  silent local WinRM start, winrm TrustedHosts, WMI fallback, UAC notes
 
 #Requires -Version 5.1
 
@@ -28,7 +32,7 @@ param(
 )
 
 $ScriptName    = 'Enable-RDP-Workgroup'
-$ScriptVersion = '1.1.0'
+$ScriptVersion = '1.2.0'
 $ScriptDate    = '2026-09-23'
 
 function Test-IsElevated {
@@ -98,16 +102,48 @@ if (-not $Password) {
 $cred = New-Object System.Management.Automation.PSCredential($Username, $Password)
 
 # ---------------------------------------------------------------------------
-# 2. Local TrustedHosts (workgroup WinRM/CIM)
+# 2. Local WinRM + TrustedHosts (no interactive Y/N)
 # ---------------------------------------------------------------------------
 $trustedHostsChanged = $false
 $originalTrusted     = $null
 
+function Start-LocalWinRMQuiet {
+    try {
+        $svc = Get-Service WinRM -ErrorAction Stop
+        if ($svc.StartType -eq 'Disabled') {
+            Set-Service WinRM -StartupType Manual -ErrorAction SilentlyContinue
+        }
+        if ($svc.Status -ne 'Running') {
+            Write-Step "Starting local WinRM service (quiet, no prompt)..."
+            Start-Service WinRM -ErrorAction Stop
+        }
+        return $true
+    } catch {
+        Write-Warning "Could not start local WinRM: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Get-TrustedHostsValue {
+    try {
+        if (Test-Path WSMan:\localhost\Client\TrustedHosts) {
+            return (Get-Item WSMan:\localhost\Client\TrustedHosts).Value
+        }
+    } catch { }
+    try {
+        $out = winrm get winrm/config/client 2>$null
+        if ($out -match 'TrustedHosts\s*=\s*(.*)$') {
+            return $Matches[1].Trim()
+        }
+    } catch { }
+    return ''
+}
+
 if (-not $SkipTrustedHosts) {
+    [void](Start-LocalWinRMQuiet)
     Write-Step "Configuring local WSMan TrustedHosts for $TargetIP..."
     try {
-        $item = Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction Stop
-        $originalTrusted = $item.Value
+        $originalTrusted = Get-TrustedHostsValue
         $already = $false
         if ($originalTrusted -eq '*') {
             $already = $true
@@ -122,46 +158,74 @@ if (-not $SkipTrustedHosts) {
             } else {
                 "$originalTrusted,$TargetIP"
             }
-            Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newValue -Force
-            $trustedHostsChanged = $true
-            Write-Ok "TrustedHosts updated."
+            $setOk = $false
+            try {
+                Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newValue -Force -ErrorAction Stop
+                $setOk = $true
+            } catch {
+                $quoted = $newValue.Replace('"', '')
+                $null = cmd /c "winrm set winrm/config/client @{TrustedHosts=`"$quoted`"}"
+                if ($LASTEXITCODE -eq 0) { $setOk = $true }
+            }
+            if ($setOk) {
+                $trustedHostsChanged = $true
+                Write-Ok "TrustedHosts updated."
+            } else {
+                Write-Warning "Could not update local TrustedHosts."
+            }
         } else {
             Write-Ok "Target already present in TrustedHosts (or wildcard)."
         }
     } catch {
         Write-Warning "Could not update local TrustedHosts: $($_.Exception.Message)"
-        Write-Host "    You may need to start WinRM locally:  Enable-PSRemoting -Force" -ForegroundColor DarkYellow
     }
 }
 
 # ---------------------------------------------------------------------------
-# 3. CIM session — DCOM first, then WSMan
+# 3. Remote session — DCOM CIM, classic WMI, then WSMan
 # ---------------------------------------------------------------------------
 Write-Step "Connecting to $TargetIP via DCOM/WMI..."
 $cimOpt  = New-CimSessionOption -Protocol Dcom
 $session = $null
+$useClassicWmi = $false
 
 try {
     $session = New-CimSession -ComputerName $TargetIP -Credential $cred -SessionOption $cimOpt -ErrorAction Stop
-    Write-Ok "DCOM session established."
+    Write-Ok "DCOM CIM session established."
 } catch {
-    Write-Warning "DCOM connection failed: $($_.Exception.Message)"
-    Write-Step "Falling back to WSMan..."
+    Write-Warning "DCOM CIM failed: $($_.Exception.Message)"
+    Write-Step "Trying classic WMI (Get-WmiObject)..."
     try {
-        $session = New-CimSession -ComputerName $TargetIP -Credential $cred -ErrorAction Stop
-        Write-Ok "WSMan session established."
+        $null = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $TargetIP -Credential $cred -ErrorAction Stop
+        $useClassicWmi = $true
+        Write-Ok "Classic WMI reachable."
     } catch {
-        Write-Fail "Failed to establish a remote session: $($_.Exception.Message)"
-        Write-Host ""
-        Write-Host "Troubleshooting workgroup blocks:" -ForegroundColor Red
-        Write-Host "  1. Account must be in the local Administrators group on the target."
-        Write-Host "  2. Remote UAC filters local-admin tokens on workgroup hosts."
-        Write-Host "     Target registry (as SYSTEM / via psexec):"
-        Write-Host "       HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
-        Write-Host "       LocalAccountTokenFilterPolicy = 1  (DWORD)"
-        Write-Host "  3. File and Printer Sharing / WMI / DCOM must not be blocked on the LAN."
-        Write-Host "  4. Fallback:  psexec \\$TargetIP -u $Username -p <pass> cmd"
-        return
+        Write-Warning "Classic WMI failed: $($_.Exception.Message)"
+        Write-Step "Falling back to WSMan..."
+        try {
+            $session = New-CimSession -ComputerName $TargetIP -Credential $cred -ErrorAction Stop
+            Write-Ok "WSMan session established."
+        } catch {
+            Write-Fail "Failed to establish a remote session: $($_.Exception.Message)"
+            Write-Host ""
+            Write-Host "What that error actually means on this run:" -ForegroundColor Red
+            Write-Host "  - WSMan:\...TrustedHosts missing  = local WinRM was not running yet (script now starts it)."
+            Write-Host "  - DCOM Access is denied           = target UAC token filter or firewall, not a typo."
+            Write-Host "  - WinRM Kerberos/HTTPS message    = workgroup + TrustedHosts / no listener on target."
+            Write-Host ""
+            Write-Host "On the TARGET (Mesh terminal as SYSTEM or local Admin):" -ForegroundColor Yellow
+            Write-Host "  reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f"
+            Write-Host "  netsh advfirewall firewall set rule group=`"Windows Management Instrumentation (WMI)`" new enable=yes"
+            Write-Host "  netsh advfirewall firewall set rule group=`"Remote Administration`" new enable=yes"
+            Write-Host ""
+            Write-Host "Use the built-in Administrator account if you can — it bypasses the token filter."
+            Write-Host "Or enable RDP from Mesh on the target itself (no remoting needed):"
+            Write-Host "  reg add `"HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`" /v fDenyTSConnections /t REG_DWORD /d 0 /f"
+            Write-Host "  netsh advfirewall firewall set rule group=`"remote desktop`" new enable=Yes"
+            Write-Host ""
+            Write-Host "psexec fallback:  psexec \\$TargetIP -u $Username -p <pass> cmd"
+            return
+        }
     }
 }
 
@@ -172,52 +236,63 @@ try {
     Write-Step "Enabling Remote Desktop and firewall exception..." "Cyan"
 
     $rdpOk = $false
-    try {
-        $result = Invoke-CimMethod -CimSession $session `
-            -Namespace "root\cimv2\TerminalServices" `
-            -ClassName "Win32_TerminalServiceSetting" `
-            -MethodName "SetAllowTSConnections" `
-            -Arguments @{ AllowTSConnections = 1; ModifyFirewallException = 1 } `
-            -ErrorAction Stop
 
-        if ($result.ReturnValue -eq 0) {
-            Write-Ok "SetAllowTSConnections succeeded (RDP + firewall)."
-            $rdpOk = $true
-        } else {
-            Write-Warning "SetAllowTSConnections returned code: $($result.ReturnValue)"
+    if ($session) {
+        try {
+            $result = Invoke-CimMethod -CimSession $session `
+                -Namespace "root\cimv2\TerminalServices" `
+                -ClassName "Win32_TerminalServiceSetting" `
+                -MethodName "SetAllowTSConnections" `
+                -Arguments @{ AllowTSConnections = 1; ModifyFirewallException = 1 } `
+                -ErrorAction Stop
+
+            if ($result.ReturnValue -eq 0) {
+                Write-Ok "SetAllowTSConnections succeeded (RDP + firewall)."
+                $rdpOk = $true
+            } else {
+                Write-Warning "SetAllowTSConnections returned code: $($result.ReturnValue)"
+            }
+        } catch {
+            Write-Warning "CIM TerminalServices method failed: $($_.Exception.Message)"
         }
-    } catch {
-        Write-Warning "CIM TerminalServices method failed: $($_.Exception.Message)"
+    } elseif ($useClassicWmi) {
+        try {
+            $ts = Get-WmiObject -Namespace "root\cimv2\TerminalServices" -Class Win32_TerminalServiceSetting -ComputerName $TargetIP -Credential $cred -ErrorAction Stop
+            $rv = $ts.SetAllowTSConnections(1, 1)
+            if ($rv.ReturnValue -eq 0) {
+                Write-Ok "SetAllowTSConnections succeeded via classic WMI."
+                $rdpOk = $true
+            } else {
+                Write-Warning "SetAllowTSConnections returned code: $($rv.ReturnValue)"
+            }
+        } catch {
+            Write-Warning "Classic WMI TerminalServices method failed: $($_.Exception.Message)"
+        }
     }
 
     # Registry fallback / reinforcement
     Write-Step "Applying registry fallback (fDenyTSConnections, NLA)..."
+    $cmds = @(
+        'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f',
+        'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f',
+        'netsh advfirewall firewall set rule group="remote desktop" new enable=Yes'
+    )
+    if ($AddUserToRdpGroup) {
+        $cmds += "net localgroup `"Remote Desktop Users`" `"$Username`" /add"
+    }
+
     try {
-        Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{
-            CommandLine = 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f'
-        } | Out-Null
-        Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{
-            CommandLine = 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f'
-        } | Out-Null
-        Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{
-            CommandLine = 'netsh advfirewall firewall set rule group="remote desktop" new enable=Yes'
-        } | Out-Null
+        foreach ($cmdLine in $cmds) {
+            if ($session) {
+                Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmdLine } | Out-Null
+            } elseif ($useClassicWmi) {
+                ([wmiclass]"\\$TargetIP\root\cimv2:Win32_Process").Create($cmdLine) | Out-Null
+            }
+        }
         Write-Ok "Registry + firewall rule commands issued."
         $rdpOk = $true
     } catch {
         Write-Warning "Registry fallback failed: $($_.Exception.Message)"
-    }
-
-    if ($AddUserToRdpGroup) {
-        Write-Step "Adding '$Username' to Remote Desktop Users on target..."
-        try {
-            Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{
-                CommandLine = "net localgroup `"Remote Desktop Users`" `"$Username`" /add"
-            } | Out-Null
-            Write-Ok "Group membership command issued (ignore if already a member)."
-        } catch {
-            Write-Warning "Could not add user to RDP group: $($_.Exception.Message)"
-        }
     }
 
     # ---------------------------------------------------------------------------
