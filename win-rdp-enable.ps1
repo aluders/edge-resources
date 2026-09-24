@@ -1,5 +1,5 @@
 # Enable-RDP-Workgroup.ps1
-# Version : 1.5
+# Version : 1.6
 # Date    : 2026-09-23
 # Invoke  : irm rdp.vcc.net | iex
 #
@@ -17,6 +17,7 @@
 # - Does not publish RDP off the LAN. Confirm 3389 is not forwarded.
 #
 # Changelog:
+# 1.6  2026-09-23  explicit admin$/C$ map; schtasks without a bat if share write is denied
 # 1.5  2026-09-23  write enable bat to admin$\Temp; quoted remote reg (spaces in key)
 # 1.4  2026-09-23  admin$/IPC$ + remote schtasks/reg fallback when WMI/WinRM die
 # 1.3  2026-09-23  dropped Clear-Host so Mesh terminal keeps scrollback
@@ -36,7 +37,7 @@ param(
 )
 
 $ScriptName    = 'Enable-RDP-Workgroup'
-$ScriptVersion = '1.5'
+$ScriptVersion = '1.6'
 $ScriptDate    = '2026-09-23'
 
 function Test-IsElevated {
@@ -111,44 +112,64 @@ function Enable-RdpViaAdminShare {
     Write-Ok "IPC$ mapped."
 
     try {
-        $batName = 'vcc-enable-rdp.bat'
-        $remoteBat = "\\$TargetIP\admin$\Temp\$batName"
-        $localBat  = "C:\Windows\Temp\$batName"
-        $bat = @(
-            '@echo off'
-            'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f'
-            'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f'
-            'netsh advfirewall firewall set rule group="remote desktop" new enable=Yes'
-        ) -join "`r`n"
+        $shareWrite = $false
+        $localBat   = $null
 
-        Write-Step "Writing $remoteBat ..."
-        try {
-            Set-Content -LiteralPath $remoteBat -Value $bat -Encoding ASCII -Force -ErrorAction Stop
-            Write-Ok "Batch dropped on admin$."
-        } catch {
-            Write-Warning "Could not write admin$\Temp: $($_.Exception.Message)"
-            $remoteBat = $null
-        }
-
-        if ($remoteBat) {
-            Write-Step "Creating one-shot SYSTEM task pointing at $localBat ..."
-            $create = cmd /c "schtasks /Create /S $TargetIP /U $Username /P $plain /RU SYSTEM /RL HIGHEST /SC ONCE /ST 00:00 /TN VccEnableRdp /TR $localBat /F" 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                cmd /c "schtasks /Run /S $TargetIP /U $Username /P $plain /TN VccEnableRdp" | Out-Null
-                Start-Sleep -Seconds 2
-                cmd /c "schtasks /Delete /S $TargetIP /U $Username /P $plain /TN VccEnableRdp /F" | Out-Null
-                Write-Ok "SYSTEM task ran (enable RDP + firewall group)."
-                return $true
+        foreach ($share in @("\\$TargetIP\admin$", "\\$TargetIP\C$")) {
+            Write-Step "Mapping $share ..."
+            cmd /c "net use $share /delete /y" 2>$null | Out-Null
+            $mapShare = cmd /c "net use $share /user:$userSpec $plain" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Map $share failed: $($mapShare -join ' ')"
+                continue
             }
-            Write-Warning "schtasks /Create failed: $($create -join ' ')"
+            $destDir = if ($share -like '*admin$*') { "$share\Temp" } else { "$share\Windows\Temp" }
+            $batName = 'vcc-enable-rdp.bat'
+            $remoteBat = "$destDir\$batName"
+            $bat = @(
+                '@echo off'
+                'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f'
+                'reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 1 /f'
+                'netsh advfirewall firewall set rule group="remote desktop" new enable=Yes'
+            ) -join "`r`n"
+            try {
+                if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+                Set-Content -LiteralPath $remoteBat -Value $bat -Encoding ASCII -Force -ErrorAction Stop
+                Write-Ok "Batch dropped at $remoteBat"
+                $shareWrite = $true
+                $localBat = "C:\Windows\Temp\$batName"
+                break
+            } catch {
+                Write-Warning "Write $remoteBat denied: $($_.Exception.Message)"
+            }
         }
+
+        if (-not $shareWrite) {
+            Write-Host "    IPC$ auth without admin$/C$ write = UAC token filter on '$Username'." -ForegroundColor DarkYellow
+            Write-Host "    Built-in Administrator is the account that can write those shares." -ForegroundColor DarkYellow
+        }
+
+        Write-Step "Creating remote SYSTEM scheduled task..."
+        $tr = if ($localBat) { $localBat } else {
+            'powershell.exe -NoProfile -WindowStyle Hidden -Command "Set-ItemProperty -Path ''HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'' -Name fDenyTSConnections -Value 0; Set-ItemProperty -Path ''HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'' -Name UserAuthentication -Value 1; netsh advfirewall firewall set rule group=''remote desktop'' new enable=Yes"'
+        }
+
+        $create = & schtasks.exe /Create /S $TargetIP /U $Username /P $plain /RU SYSTEM /RL HIGHEST /SC ONCE /ST 00:00 /TN VccEnableRdp /TR $tr /F 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            & schtasks.exe /Run /S $TargetIP /U $Username /P $plain /TN VccEnableRdp | Out-Null
+            Start-Sleep -Seconds 3
+            & schtasks.exe /Delete /S $TargetIP /U $Username /P $plain /TN VccEnableRdp /F | Out-Null
+            Write-Ok "SYSTEM task ran (enable RDP + firewall group)."
+            return $true
+        }
+        Write-Warning "schtasks /Create failed: $($create -join ' ')"
 
         Write-Step "Trying remote registry instead..."
         $key1 = "\\$TargetIP\HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server"
         $key2 = "\\$TargetIP\HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-        $reg1 = cmd /c "reg add `"$key1`" /v fDenyTSConnections /t REG_DWORD /d 0 /f" 2>&1
+        $reg1 = & reg.exe add $key1 /v fDenyTSConnections /t REG_DWORD /d 0 /f 2>&1
         if ($LASTEXITCODE -eq 0) {
-            cmd /c "reg add `"$key2`" /v UserAuthentication /t REG_DWORD /d 1 /f" | Out-Null
+            & reg.exe add $key2 /v UserAuthentication /t REG_DWORD /d 1 /f | Out-Null
             Write-Ok "Remote registry updated fDenyTSConnections. Firewall rule may still be closed."
             return $true
         }
