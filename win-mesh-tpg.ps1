@@ -16,7 +16,7 @@
 #   irm https://tpg.vcc.net | iex
 #     → this script in memory
 #     → if agent missing, download https://files.edgeintegrated.net/meshagent64-TPG.exe
-#     → C:\Windows\Temp\meshagent64-TPG.exe -fullinstall
+#     → C:\Windows\Temp\meshagent64.exe -fullinstall
 #
 # Why not MSI / why no --silent
 #   MeshCentral has no official MSI. -fullinstall is the silent install.
@@ -39,8 +39,8 @@
 # CONFIGURATION
 # ---------------------------------------------------------------------------
 
-$InstallerUrl  = 'https://files.edgeintegrated.net/meshagent64-TPG.exe'
-$InstallerFile = 'meshagent64-TPG.exe'
+$InstallerUrl  = 'https://files.url.net/meshagent64.exe'
+$InstallerFile = 'meshagent64.exe'
 $WorkDir       = 'C:\Windows\Temp'
 $LogFile       = 'C:\Windows\Temp\MeshCentral-HTTPS-Deploy.log'
 $PostInstallWaitSeconds = 20
