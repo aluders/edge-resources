@@ -39,8 +39,8 @@
 # CONFIGURATION
 # ---------------------------------------------------------------------------
 
-$InstallerUrl  = 'https://files.url.net/meshagent64.exe'
-$InstallerFile = 'meshagent64.exe'
+$InstallerUrl  = 'https://files.edgeintegrated.net/meshagent64-TPG.exe'
+$InstallerFile = 'meshagent64-TPG.exe'
 $WorkDir       = 'C:\Windows\Temp'
 $LogFile       = 'C:\Windows\Temp\MeshCentral-HTTPS-Deploy.log'
 $PostInstallWaitSeconds = 20
