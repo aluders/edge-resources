@@ -15,7 +15,7 @@
 # Deployment chain
 #   irm https://tpg.vcc.net | iex
 #     → this script in memory
-#     → if agent missing, download https://files.edgeintegrated.net/meshagent64-TPG.exe
+#     → if agent missing, download https://files.url.net/meshagent64.exe
 #     → C:\Windows\Temp\meshagent64.exe -fullinstall
 #
 # Why not MSI / why no --silent
