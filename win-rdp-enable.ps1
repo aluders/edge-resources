@@ -1,5 +1,5 @@
 # Enable-RDP-Workgroup.ps1
-# Version : 1.2.0
+# Version : 1.3
 # Date    : 2026-09-23
 # Invoke  : irm rdp.vcc.net | iex
 #
@@ -16,9 +16,10 @@
 # - Does not publish RDP off the LAN. Confirm 3389 is not forwarded.
 #
 # Changelog:
-# 1.0.0  2026-09-23  CIM/DCOM + WSMan, TrustedHosts, SetAllowTSConnections, 3389 check
-# 1.1.0  2026-09-23  elevation check, registry/NLA/firewall fallback, params, TrustedHosts revert
-# 1.2.0  2026-09-23  silent local WinRM start, winrm TrustedHosts, WMI fallback, UAC notes
+# 1.3  2026-09-23  dropped Clear-Host so Mesh terminal keeps scrollback
+# 1.2  2026-09-23  silent local WinRM start, winrm TrustedHosts, WMI fallback, UAC notes
+# 1.1  2026-09-23  elevation check, registry/NLA/firewall fallback, params, TrustedHosts revert
+# 1.0  2026-09-23  CIM/DCOM + WSMan, TrustedHosts, SetAllowTSConnections, 3389 check
 
 #Requires -Version 5.1
 
@@ -32,7 +33,7 @@ param(
 )
 
 $ScriptName    = 'Enable-RDP-Workgroup'
-$ScriptVersion = '1.2.0'
+$ScriptVersion = '1.3'
 $ScriptDate    = '2026-09-23'
 
 function Test-IsElevated {
@@ -59,7 +60,6 @@ function Write-Fail {
 # ---------------------------------------------------------------------------
 # Banner / elevation
 # ---------------------------------------------------------------------------
-Clear-Host
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host "  $ScriptName  v$ScriptVersion  ($ScriptDate)" -ForegroundColor Cyan
 Write-Host "  Workgroup / LAN Remote Desktop Enabler" -ForegroundColor Cyan
