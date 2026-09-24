@@ -1,0 +1,2 @@
+# one liner to install meshagent from something like the meraki command prompt
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $path = 'C:\ProgramData\meshagent.exe'; (New-Object Net.WebClient).DownloadFile('https://url.for.agent/meshagent64.exe', $path); Start-Process -FilePath $path -ArgumentList '-fullinstall' -Wait"
