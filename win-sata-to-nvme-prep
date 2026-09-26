@@ -11,6 +11,7 @@ mbr2gpt /convert /disk:0 /allowfullos
 mbr2gpt /convert /disk:0 /map:222=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7 /allowfullos
 
 # then load nvme driver before clone/image
+# must be done on the latest windows boot
 sc config stornvme start= boot
 
 # clone drive
