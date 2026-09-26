@@ -2,7 +2,7 @@
 manage-bde -status c:
 manage-bde -off c:
 
-# best to change to a local account if a microsoft account is being used
+# best to convert user to a local account if a microsoft account is being used
 
 # ensure transition to gpt (uefi) is already done
 # otherwise...
