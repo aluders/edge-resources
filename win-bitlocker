@@ -6,3 +6,9 @@ manage-bde -off c:
 manage-bde -on c: -used
 manage-bde -protectors -add c: -recoverypassword
 manage-bde -protectors -get c:
+
+# decrypt drive offline...
+# Step 1: Unlock the volume for the current session
+manage-bde -unlock E: -RecoveryPassword "XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX"
+# Step 2: Turn off BitLocker and permanently decrypt the disk
+manage-bde -off E:
