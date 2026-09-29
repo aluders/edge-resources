@@ -1,2 +1,5 @@
 # rename pc and reboot...
 Rename-Computer -NewName "NewPCName" -Restart
+
+# renew domain trust relationship
+powershell.exe -ExecutionPolicy Bypass -Command "$secpw = ConvertTo-SecureString 'YourDomainAdminPassword' -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential ('DOMAIN\AdminUser', $secpw); Test-ComputerSecureChannel -Repair -Credential $cred"
