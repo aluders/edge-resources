@@ -1,3 +1,4 @@
+# script execution commands...
 Set-ExecutionPolicy RemoteSigned
 # Temporary (Current Session Only):
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
