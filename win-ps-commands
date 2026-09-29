@@ -5,7 +5,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 # For Only Your User Account:
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 # Running a Single Script via CMD:
-powershell.exe -ExecutionPolicy Bypass -File "C:\Path\To\YourScript.ps1"
+powershell -ExecutionPolicy Bypass -File "C:\Path\To\YourScript.ps1"
 # if script was downloaded... might need unblock...
 Unblock-File -Path C:\Users\Admin\script.ps1
 
@@ -13,7 +13,7 @@ Unblock-File -Path C:\Users\Admin\script.ps1
 Rename-Computer -NewName "NewPCName" -Restart
 
 # renew domain trust relationship
-powershell.exe -ExecutionPolicy Bypass -Command "$secpw = ConvertTo-SecureString 'YourDomainAdminPassword' -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential ('DOMAIN\AdminUser', $secpw); Test-ComputerSecureChannel -Repair -Credential $cred"
+powershell -ExecutionPolicy Bypass -Command "$secpw = ConvertTo-SecureString 'YourDomainAdminPassword' -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential ('DOMAIN\AdminUser', $secpw); Test-ComputerSecureChannel -Repair -Credential $cred"
 
 # install smartmontools...
 powershell -Command "$w=(Get-ChildItem 'C:\Program Files\WindowsApps' -Filter 'winget.exe' -Recurse -EA SilentlyContinue | Select-Object -First 1).FullName; if($w){ & $w install smartmontools.smartmontools --accept-package-agreements --accept-source-agreements --silent } else { Write-Error 'winget.exe not found in WindowsApps' }"
