@@ -4,13 +4,13 @@ manage-bde -off c:
 
 # best to convert user to a local account if a microsoft account is being used
 
-# ensure transition to gpt (uefi) is already done
+# ensure transition to gpt (if moving to uefi) is already done
 # otherwise...
 mbr2gpt /convert /disk:0 /allowfullos
 # for some dell computers (can safely always be used instead of the above command)...
 mbr2gpt /convert /disk:0 /map:222=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7 /allowfullos
 
-# load nvme driver before clone/image
+# load nvme driver before clone/image (if transitioning to nvme)
 # must be done on the latest windows boot
 sc config stornvme start= boot
 
