@@ -9,6 +9,9 @@ powershell -ExecutionPolicy Bypass -File "C:\Path\To\YourScript.ps1"
 # if script was downloaded... might need unblock...
 Unblock-File -Path C:\Users\Admin\script.ps1
 
+# launch powershell from meshcentral terminal...
+powershell -NoProfile -ExecutionPolicy Bypass
+
 # rename pc and reboot...
 powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command Rename-Computer -NewName "NewPCName" -Restart
 
