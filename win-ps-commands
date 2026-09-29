@@ -15,6 +15,9 @@ powershell -NoProfile -ExecutionPolicy Bypass
 # rename pc and reboot...
 powershell -NoProfile -ExecutionPolicy Bypass -Command Rename-Computer -NewName "NewPCName" -Restart
 
+# rename domain pc...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$sec = ConvertTo-SecureString 'DomainAdminPassword' -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential ('DOMAIN\AdminUser', $sec); Rename-Computer -NewName 'New-PC-Name' -DomainCredential $cred -Restart -Force"
+
 # renew domain trust relationship
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$secpw = ConvertTo-SecureString 'YourDomainAdminPassword' -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential ('DOMAIN\AdminUser', $secpw); Test-ComputerSecureChannel -Repair -Credential $cred"
 
