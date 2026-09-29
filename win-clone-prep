@@ -4,7 +4,7 @@ manage-bde -off c:
 
 # best to convert user to a local account if a microsoft account is being used
 
-# ensure transition to gpt (if moving to uefi) is already done
+# ensure gpt file system (if moving to uefi)
 # otherwise...
 mbr2gpt /convert /disk:0 /allowfullos
 # for some dell computers (can safely always be used instead of the above command)...
