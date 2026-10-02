@@ -8,13 +8,13 @@ param(
     [switch]$Help
 )
 
-# Convert-ToMKV.ps1 - v1.3
+# Convert-ToMKV.ps1 - v1.4
 #
 # Batch remuxes .mp4 and .mkv files into language-tagged MKVs using mkvmerge.
 # Picks up external SRT subtitle files automatically.
 #
 # WHAT IT DOES:
-#   - .mp4 files: remuxed to .mkv, video and audio tracks tagged as English
+#   - .mp4/.avi files: remuxed to .mkv, video and audio tracks tagged as English
 #   - .mkv files: reprocessed to .BaseName.en.mkv (skips files already ending in .en.mkv)
 #   - Subtitles: searched alongside the video first, then recursively anywhere
 #     under -Path. Folder name doesn't matter. SDH subs are flagged hearing-impaired.
@@ -61,6 +61,7 @@ param(
 #   -Remove can be combined with any mode including -Strip.
 #
 # CHANGELOG (newest first):
+#   1.4 - Added .avi as accepted input format (remuxed to .mkv same as .mp4)
 #   1.3 - Added -CleanSearch flag: deletes source files by search string match
 #         Looks for matching output (string removed) in the same folder
 #         Same safety check as -Clean (never deletes if source equals output)
@@ -80,7 +81,7 @@ param(
 #         -Test, -Clean, -Help flags
 #         -LiteralPath throughout for bracket-safe path handling
 
-$VERSION = "1.3"
+$VERSION = "1.4"
 
 # --- CONFIGURATION ---
 $mkvmergePath = "C:\Program Files\MKVToolNix\mkvmerge.exe"
@@ -133,7 +134,7 @@ if ($Help) {
     Write-Host "      Show.S01E01.1080p.Rus.Eng .mkv        -> Show.S01E01.1080p.en.mkv"
     Write-Host ""
     Write-Host "  WHAT IT DOES" -ForegroundColor Yellow
-    Write-Host "    - .mp4 files     Remuxed to .mkv, video+audio tracks tagged as English"
+    Write-Host "    - .mp4/.avi files Remuxed to .mkv, video+audio tracks tagged as English"
     Write-Host "    - .mkv files     Reprocessed to .BaseName.en.mkv (skips *.en.mkv files)"
     Write-Host "    - Subtitles      Searched alongside the video first, then recursively"
     Write-Host "                     under -Path in any subfolder. Folder name doesn't matter."
@@ -211,7 +212,7 @@ if ($Remove -ne "") {
 }
 
 Write-Host "Scanning folder: $Path" -ForegroundColor Cyan
-$files = Get-ChildItem -LiteralPath $Path -Recurse -Include *.mp4, *.mkv | Sort-Object FullName
+$files = Get-ChildItem -LiteralPath $Path -Recurse -Include *.mp4, *.mkv, *.avi | Sort-Object FullName
 
 if ($files.Count -eq 0) {
     Write-Host "No .mp4 or .mkv files found." -ForegroundColor Yellow
@@ -247,7 +248,7 @@ foreach ($file in $files) {
     }
 
     # --- DETERMINE OUTPUT FILENAME ---
-    if ($file.Extension -eq ".mp4") {
+    if ($file.Extension -eq ".mp4" -or $file.Extension -eq ".avi") {
         $outputFile = Join-Path -Path $file.DirectoryName -ChildPath ($outBaseName + ".mkv")
     }
     elseif ($file.Extension -eq ".mkv") {
@@ -299,7 +300,7 @@ foreach ($file in $files) {
 
     # --- STRIP LOGIC ---
     if ($Strip) {
-        if ($file.Extension -ne ".mkv") { continue }
+        if ($file.Extension -ne ".mkv") { continue }  # Strip only applies to MKV
 
         Write-Host "Stripping: $($file.Name)" -ForegroundColor Yellow
         if ($outBaseName -ne $file.BaseName) {
