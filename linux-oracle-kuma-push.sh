@@ -21,9 +21,11 @@ set -euo pipefail
 #   ./oracle-kuma-probe.sh --version    # Print script version
 #   ./oracle-kuma-probe.sh --help       # Show help
 #
-# VERSION 1.3
+# VERSION 1.4
 #
 # CHANGELOG (newest first):
+#   1.4  - Notes: Kuma heartbeat 90s and retries 1. A 60s heartbeat
+#          races the systemd timer and shows pending beats.
 #   1.3  - One check and one push per minute. Retries belong in Kuma.
 #   1.2  - Send a single ?status= query. Kuma's displayed push URL already
 #          includes ?status=up, and a duplicated status is recorded as down.
@@ -31,7 +33,7 @@ set -euo pipefail
 #   1.0  - Initial: interactive install, add/remove, probe with
 #          retries, systemd timer, status/logs/uninstall.
 ############################################
-VERSION="1.3"
+VERSION="1.4"
 ############################################
 # CONFIGURATION
 ############################################
@@ -43,9 +45,9 @@ SYSTEMD_SVC="/etc/systemd/system/kuma-probe.service"
 SYSTEMD_TMR="/etc/systemd/system/kuma-probe.timer"
 CURL_MAX=20
 TIMER_INTERVAL="1min"
-# Match Kuma's default Push heartbeat. Set Retries to 1 on the monitor
-# so a single bad minute does not notify.
-KUMA_HEARTBEAT_SEC=60
+# Push every minute. Kuma heartbeat must be longer than this plus
+# systemd AccuracySec, or the beat shows pending. 90 seconds, retries 1.
+KUMA_HEARTBEAT_SEC=90
 ############################################
 # STATUS OUTPUT HELPERS
 ############################################
@@ -176,6 +178,7 @@ Oracle Uptime Kuma Push Probe (v$VERSION)
 
 Checks public sites from this VPS and pushes up/down to Uptime Kuma.
 Set each Push monitor Heartbeat Interval to ${KUMA_HEARTBEAT_SEC} seconds and Retries to 1.
+A 60-second heartbeat races this timer and shows pending beats.
 
 Usage: $0 [MODE]
 Modes:
@@ -375,6 +378,7 @@ success "curl present."
 info "[2/5] Sites to monitor"
 echo "    For each site, create a Push monitor in Kuma first."
 echo "    Heartbeat Interval: ${KUMA_HEARTBEAT_SEC} seconds. Retries: 1."
+echo "    60 seconds races the timer and shows pending beats."
 echo "    Paste the push URL Kuma displays. Blank URL ends the list."
 echo
 sudo mkdir -p "$(dirname "$MAP_FILE")" "$STATE_DIR"
