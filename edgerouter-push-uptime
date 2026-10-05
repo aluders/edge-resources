@@ -24,14 +24,16 @@
 #   ./edgerouter-kuma-push.sh --version    # Print script version
 #   ./edgerouter-kuma-push.sh --help       # Show help
 #
-# VERSION 1.1
+# VERSION 1.2
 #
 # CHANGELOG (newest first):
+#   1.2  - Status reads config.boot. show task-scheduler is configure-mode
+#          only, so the op wrapper printed "Invalid command".
 #   1.1  - Single heartbeat. No site list. Check 1.1.1.1, push one URL.
 #   1.0  - Initial installer with EdgeOS task-scheduler.
 set -euo pipefail
 
-VERSION="1.1"
+VERSION="1.2"
 
 ############################################
 # CONFIGURATION
@@ -81,6 +83,25 @@ load_conf() {
         # shellcheck disable=SC1090
         source "$CONF_FILE"
     fi
+}
+
+# show system task-scheduler is configure mode only. The op wrapper
+# rejects it with "Invalid command". The committed stanza is in config.boot.
+show_task() {
+    local boot="/config/config.boot"
+    if [[ ! -r "$boot" ]]; then
+        warn "Cannot read $boot"
+        return
+    fi
+    awk -v name="$TASK_NAME" '
+        $1 == "task" && $2 == name && $3 == "{" { found=1; depth=1; print; next }
+        found {
+            print
+            depth += gsub(/\{/, "{")
+            depth -= gsub(/\}/, "}")
+            if (depth <= 0) exit
+        }
+    ' "$boot"
 }
 
 ############################################
@@ -256,10 +277,12 @@ if [[ "${1:-}" == "--status" ]]; then
     fi
     echo
     info "task-scheduler"
-    if [[ -x /opt/vyatta/bin/vyatta-op-cmd-wrapper ]]; then
-        /opt/vyatta/bin/vyatta-op-cmd-wrapper show system task-scheduler task "$TASK_NAME" || true
+    stanza=$(show_task || true)
+    if [[ -n "$stanza" ]]; then
+        echo "$stanza"
     else
-        warn "vyatta-op-cmd-wrapper not found. Run: show system task-scheduler task $TASK_NAME"
+        error "Task $TASK_NAME is not in /config/config.boot"
+        warn "From configure mode: show system task-scheduler task $TASK_NAME"
     fi
     echo
     info "last result"
