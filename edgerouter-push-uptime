@@ -2,8 +2,14 @@
 
 #!/bin/sh
 # /config/scripts/kuma-push.sh
-curl -fsS --max-time 15 \
-  "https://uptimekuma.push.url/api/push/YOURTOKEN?status=up&msg=er12&ping=" \
+start=$(date +%s%3N)
+curl -fsS --max-time 10 -o /dev/null https://1.1.1.1
+ms=$(( $(date +%s%3N) - start ))
+curl -fsS --max-time 15 -G \
+  "https://uptimekuma.push.url/api/push/YOURTOKEN" \
+  --data-urlencode "status=up" \
+  --data-urlencode "msg=ok" \
+  --data-urlencode "ping=${ms}" \
   >/dev/null 2>&1
 
 *** set executable ***
