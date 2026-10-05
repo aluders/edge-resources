@@ -2,8 +2,8 @@
 # EdgeRouter Uptime Kuma Push
 #
 # Installs one persistent heartbeat under /config/scripts and commits a
-# 1-minute task-scheduler job. Each run times a check to 1.1.1.1 and
-# pushes status, msg, and ping to a single Uptime Kuma Push monitor.
+# 1-minute task-scheduler job. Each run pings 1.1.1.1 and pushes status,
+# msg, and the ICMP RTT to a single Uptime Kuma Push monitor.
 #
 # Missed pushes are what mark the monitor down. A failed check is also
 # pushed as status=down so a WAN failure is visible before the heartbeat
@@ -24,16 +24,18 @@
 #   ./edgerouter-kuma-push.sh --version    # Print script version
 #   ./edgerouter-kuma-push.sh --help       # Show help
 #
-# VERSION 1.2
+# VERSION 1.3
 #
 # CHANGELOG (newest first):
+#   1.3  - Latency is one ICMP ping to 1.1.1.1, not an HTTPS curl.
+#          An http(s) check value already in config is stripped to a host.
 #   1.2  - Status reads config.boot. show task-scheduler is configure-mode
 #          only, so the op wrapper printed "Invalid command".
 #   1.1  - Single heartbeat. No site list. Check 1.1.1.1, push one URL.
 #   1.0  - Initial installer with EdgeOS task-scheduler.
 set -euo pipefail
 
-VERSION="1.2"
+VERSION="1.3"
 
 ############################################
 # CONFIGURATION
@@ -45,8 +47,8 @@ LAST_FILE="$STATE_DIR/last.tsv"
 LOG_FILE="/var/log/kuma-push.log"
 TASK_NAME="kuma-push"
 TASK_INTERVAL="1m"
-DEFAULT_CHECK="https://1.1.1.1"
-CURL_MAX=10
+DEFAULT_CHECK="1.1.1.1"
+PING_WAIT=2
 PUSH_MAX=15
 # EdgeOS interval 1m is not exact. Kuma heartbeat must be longer
 # or the beat shows pending. 90 seconds, retries 1.
@@ -74,6 +76,12 @@ need_root() {
 
 valid_url() {
     [[ "$1" =~ ^https?:// ]]
+}
+
+valid_target() {
+    local host="${1#*://}"
+    host="${host%%/*}"
+    [[ -n "$host" && "$host" != *" "* ]]
 }
 
 load_conf() {
@@ -144,29 +152,20 @@ write_probe_bin() {
     cat > "$PROBE_BIN" <<'EOF'
 #!/bin/bash
 # Installed by edgerouter-kuma-push.sh.
-# Time one check, push status/msg/ping to one Kuma monitor.
+# One ICMP echo, then push status/msg/ping to one Kuma monitor.
 set -u
 CONF_FILE="/config/scripts/kuma-push/config"
 LAST_FILE="/config/scripts/kuma-push/last.tsv"
 LOG_FILE="/var/log/kuma-push.log"
-CHECK_URL="https://1.1.1.1"
+CHECK_URL="1.1.1.1"
 PUSH_URL=""
-CURL_MAX=10
+PING_WAIT=2
 PUSH_MAX=15
 
 if [[ -f "$CONF_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$CONF_FILE"
 fi
-
-now_ms() {
-    local raw
-    raw=$(date +%s%3N 2>/dev/null || true)
-    case "$raw" in
-        ''|*[!0-9]*) echo $(( $(date +%s) * 1000 ));;
-        *) echo "$raw";;
-    esac
-}
 
 log_line() {
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG_FILE" 2>/dev/null || true
@@ -177,18 +176,18 @@ if [[ -z "${PUSH_URL:-}" ]]; then
     exit 1
 fi
 
+target="${CHECK_URL#*://}"
+target="${target%%/*}"
 base="${PUSH_URL%%\?*}"
-start=$(now_ms)
-if curl -fsS -o /dev/null --max-time "$CURL_MAX" "$CHECK_URL"; then
+
+raw=$(ping -n -c 1 -W "$PING_WAIT" "$target" 2>/dev/null | sed -n 's/.*time=\([0-9.][0-9.]*\).*/\1/p' | head -n 1)
+if [[ -n "$raw" ]]; then
     state=up
     msg=OK
+    ms=$(awk -v t="$raw" 'BEGIN { printf "%d", t + 0.5 }')
 else
     state=down
     msg=FAIL
-fi
-end=$(now_ms)
-ms=$(( end - start ))
-if [[ "$ms" -lt 0 ]]; then
     ms=0
 fi
 
@@ -197,7 +196,7 @@ if curl -fsS -o /dev/null --max-time "$PUSH_MAX" -G "$base" \
     --data-urlencode "msg=$msg" \
     --data-urlencode "ping=${ms}"; then
     printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state" "$msg" "$ms" > "$LAST_FILE"
-    log_line "$state $msg ${ms}ms $CHECK_URL"
+    log_line "$state $msg ${ms}ms $target"
 else
     printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" push-failed "$msg" "$ms" > "$LAST_FILE"
     log_line "push-failed $msg ${ms}ms"
@@ -229,7 +228,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     cat <<EOF
 EdgeRouter Uptime Kuma Push (v$VERSION)
 
-Times a check to ${DEFAULT_CHECK} and pushes status, msg, and ping to
+Pings ${DEFAULT_CHECK} once and pushes status, msg, and the ICMP RTT to
 one Uptime Kuma Push monitor. Installed under /config so it survives
 firmware upgrades after commit; save.
 
@@ -244,7 +243,7 @@ Modes:
   --run        Run one push now
   --status     Show config, task, and last result
   --logs       Show the recent probe log
-  --restart    Re-commit the task-scheduler job and run now
+  --restart    Rewrite the probe, re-commit the task, and run now
   --uninstall  Remove task, probe, and config
   --version    Print script version
   --help       Show this help text
@@ -324,7 +323,8 @@ if [[ "${1:-}" == "--run" || "${1:-}" == "--restart" ]]; then
         exit 1
     fi
     if [[ "${1:-}" == "--restart" ]]; then
-        info "Re-committing task-scheduler job..."
+        info "Reinstalling probe and re-committing task..."
+        write_probe_bin
         vyatta_apply set
         success "Task $TASK_NAME interval $TASK_INTERVAL."
     fi
@@ -392,29 +392,34 @@ if [[ ! -d /opt/vyatta/etc/functions ]]; then
     exit 1
 fi
 
-info "[1/5] Checking curl..."
+info "[1/5] Checking curl and ping..."
 if ! command -v curl >/dev/null 2>&1; then
     error "curl is not installed. EdgeOS normally ships it."
     exit 1
 fi
-success "curl present."
+if ! command -v ping >/dev/null 2>&1; then
+    error "ping is not installed."
+    exit 1
+fi
+success "curl and ping present."
 
 info "[2/5] Push monitor"
 echo "    Create one Push monitor in Kuma first."
 echo "    Heartbeat Interval: ${KUMA_HEARTBEAT_SEC} seconds. Retries: 1."
 echo "    60 seconds races the task and shows pending beats."
-echo "    The probe checks ${DEFAULT_CHECK} and pushes ping with the result."
+echo "    The probe pings ${DEFAULT_CHECK} and pushes that RTT."
 echo
 load_conf
 if [[ -n "${PUSH_URL:-}" && -f "$CONF_FILE" ]]; then
     warn "Config already exists -- keeping it."
     warn "Check: $CHECK_URL"
+    warn "An http(s) check is stripped to the host before ping."
     warn "Delete $CONF_FILE and re-run to change the push URL."
 else
-    read -r -p "URL to check [${DEFAULT_CHECK}]: " check
+    read -r -p "Host to ping [${DEFAULT_CHECK}]: " check
     check="${check:-$DEFAULT_CHECK}"
-    if ! valid_url "$check"; then
-        error "URL must start with http:// or https://"
+    if ! valid_target "$check"; then
+        error "Need a host or IP, not a blank value."
         exit 1
     fi
     read -r -p "Kuma push URL (paste exactly as shown): " push
