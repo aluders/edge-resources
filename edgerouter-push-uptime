@@ -8,7 +8,7 @@ ms=$(( $(date +%s%3N) - start ))
 curl -fsS --max-time 15 -G \
   "https://uptimekuma.push.url/api/push/YOURTOKEN" \
   --data-urlencode "status=up" \
-  --data-urlencode "msg=ok" \
+  --data-urlencode "msg=OK" \
   --data-urlencode "ping=${ms}" \
   >/dev/null 2>&1
 
