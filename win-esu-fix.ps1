@@ -5,7 +5,7 @@
 #   "You're not up to date"
 #   "Your device is missing important security and quality fixes."
 # on a Windows 10 box that was supposed to be enrolled in Extended
-# Security Updates, and applies the known safe fixes when you confirm.
+# Security Updates, and applies the known safe fixes. No prompt.
 #
 # The right-hand pane "Your PC doesn't currently meet the minimum
 # system requirements to run Windows 11" is a hardware-eligibility
@@ -22,7 +22,7 @@
 #   - Windows Update services, pause, metering, WSUS, pending reboot
 #   - Recent cumulative install / failed update history
 #
-# Safe fixes (only after the report, and only if you confirm):
+# Safe fixes (applied after the report, no prompt):
 #   - Backup and reset HKLM\...\WaaSAssessment
 #   - Clear a local update pause
 #   - Start wuauserv, bits, usosvc, dosvc, cryptsvc, DiagTrack
@@ -53,7 +53,7 @@
 # =====================================================================
 #
 # CHANGELOG (newest first)
-#   1.3  - Build behind 19045.7727 installs KB5129236 from the local MSU or the Update Catalog via wusa, then asks for a re-run. WaaS cache prints a summary instead of every build. Fixes apply with no prompt.
+#   1.3  - Build behind 19045.7727 installs KB5129236 from the local MSU or the Update Catalog via wusa, then tells you to re-run. WaaS cache prints a summary instead of every build. Fixes apply with no prompt.
 #   1.2  - Logs and the WaaSAssessment backup go to C:\ProgramData\EdgeTools, not ProgramData\VCC.
 #   1.1  - Commercial license check queries the three ESU activation IDs instead of enumerating SoftwareLicensingProduct. The full scan hangs with no output. Update history is capped at 20 seconds.
 #   1.0  - Initial release. Commercial MAK + consumer enrollment, prep KBs, WaaSAssessment reset, WSUS/pause/services, year-1 expiry warning. Win11 pane called out as unrelated.
@@ -95,7 +95,7 @@ if (Get-Variable -Name ESUFix -Scope Global -ErrorAction SilentlyContinue) {
 }
 if ($args -match '(?i)^-Fix$') { $DoFix = $true }
 
-$LogDir  = 'C:\ProgramData\EdgeTools'
+$LogDir  = Join-Path $env:ProgramData 'EdgeTools'
 $Stamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
 $LogFile = Join-Path $LogDir ("ESU-{0}-{1}.log" -f $env:COMPUTERNAME, $Stamp)
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
