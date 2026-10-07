@@ -24,9 +24,10 @@
 #   ./edgerouter-kuma-push.sh --version    # Print script version
 #   ./edgerouter-kuma-push.sh --help       # Show help
 #
-# VERSION 1.3
+# VERSION 1.4
 #
 # CHANGELOG (newest first):
+#   1.4  - Cap /var/log/kuma-push.log at 200 lines. last.tsv stays one line.
 #   1.3  - Latency is one ICMP ping to 1.1.1.1, not an HTTPS curl.
 #          An http(s) check value already in config is stripped to a host.
 #   1.2  - Status reads config.boot. show task-scheduler is configure-mode
@@ -35,7 +36,7 @@
 #   1.0  - Initial installer with EdgeOS task-scheduler.
 set -euo pipefail
 
-VERSION="1.3"
+VERSION="1.4"
 
 ############################################
 # CONFIGURATION
@@ -168,7 +169,9 @@ if [[ -f "$CONF_FILE" ]]; then
 fi
 
 log_line() {
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG_FILE" 2>/dev/null || true
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG_FILE" 2>/dev/null || return 0
+    # EdgeOS storage is small. Keep the recent tail only.
+    tail -n 200 "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv -f "$LOG_FILE.tmp" "$LOG_FILE"
 }
 
 if [[ -z "${PUSH_URL:-}" ]]; then
