@@ -1,5 +1,6 @@
 # =====================================================================
 # Windows 10 ESU Diagnostic
+# Version: 1.2
 # Investigates the Settings > Windows Update banner:
 #   "You're not up to date"
 #   "Your device is missing important security and quality fixes."
@@ -29,7 +30,7 @@
 # It will not install a MAK, spoof eligibility, delete MDM enrollments,
 # or unhook WSUS. Those need a human.
 #
-# Reference points baked in at 1.0 (Patch Tuesday after this date will
+# Reference points baked in at 1.2 (Patch Tuesday after this date will
 # move the build; the script says so rather than pretending it knows):
 #   KB5066791  2025-10-14  build 19045.6456  last pre-ESU cumulative
 #   KB5072653  2025-11     ESU licensing preparation package
@@ -47,14 +48,16 @@
 #   $ESUFix = $true; irm esu.vcc.net | iex
 #
 # Log:
-#   C:\ProgramData\VCC\ESU\
+#   C:\ProgramData\EdgeTools\
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   1.2  - Logs and the WaaSAssessment backup go to C:\ProgramData\EdgeTools, not ProgramData\VCC.
+#   1.1  - Commercial license check queries the three ESU activation IDs instead of enumerating SoftwareLicensingProduct. The full scan hangs with no output. Update history is capped at 20 seconds.
 #   1.0  - Initial release. Commercial MAK + consumer enrollment, prep KBs, WaaSAssessment reset, WSUS/pause/services, year-1 expiry warning. Win11 pane called out as unrelated.
 # =====================================================================
 
-$ScriptVersion = '1.0'
+$ScriptVersion = '1.2'
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
@@ -88,7 +91,7 @@ if (Get-Variable -Name ESUFix -Scope Global -ErrorAction SilentlyContinue) {
 }
 if ($args -match '(?i)^-Fix$') { $DoFix = $true }
 
-$LogDir  = 'C:\ProgramData\VCC\ESU'
+$LogDir  = 'C:\ProgramData\EdgeTools'
 $Stamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
 $LogFile = Join-Path $LogDir ("ESU-{0}-{1}.log" -f $env:COMPUTERNAME, $Stamp)
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
@@ -152,7 +155,7 @@ if (-not $IsAdmin) {
 Write-Ok 'Elevated.'
 
 # ---------------------------------------------------------------------
-# 2.0.0  platform
+# platform
 # ---------------------------------------------------------------------
 
 Write-Head 'Platform'
@@ -200,7 +203,7 @@ if ($buildNum -lt $RefBuild) {
 Write-Info 'Win11 requirements pane is unrelated. A PC that fails CPU/TPM/Secure Boot will always show that text. Ignore it for this ticket.'
 
 # ---------------------------------------------------------------------
-# 3.0.0  prep packages
+# prep packages
 # ---------------------------------------------------------------------
 
 Write-Head 'ESU licensing preparation packages'
@@ -223,24 +226,26 @@ if ($hotIds -notcontains 'KB5072653') {
 }
 
 # ---------------------------------------------------------------------
-# 4.0.0  commercial ESU license
+# commercial ESU license
 # ---------------------------------------------------------------------
 
 Write-Head 'Commercial ESU license (MAK)'
 
-$products = @()
-try {
-    $products = @(Get-CimInstance SoftwareLicensingProduct -ErrorAction Stop |
-        Where-Object { $_.PartialProductKey })
-} catch {
-    Write-Warn ("SoftwareLicensingProduct query failed: {0}" -f $_.Exception.Message)
-}
-
+# Do not enumerate SoftwareLicensingProduct. On a real box that walk
+# sits silent for minutes. The three activation IDs are stable.
 $esuHits = @()
 foreach ($year in $EsuYears.Keys) {
     $id = $EsuYears[$year]
-    $p = $products | Where-Object { $_.ID -eq $id } | Select-Object -First 1
-    if (-not $p) {
+    Write-Info ("Checking {0}" -f $year)
+    $p = $null
+    try {
+        $p = Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "ID='$id'" -ErrorAction Stop |
+            Select-Object -First 1
+    } catch {
+        Write-Warn ("{0} query failed: {1}" -f $year, $_.Exception.Message)
+        continue
+    }
+    if (-not $p -or -not $p.PartialProductKey) {
         Write-Info ("{0}  {1}  not installed" -f $year, $id)
         continue
     }
@@ -253,16 +258,6 @@ foreach ($year in $EsuYears.Keys) {
         Write-Bad ("{0}  {1}  key ...{2}  (installed, not activated)" -f $year, $status, $p.PartialProductKey)
         Add-Finding Fail 'MAK' ("{0} key is installed but LicenseStatus is {1}. Run: cscript C:\Windows\System32\slmgr.vbs /ato {2}" -f $year, $status, $id)
     }
-}
-
-# Name-based catch, in case an add-on license uses a different id.
-$nameHits = @($products | Where-Object {
-    $_.Name -match 'Extended Security' -or $_.Description -match 'EXTENDED SECURITY' -or $_.Name -match '\bESU\b'
-})
-foreach ($p in $nameHits) {
-    if ($esuHits.Id -contains $p.ID) { continue }
-    $status = $LicenseStatusMap[[int]$p.LicenseStatus]
-    Write-Info ("Other ESU-like license: {0}  status {1}  id {2}" -f $p.Name, $status, $p.ID)
 }
 
 $licensedYears = @($esuHits | Where-Object Status -eq 'Licensed')
@@ -282,7 +277,7 @@ if (($licensedYears.Year -contains 'Year1') -and ($licensedYears.Year -notcontai
 }
 
 # ---------------------------------------------------------------------
-# 5.0.0  consumer ESU local state
+# consumer ESU local state
 # ---------------------------------------------------------------------
 
 Write-Head 'Consumer ESU local state'
@@ -327,7 +322,7 @@ if (Test-Path $clip) {
 }
 
 # ---------------------------------------------------------------------
-# 6.0.0  domain / entra / mdm  (blocks consumer, does not block a MAK)
+# join and management state
 # ---------------------------------------------------------------------
 
 Write-Head 'Join and management state'
@@ -376,7 +371,7 @@ if ($diag) {
 }
 
 # ---------------------------------------------------------------------
-# 7.0.0  WaaSAssessment  (stale banner)
+# WaaSAssessment cache
 # ---------------------------------------------------------------------
 
 Write-Head 'WaaSAssessment cache'
@@ -411,7 +406,7 @@ if ($waasStale) {
 }
 
 # ---------------------------------------------------------------------
-# 8.0.0  Windows Update health
+# Windows Update health
 # ---------------------------------------------------------------------
 
 Write-Head 'Windows Update health'
@@ -490,48 +485,58 @@ try {
 }
 
 # ---------------------------------------------------------------------
-# 9.0.0  update history
+# update history
 # ---------------------------------------------------------------------
 
 Write-Head 'Recent update history'
+Write-Info 'Reading update history (20 second cap).'
 
 $lastCu = $null
-try {
+$histJob = Start-Job -ScriptBlock {
     $session  = New-Object -ComObject Microsoft.Update.Session
     $searcher = $session.CreateUpdateSearcher()
     $total    = $searcher.GetTotalHistoryCount()
     $take     = [Math]::Min(40, [Math]::Max($total, 0))
-    if ($take -gt 0) {
-        $hist = @($searcher.QueryHistory(0, $take))
-        $resultMap = @{ 0='NotStarted'; 1='InProgress'; 2='Succeeded'; 3='SucceededWithErrors'; 4='Failed'; 5='Aborted' }
-        $shown = 0
-        foreach ($h in $hist) {
-            if ($shown -ge 12) { break }
-            $when = $h.Date
-            $code = $resultMap[[int]$h.ResultCode]
-            if (-not $code) { $code = [string]$h.ResultCode }
-            $title = $h.Title
-            if ($title -match 'Cumulative|Security Update|Extended Security|KB50') {
-                Write-Info ("{0:yyyy-MM-dd}  {1,-20}  {2}" -f $when, $code, $title)
-                $shown++
-                if (-not $lastCu -and $title -match 'Cumulative' -and [int]$h.ResultCode -eq 2) { $lastCu = $h }
-            }
+    if ($take -le 0) { return @() }
+    @($searcher.QueryHistory(0, $take) | ForEach-Object {
+        [pscustomobject]@{ Date = $_.Date; ResultCode = [int]$_.ResultCode; Title = $_.Title }
+    })
+}
+if (-not (Wait-Job $histJob -Timeout 20)) {
+    Stop-Job $histJob -Force
+    Remove-Job $histJob -Force
+    Write-Warn 'Update history did not return in 20 seconds. Skipping it.'
+    $hist = @()
+} else {
+    $hist = @(Receive-Job $histJob)
+    Remove-Job $histJob -Force
+}
+if ($hist.Count -gt 0) {
+    $resultMap = @{ 0='NotStarted'; 1='InProgress'; 2='Succeeded'; 3='SucceededWithErrors'; 4='Failed'; 5='Aborted' }
+    $shown = 0
+    foreach ($h in $hist) {
+        if ($shown -ge 12) { break }
+        $code = $resultMap[[int]$h.ResultCode]
+        if (-not $code) { $code = [string]$h.ResultCode }
+        $title = $h.Title
+        if ($title -match 'Cumulative|Security Update|Extended Security|KB50') {
+            Write-Info ("{0:yyyy-MM-dd}  {1,-20}  {2}" -f $h.Date, $code, $title)
+            $shown++
+            if (-not $lastCu -and $title -match 'Cumulative' -and [int]$h.ResultCode -eq 2) { $lastCu = $h }
         }
-        $failed = @($hist | Where-Object { [int]$_.ResultCode -eq 4 -and $_.Date -gt (Get-Date).AddDays(-45) })
-        if ($failed.Count -gt 0) {
-            Write-Bad ("{0} failed update(s) in the last 45 days." -f $failed.Count)
-            $failed | Select-Object -First 5 | ForEach-Object {
-                Write-Bad ("  {0:yyyy-MM-dd}  {1}" -f $_.Date, $_.Title)
-            }
-            Add-Finding Fail 'History' 'Windows Update has failed installs in the last 45 days. The banner can be real.'
-        } else {
-            Write-Ok 'No failed updates in the last 45 history rows / 45 days.'
-        }
-    } else {
-        Write-Warn 'Update history is empty.'
     }
-} catch {
-    Write-Warn ("Update history COM failed: {0}" -f $_.Exception.Message)
+    $failed = @($hist | Where-Object { [int]$_.ResultCode -eq 4 -and $_.Date -gt (Get-Date).AddDays(-45) })
+    if ($failed.Count -gt 0) {
+        Write-Bad ("{0} failed update(s) in the last 45 days." -f $failed.Count)
+        $failed | Select-Object -First 5 | ForEach-Object {
+            Write-Bad ("  {0:yyyy-MM-dd}  {1}" -f $_.Date, $_.Title)
+        }
+        Add-Finding Fail 'History' 'Windows Update has failed installs in the last 45 days. The banner can be real.'
+    } else {
+        Write-Ok 'No failed updates in the sampled history.'
+    }
+} else {
+    Write-Warn 'No update history returned.'
 }
 if ($lastCu) {
     $age = (New-TimeSpan -Start $lastCu.Date -End (Get-Date)).Days
@@ -544,7 +549,7 @@ if ($lastCu) {
 }
 
 # ---------------------------------------------------------------------
-# 10.0.0  verdict
+# verdict
 # ---------------------------------------------------------------------
 
 Write-Head 'Verdict'
@@ -583,7 +588,7 @@ Write-Host ''
 Write-Host ("Full log: {0}" -f $LogFile) -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------------
-# 11.0.0  safe fixes
+# safe fixes
 # ---------------------------------------------------------------------
 
 $fixable = @($Findings | Where-Object { $_.Fix -match 'Reset WaaSAssessment|Clear update pause|Start update services|Start DiagTrack' })
@@ -613,7 +618,7 @@ if (-not $apply) {
 
 Write-Head 'Applying safe fixes'
 
-# 11.1  WaaSAssessment reset (abbodi86 / Winhelponline, confirmed on enrolled+current boxes through 2026)
+# WaaSAssessment reset (abbodi86 / Winhelponline, confirmed on enrolled+current boxes through 2026)
 if (Test-Path $waas) {
     $backup = Join-Path $LogDir ("WaaSAssessment-{0}-{1}.reg" -f $env:COMPUTERNAME, $Stamp)
     & reg.exe export 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WaaSAssessment' $backup /y | Out-Null
@@ -631,7 +636,7 @@ if (Test-Path $waas) {
     Write-Info 'WaaSAssessment already absent. Nothing to reset.'
 }
 
-# 11.2  clear a local pause
+# clear a local pause
 if ($paused -and (Test-Path $ux)) {
     foreach ($n in @('PauseUpdatesExpiryTime','PauseFeatureUpdatesEndTime','PauseQualityUpdatesEndTime','PauseUpdatesStartTime','PauseFeatureUpdatesStartTime','PauseQualityUpdatesStartTime')) {
         Remove-ItemProperty -Path $ux -Name $n -ErrorAction SilentlyContinue
@@ -639,7 +644,7 @@ if ($paused -and (Test-Path $ux)) {
     Write-Ok 'Cleared UX update-pause values.'
 }
 
-# 11.3  services
+# services
 foreach ($name in @('cryptsvc','bits','wuauserv','usosvc','dosvc','DiagTrack')) {
     $svc = Get-Service $name -ErrorAction SilentlyContinue
     if (-not $svc) { continue }
@@ -654,7 +659,7 @@ foreach ($name in @('cryptsvc','bits','wuauserv','usosvc','dosvc','DiagTrack')) 
 }
 Write-Ok 'Update services and DiagTrack started where they were stopped.'
 
-# 11.4  detect
+# detect
 try {
     (New-Object -ComObject Microsoft.Update.AutoUpdate).DetectNow()
     Write-Ok 'DetectNow requested.'
