@@ -1,0 +1,15 @@
+# edit script
+vi script.sh
+
+# delete everything
+:%d
+
+# enable paste
+:set paste
+
+# paste new script
+command-v
+esc
+
+# save and exit
+:wq
