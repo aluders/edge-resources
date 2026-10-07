@@ -1,6 +1,6 @@
 # =====================================================================
 # Windows 10 ESU Diagnostic
-# Version: 1.2
+# Version: 1.3
 # Investigates the Settings > Windows Update banner:
 #   "You're not up to date"
 #   "Your device is missing important security and quality fixes."
@@ -30,12 +30,12 @@
 # It will not install a MAK, spoof eligibility, delete MDM enrollments,
 # or unhook WSUS. Those need a human.
 #
-# Reference points baked in at 1.2 (Patch Tuesday after this date will
+# Reference points baked in at 1.3 (Patch Tuesday after this date will
 # move the build; the script says so rather than pretending it knows):
 #   KB5066791  2025-10-14  build 19045.6456  last pre-ESU cumulative
 #   KB5072653  2025-11     ESU licensing preparation package
 #   KB5126256  2026-09-08  later ESU licensing preparation package
-#   KB5122878  2026-09-08  build 19045.7725  September 2026 ESU cumulative
+#   KB5129236  2026-09-14  build 19045.7727  September OOB, catalog only
 # Commercial activation IDs (same on every edition):
 #   Year1  f520e45e-7413-4a34-a497-d2765967d094   through 2026-10-13
 #   Year2  1043add5-23b1-4afb-9a0f-64343c8f3f8d   2026-10-14 .. 2027-10-13
@@ -44,25 +44,29 @@
 # Run (elevated - Mesh "Run as admin"):
 #   irm esu.vcc.net | iex
 #
-# Apply the safe fixes without a prompt:
-#   $ESUFix = $true; irm esu.vcc.net | iex
+# Fixes apply with no prompt. A behind build installs
+#   C:\ProgramData\EdgeTools\windows10.0-kb5129236-x64.msu
+# via wusa /quiet /norestart, then this script should be re-run.
 #
 # Log:
 #   C:\ProgramData\EdgeTools\
 # =====================================================================
 #
 # CHANGELOG (newest first)
+#   1.3  - Build behind 19045.7727 installs KB5129236 from the local MSU or the Update Catalog via wusa, then asks for a re-run. WaaS cache prints a summary instead of every build. Fixes apply with no prompt.
 #   1.2  - Logs and the WaaSAssessment backup go to C:\ProgramData\EdgeTools, not ProgramData\VCC.
 #   1.1  - Commercial license check queries the three ESU activation IDs instead of enumerating SoftwareLicensingProduct. The full scan hangs with no output. Update history is capped at 20 seconds.
 #   1.0  - Initial release. Commercial MAK + consumer enrollment, prep KBs, WaaSAssessment reset, WSUS/pause/services, year-1 expiry warning. Win11 pane called out as unrelated.
 # =====================================================================
 
-$ScriptVersion = '1.2'
+$ScriptVersion = '1.3'
 # ---------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------
 $ScriptDate    = '2026-10-07'
-$RefBuild      = 19045.7725          # KB5122878, September 2026 ESU CU
+$RefBuild      = 19045.7727          # KB5129236, September 14 2026 OOB
+$TargetKb      = 'KB5129236'
+$MsuName       = 'windows10.0-kb5129236-x64.msu'
 $FloorBuild    = 19045.6456          # KB5066791, October 2025 baseline
 
 $EsuYears = [ordered]@{
@@ -193,11 +197,10 @@ if ($buildNum -lt $FloorBuild) {
     Write-Ok ("Build {0} is at or past the Oct 2025 baseline." -f $buildStr)
 }
 if ($buildNum -lt $RefBuild) {
-    Write-Warn ("Build {0} is behind the Sep 2026 ESU cumulative {1} (KB5122878). Banner may be telling the truth." -f $buildStr, $RefBuild)
-    Add-Finding Warn 'Build' ("Installed build {0} is older than the Sep 2026 reference {1}. A missing cumulative is a real cause, not a stale banner." -f $buildStr, $RefBuild)
+    Write-Warn ("Build {0} is behind {1} ({2})." -f $buildStr, $RefBuild, $TargetKb)
+    Add-Finding Warn 'Build' ("Installed build {0} is behind {1}. {2} is catalog-only and will be installed from the MSU." -f $buildStr, $RefBuild, $TargetKb) 'Install cumulative'
 } else {
-    Write-Ok ("Build {0} is at or past the Sep 2026 reference {1}." -f $buildStr, $RefBuild)
-    Write-Info 'Oct 2026 Patch Tuesday is 2026-10-13. This reference goes stale after that.'
+    Write-Ok ("Build {0} is at or past {1} ({2})." -f $buildStr, $RefBuild, $TargetKb)
 }
 
 Write-Info 'Win11 requirements pane is unrelated. A PC that fails CPU/TPM/Secure Boot will always show that text. Ignore it for this ticket.'
@@ -381,28 +384,27 @@ $waasStale = $false
 if (-not (Test-Path $waas)) {
     Write-Info 'WaaSAssessment key absent. Settings will rebuild it on the next assessment.'
 } else {
-    function Show-Waas {
-        param([string]$Path)
-        if (-not (Test-Path $Path)) { return }
-        Write-Info $Path
-        $item = Get-ItemProperty $Path
-        foreach ($prop in $item.PSObject.Properties) {
-            if ($prop.Name -match '^PS') { continue }
-            $val = $prop.Value
-            if ($val -is [byte[]]) { $val = ([BitConverter]::ToString($val)) }
-            Write-Info ("  {0} = {1}" -f $prop.Name, $val)
-            Write-Log ("  {0} = {1}" -f $prop.Name, $val)
-            if ($prop.Name -match 'CURRENT|UpToDate|LATEST' -and "$val" -match '10\.0\.2[6-9]') {
-                $script:waasStale = $true
-                Write-Bad ("Assessment value {0} references a Windows 11 build ({1}) on a Windows 10 box. Known stale-cache bug." -f $prop.Name, $val)
-            }
+    $waasItem = Get-ItemProperty $waas
+    foreach ($name in @('CURRENT','UPTODATE','LATESTSECURITYBUILDS','DISABLEASSESSMENT')) {
+        if ($null -ne $waasItem.$name) {
+            Write-Info ("{0} = {1}" -f $name, $waasItem.$name)
         }
-        Get-ChildItem $Path -ErrorAction SilentlyContinue | ForEach-Object { Show-Waas $_.PSPath }
     }
-    Show-Waas $waas
+    if ("$($waasItem.CURRENT)" -match '^10\.0\.2[6-9]') {
+        $waasStale = $true
+        Write-Bad ("CURRENT is a Windows 11 build ({0}). That is the stale-cache bug." -f $waasItem.CURRENT)
+    }
+    $cachePath = Join-Path $waas 'Cache'
+    if (Test-Path $cachePath) {
+        $cache = Get-ItemProperty $cachePath
+        Write-Info ("UpToDateStatus={0}  UpToDateImpact={1}  UpToDateDays={2}" -f $cache.UpToDateStatus, $cache.UpToDateImpact, $cache.UpToDateDays)
+        if ($cache.UpToDateStatus -and [int]$cache.UpToDateStatus -ne 0) { $waasStale = $true }
+    }
 }
 if ($waasStale) {
-    Add-Finding Fail 'WaaS' 'WaaSAssessment contains a Windows 11 build on this Windows 10 PC. This is the documented cause of the red banner after a good enrollment.' 'Reset WaaSAssessment'
+    Add-Finding Fail 'WaaS' 'WaaSAssessment is stale. Settings is not reading the installed Windows 10 build.' 'Reset WaaSAssessment'
+} else {
+    Write-Ok 'Assessment cache does not show the stale Windows 11 CURRENT value.'
 }
 
 # ---------------------------------------------------------------------
@@ -415,9 +417,12 @@ $svcNames = @('wuauserv','bits','usosvc','dosvc','cryptsvc')
 foreach ($name in $svcNames) {
     $svc = Get-Service $name -ErrorAction SilentlyContinue
     if (-not $svc) { Write-Warn ("Service missing: {0}" -f $name); continue }
-    if ($svc.Status -ne 'Running' -or $svc.StartType -eq 'Disabled') {
+    if ($svc.StartType -eq 'Disabled') {
         Write-Bad ("{0} = {1} / {2}" -f $name, $svc.Status, $svc.StartType)
-        Add-Finding Fail 'Service' ("{0} is {1} / {2}" -f $name, $svc.Status, $svc.StartType) 'Start update services'
+        Add-Finding Fail 'Service' ("{0} is disabled." -f $name) 'Start update services'
+    } elseif ($svc.Status -ne 'Running' -and $name -ne 'bits') {
+        Write-Warn ("{0} = {1} / {2}" -f $name, $svc.Status, $svc.StartType)
+        Add-Finding Warn 'Service' ("{0} is stopped." -f $name) 'Start update services'
     } else {
         Write-Ok ("{0} = {1}" -f $name, $svc.Status)
     }
@@ -567,9 +572,9 @@ if (-not $entitled -and -not $consumerSeen) {
     Write-Ok 'Entitlement looks real and the build is current. The red banner is the known stale WaaSAssessment state.'
     Add-Finding Fail 'WaaS' 'Enrolled and current, banner still red. Reset the assessment cache and reboot.' 'Reset WaaSAssessment'
 } elseif ($entitled -and $behind) {
-    Write-Bad 'ESU license is present, but the build is behind the September 2026 cumulative. Fix delivery, not the cache.'
+    Write-Bad ("ESU is licensed, but the build is behind {0}. Installing {1}." -f $RefBuild, $TargetKb)
 } else {
-    Write-Warn 'Mixed result. Read the fail lines above before resetting anything.'
+    Write-Warn 'Mixed result. Fixes below still run.'
 }
 
 Write-Host ''
@@ -591,34 +596,44 @@ Write-Host ("Full log: {0}" -f $LogFile) -ForegroundColor DarkGray
 # safe fixes
 # ---------------------------------------------------------------------
 
-$fixable = @($Findings | Where-Object { $_.Fix -match 'Reset WaaSAssessment|Clear update pause|Start update services|Start DiagTrack' })
-if ($fixable.Count -eq 0 -and -not $DoFix) {
-    Write-Head 'Fixes'
-    Write-Info 'No safe automatic fix matched. MAK install, WSUS removal, and MDM cleanup are left to you.'
-    Write-Info 'Done.'
-    return
+Write-Head 'Applying fixes'
+
+if ($behind) {
+    $msu = Join-Path $LogDir $MsuName
+    if (-not (Test-Path $msu)) {
+        Write-Info ("{0} not in {1}. Asking the Update Catalog." -f $MsuName, $LogDir)
+        try {
+            $search = Invoke-WebRequest -UseBasicParsing -Uri "https://www.catalog.update.microsoft.com/Search.aspx?q=$TargetKb" -ErrorAction Stop
+            $ids = [regex]::Matches($search.Content, 'goToDetails\("([0-9a-fA-F-]{36})"\)') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+            $picked = $null
+            foreach ($id in $ids) {
+                $detail = Invoke-WebRequest -UseBasicParsing -Uri "https://www.catalog.update.microsoft.com/ScopedViewInline.aspx?updateid=$id" -ErrorAction SilentlyContinue
+                if ($detail.Content -match '22H2' -and $detail.Content -match 'x64') { $picked = $id; break }
+            }
+            if (-not $picked) { $picked = $ids | Select-Object -First 1 }
+            if ($picked) {
+                $body = @{ updateIDs = '[{"uidInfo":"' + $picked + '","updateID":"' + $picked + '","size":0}]' }
+                $dialog = Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'https://www.catalog.update.microsoft.com/DownloadDialog.aspx' -Body $body -ErrorAction Stop
+                $url = [regex]::Match($dialog.Content, 'https://catalog\.s\.download\.windowsupdate\.com/[^''"\s]+\.msu').Value
+                if ($url) {
+                    Write-Info ("Downloading {0}" -f $url)
+                    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $msu -ErrorAction Stop
+                }
+            }
+        } catch {
+            Write-Warn ("Catalog download failed: {0}" -f $_.Exception.Message)
+        }
+    }
+    if (Test-Path $msu) {
+        Write-Warn ("Build behind. Initiating {0}." -f $TargetKb)
+        Write-Info ("wusa.exe {0} /quiet /norestart" -f $msu)
+        Start-Process -FilePath "$env:SystemRoot\System32\wusa.exe" -ArgumentList "`"$msu`" /quiet /norestart"
+        Write-Warn 'Update started. Reboot when it finishes, then re-run this script.'
+    } else {
+        Write-Bad ("No MSU at {0}. Copy windows10.0-kb5129236-x64.msu there and re-run." -f $msu)
+    }
 }
 
-$apply = $DoFix
-if (-not $apply) {
-    Write-Head 'Fixes'
-    Write-Host 'Safe fixes available:' -ForegroundColor White
-    $fixable | Select-Object -ExpandProperty Fix -Unique | ForEach-Object { Write-Host ("  - {0}" -f $_) }
-    Write-Host ''
-    Write-Host 'Apply them now? Y to apply, anything else to stop. Reboot yourself after.' -ForegroundColor Yellow
-    $answer = Read-Host 'Apply'
-    if ($answer -match '^(y|yes)$') { $apply = $true }
-}
-
-if (-not $apply) {
-    Write-Info 'No changes made.'
-    Write-Info 'To apply without a prompt next time:  $ESUFix = $true; irm esu.vcc.net | iex'
-    return
-}
-
-Write-Head 'Applying safe fixes'
-
-# WaaSAssessment reset (abbodi86 / Winhelponline, confirmed on enrolled+current boxes through 2026)
 if (Test-Path $waas) {
     $backup = Join-Path $LogDir ("WaaSAssessment-{0}-{1}.reg" -f $env:COMPUTERNAME, $Stamp)
     & reg.exe export 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WaaSAssessment' $backup /y | Out-Null
@@ -631,12 +646,9 @@ if (Test-Path $waas) {
     New-ItemProperty -Path $cache -Name 'UpToDateStatus' -PropertyType DWord -Value 0 -Force | Out-Null
     New-ItemProperty -Path $cache -Name 'UpToDateImpact' -PropertyType DWord -Value 0 -Force | Out-Null
     New-ItemProperty -Path $cache -Name 'UpToDateDays'   -PropertyType DWord -Value 0 -Force | Out-Null
-    Write-Ok 'WaaSAssessment reset. Settings rebuilds it on the next assessment.'
-} else {
-    Write-Info 'WaaSAssessment already absent. Nothing to reset.'
+    Write-Ok 'WaaSAssessment reset.'
 }
 
-# clear a local pause
 if ($paused -and (Test-Path $ux)) {
     foreach ($n in @('PauseUpdatesExpiryTime','PauseFeatureUpdatesEndTime','PauseQualityUpdatesEndTime','PauseUpdatesStartTime','PauseFeatureUpdatesStartTime','PauseQualityUpdatesStartTime')) {
         Remove-ItemProperty -Path $ux -Name $n -ErrorAction SilentlyContinue
@@ -644,37 +656,22 @@ if ($paused -and (Test-Path $ux)) {
     Write-Ok 'Cleared UX update-pause values.'
 }
 
-# services
 foreach ($name in @('cryptsvc','bits','wuauserv','usosvc','dosvc','DiagTrack')) {
     $svc = Get-Service $name -ErrorAction SilentlyContinue
     if (-not $svc) { continue }
     if ($svc.StartType -eq 'Disabled') {
         Set-Service $name -StartupType Manual -ErrorAction SilentlyContinue
-        Write-Info ("{0} startup set to Manual" -f $name)
     }
     if ($svc.Status -ne 'Running') {
         Start-Service $name -ErrorAction SilentlyContinue
-        Write-Info ("{0} start requested" -f $name)
     }
 }
-Write-Ok 'Update services and DiagTrack started where they were stopped.'
+Write-Ok 'Update services started where they were stopped.'
 
-# detect
-try {
-    (New-Object -ComObject Microsoft.Update.AutoUpdate).DetectNow()
-    Write-Ok 'DetectNow requested.'
-} catch {
-    Write-Warn ("DetectNow failed: {0}" -f $_.Exception.Message)
-}
+try { (New-Object -ComObject Microsoft.Update.AutoUpdate).DetectNow() } catch {}
 $uso = Join-Path $env:SystemRoot 'System32\UsoClient.exe'
-if (Test-Path $uso) {
-    & $uso StartInteractiveScan | Out-Null
-    Write-Ok 'UsoClient StartInteractiveScan requested.'
-}
+if (Test-Path $uso) { & $uso StartInteractiveScan | Out-Null }
 
-Write-Host ''
-Write-Ok 'Fixes applied. Reboot, then open Settings > Update & Security > Windows Update.'
-Write-Info 'The banner often stays until that reboot. A green "You''re up to date" after reboot, with no new KB offered, means it was the stale cache.'
-Write-Info 'If it is still red after reboot, the log above is the cause: missing MAK activation, missing KB5072653, WSUS, or a failed cumulative.'
+Write-Info 'Reboot, then re-run this script to confirm the build and the banner.'
 Write-Info ("Log: {0}" -f $LogFile)
 Write-Host ''
