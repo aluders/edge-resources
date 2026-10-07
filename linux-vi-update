@@ -8,6 +8,7 @@ vi script.sh
 :set paste
 
 # paste new script
+i
 command-v
 esc
 
