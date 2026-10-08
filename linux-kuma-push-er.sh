@@ -2,12 +2,14 @@
 # EdgeRouter Uptime Kuma Push
 #
 # Installs one persistent heartbeat under /config/scripts and commits a
-# 1-minute task-scheduler job. Each run pings 1.1.1.1 and pushes status,
-# msg, and the ICMP RTT to a single Uptime Kuma Push monitor.
+# 1-minute task-scheduler job. Each run pings 1.1.1.1. A successful ping
+# is pushed as status=up with the ICMP RTT. A failed ping is not pushed.
+# Kuma marks the monitor down when the heartbeat window passes, and the
+# next successful push is the up transition. An explicit status=down
+# skips recovery notifications on Push monitors.
 #
-# Missed pushes are what mark the monitor down. A failed check is also
-# pushed as status=down so a WAN failure is visible before the heartbeat
-# expires.
+# No local log. The record that matters is the Kuma monitor. last.tsv is
+# one overwritten line for --status.
 #
 # Kuma Push monitor: Heartbeat Interval 90 seconds, Retries 1.
 # A 60-second heartbeat races the EdgeOS interval and shows pending beats.
@@ -18,15 +20,17 @@
 #   ./edgerouter-kuma-push.sh              # Interactive install
 #   ./edgerouter-kuma-push.sh --run        # Run one push now
 #   ./edgerouter-kuma-push.sh --status     # Task, config, last result
-#   ./edgerouter-kuma-push.sh --logs       # Recent probe log
 #   ./edgerouter-kuma-push.sh --restart    # Re-commit the task and run now
 #   ./edgerouter-kuma-push.sh --uninstall  # Remove task, probe, and config
 #   ./edgerouter-kuma-push.sh --version    # Print script version
 #   ./edgerouter-kuma-push.sh --help       # Show help
 #
-# VERSION 1.4
+# VERSION 1.5
 #
 # CHANGELOG (newest first):
+#   1.5  - Push only on a successful ping. Do not send status=down.
+#          No local log. A missed heartbeat is the down signal so Kuma
+#          sends both the down and the recovery.
 #   1.4  - Cap /var/log/kuma-push.log at 200 lines. last.tsv stays one line.
 #   1.3  - Latency is one ICMP ping to 1.1.1.1, not an HTTPS curl.
 #          An http(s) check value already in config is stripped to a host.
@@ -36,7 +40,7 @@
 #   1.0  - Initial installer with EdgeOS task-scheduler.
 set -euo pipefail
 
-VERSION="1.4"
+VERSION="1.5"
 
 ############################################
 # CONFIGURATION
@@ -45,7 +49,6 @@ PROBE_BIN="/config/scripts/kuma-push.sh"
 STATE_DIR="/config/scripts/kuma-push"
 CONF_FILE="$STATE_DIR/config"
 LAST_FILE="$STATE_DIR/last.tsv"
-LOG_FILE="/var/log/kuma-push.log"
 TASK_NAME="kuma-push"
 TASK_INTERVAL="1m"
 DEFAULT_CHECK="1.1.1.1"
@@ -153,11 +156,10 @@ write_probe_bin() {
     cat > "$PROBE_BIN" <<'EOF'
 #!/bin/bash
 # Installed by edgerouter-kuma-push.sh.
-# One ICMP echo, then push status/msg/ping to one Kuma monitor.
+# One ICMP echo. Push only when it succeeds. A missed push is the down.
 set -u
 CONF_FILE="/config/scripts/kuma-push/config"
 LAST_FILE="/config/scripts/kuma-push/last.tsv"
-LOG_FILE="/var/log/kuma-push.log"
 CHECK_URL="1.1.1.1"
 PUSH_URL=""
 PING_WAIT=2
@@ -168,45 +170,35 @@ if [[ -f "$CONF_FILE" ]]; then
     source "$CONF_FILE"
 fi
 
-log_line() {
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG_FILE" 2>/dev/null || return 0
-    # EdgeOS storage is small. Keep the recent tail only.
-    tail -n 200 "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv -f "$LOG_FILE.tmp" "$LOG_FILE"
-}
-
 if [[ -z "${PUSH_URL:-}" ]]; then
-    log_line "missing PUSH_URL in $CONF_FILE"
+    echo "missing PUSH_URL in $CONF_FILE" >&2
     exit 1
 fi
 
 target="${CHECK_URL#*://}"
 target="${target%%/*}"
 base="${PUSH_URL%%\?*}"
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 raw=$(ping -n -c 1 -W "$PING_WAIT" "$target" 2>/dev/null | sed -n 's/.*time=\([0-9.][0-9.]*\).*/\1/p' | head -n 1)
-if [[ -n "$raw" ]]; then
-    state=up
-    msg=OK
-    ms=$(awk -v t="$raw" 'BEGIN { printf "%d", t + 0.5 }')
-else
-    state=down
-    msg=FAIL
-    ms=0
+if [[ -z "$raw" ]]; then
+    printf '%s\t%s\t%s\t%s\n' "$now" ping-failed FAIL 0 > "$LAST_FILE"
+    exit 0
 fi
 
+ms=$(awk -v t="$raw" 'BEGIN { printf "%d", t + 0.5 }')
 if curl -fsS -o /dev/null --max-time "$PUSH_MAX" -G "$base" \
-    --data-urlencode "status=$state" \
-    --data-urlencode "msg=$msg" \
+    --data-urlencode "status=up" \
+    --data-urlencode "msg=OK" \
     --data-urlencode "ping=${ms}"; then
-    printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$state" "$msg" "$ms" > "$LAST_FILE"
-    log_line "$state $msg ${ms}ms $target"
+    printf '%s\t%s\t%s\t%s\n' "$now" up OK "$ms" > "$LAST_FILE"
 else
-    printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" push-failed "$msg" "$ms" > "$LAST_FILE"
-    log_line "push-failed $msg ${ms}ms"
+    printf '%s\t%s\t%s\t%s\n' "$now" push-failed OK "$ms" > "$LAST_FILE"
     exit 1
 fi
 EOF
     chmod 755 "$PROBE_BIN"
+    rm -f /var/log/kuma-push.log /var/log/kuma-push.log.tmp
 }
 
 write_conf() {
@@ -231,9 +223,12 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     cat <<EOF
 EdgeRouter Uptime Kuma Push (v$VERSION)
 
-Pings ${DEFAULT_CHECK} once and pushes status, msg, and the ICMP RTT to
-one Uptime Kuma Push monitor. Installed under /config so it survives
-firmware upgrades after commit; save.
+Pings ${DEFAULT_CHECK} once. A successful ping is pushed as up. A failed
+ping is not pushed, so Kuma marks the monitor down when the heartbeat
+window passes and sends the recovery on the next push.
+
+Installed under /config so it survives firmware upgrades after commit; save.
+No local log is written.
 
 Set the Push monitor Heartbeat Interval to ${KUMA_HEARTBEAT_SEC} seconds
 and Retries to 1. A 60-second heartbeat races the 1-minute task and
@@ -245,7 +240,6 @@ Modes:
   (none)       Interactive install
   --run        Run one push now
   --status     Show config, task, and last result
-  --logs       Show the recent probe log
   --restart    Rewrite the probe, re-commit the task, and run now
   --uninstall  Remove task, probe, and config
   --version    Print script version
@@ -305,18 +299,6 @@ if [[ "${1:-}" == "--status" ]]; then
 fi
 
 ############################################
-# LOGS
-############################################
-if [[ "${1:-}" == "--logs" ]]; then
-    if [[ -f "$LOG_FILE" ]]; then
-        tail -n 80 "$LOG_FILE"
-    else
-        warn "No log yet at $LOG_FILE"
-    fi
-    exit 0
-fi
-
-############################################
 # RUN / RESTART
 ############################################
 if [[ "${1:-}" == "--run" || "${1:-}" == "--restart" ]]; then
@@ -366,7 +348,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     else
         warn "Kept $STATE_DIR."
     fi
-    rm -f "$LOG_FILE"
+    rm -f /var/log/kuma-push.log
     echo
     echo "=========================================="
     success "UNINSTALL COMPLETE"
@@ -443,7 +425,7 @@ vyatta_apply set
 success "Task $TASK_NAME committed and saved."
 
 info "[5/5] First push..."
-"$PROBE_BIN" || warn "First push failed. See --status and --logs."
+"$PROBE_BIN" || warn "First push failed. See --status."
 echo
 echo "=========================================="
 success "INSTALLATION COMPLETE"
