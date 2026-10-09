@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 2.3
+# Version: 2.4
 # Usage: irm users.vcc.net | iex
 #
 # Copies the user folders you pick (Desktop, Documents, Downloads, Pictures,
@@ -7,6 +7,8 @@
 # using VSSCopy.exe (VSS-aware, handles open/locked files).
 #
 # CHANGELOG (newest first):
+#   v2.4 - Logs now written to <Destination>:\VSSCopyLogs\<timestamp>\
+#          instead of C:\ (keeps them with the copied data).
 #   v2.3 - Interactive folder picker: numbered menu, accepts a list like
 #          "1,2,4" or the "All" option. Replaces the hardcoded folder list.
 #   v2.2 - Dependency check now prints Installed/Not installed status for
@@ -40,11 +42,11 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "2.3"
+$ScriptVersion       = "2.4"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FolderMenu          = @('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music')   # menu order; "All" is added as the last number
-$LogDir = "C:\VSSCopyLogs\$(Get-Date -Format 'yyyy-MM-dd_HHmmss')"
+$LogFolderName       = "VSSCopyLogs"   # created at the root of the destination drive
 
 function Exit-WithPause($code = 0) {
     Write-Host "------------------------------------" -ForegroundColor Gray
@@ -360,7 +362,8 @@ if ($confirm -ne 'y') {
     return
 }
 
-# --- Prep log directory ---
+# --- Prep log directory (on the destination drive) ---
+$LogDir = "${dstDrive}:\$LogFolderName\$(Get-Date -Format 'yyyy-MM-dd_HHmmss')"
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 Write-Host " [i] Full logs will be written to: $LogDir" -ForegroundColor Gray
 
