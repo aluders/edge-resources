@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v2.3
+# EDGE MPV v2.5
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -12,6 +12,7 @@
 #
 # COMPONENTS
 # ----------
+#   sudo       sudo, with the kiosk user added to the sudo group
 #   mpv        mpv from the Debian repos
 #   fastfetch  fastfetch from the latest GitHub release .deb
 #   speedtest  Ookla Speedtest CLI (static binary in /usr/local/bin)
@@ -40,11 +41,12 @@
 #   --skip LIST       Act on all components except those in LIST
 #   -h, --help        Show usage and exit
 #
-#   LIST is a comma-separated list drawn from: mpv, fastfetch, speedtest,
-#   audio, service, reboot, aliases, overlay
+#   LIST is a comma-separated list drawn from: sudo, mpv, fastfetch,
+#   speedtest, audio, service, reboot, aliases, overlay
 #
 # USAGE
 # -----
+#   su -c 'bash edge-mpv.sh --skip overlay'   first run on a new machine
 #   sudo ./edge-mpv.sh                    install/repair everything
 #   sudo ./edge-mpv.sh --status           report only
 #   sudo ./edge-mpv.sh --restart          restart playback
@@ -57,6 +59,22 @@
 #
 # NOTES
 # -----
+#   - FIRST RUN ON A NEW MACHINE: a base Debian install with a root password
+#     has no sudo. Run the script once as root from the kiosk user's home
+#     directory, leaving the overlay off so the disk stays writable while
+#     you finish setting the machine up:
+#
+#       su -c 'bash edge-mpv.sh --skip overlay'
+#
+#     The sudo component installs sudo and adds the kiosk user to the sudo
+#     group. Log out and back in for the group to apply; after that
+#     `sudo ./edge-mpv.sh` and the mpv aliases work.
+#     When the new machine's setup is complete (Wi-Fi, video, sound and the
+#     HDMI output all confirmed across a reboot), run the normal install to
+#     turn the overlay on, then reboot:
+#
+#       sudo ./edge-mpv.sh
+#       sudo reboot
 #   - OVERLAY: the overlay component installs overlayroot and sets
 #     overlayroot="tmpfs" in /etc/overlayroot.conf. From the next reboot the
 #     real disk is mounted read-only and every write goes to RAM, so a power
@@ -156,6 +174,12 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v2.5  - NOTES: first run on a new machine now uses --skip overlay, with
+#           the normal install (which enables the overlay) run once setup
+#           is complete.
+#   v2.4  - Added the sudo component (runs first): installs sudo and adds the
+#           kiosk user to the sudo group, since base Debian doesn't include
+#           it. First run on a fresh install is done as root via su.
 #   v2.3  - USB video source. The service now runs the edge-mpv-play
 #           launcher: it plays every video on a USB stick labelled VIDEO
 #           (alphabetical, looping the set) and falls back to the video on
@@ -224,7 +248,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="2.3"
+SCRIPT_VERSION="2.5"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -262,7 +286,7 @@ SPEEDTEST_BIN="/usr/local/bin/speedtest"
 ALIAS_BEGIN="# >>> mpv kiosk aliases >>>"
 ALIAS_END="# <<< mpv kiosk aliases <<<"
 
-ALL_COMPONENTS=(mpv fastfetch speedtest audio service reboot aliases overlay)
+ALL_COMPONENTS=(sudo mpv fastfetch speedtest audio service reboot aliases overlay)
 UPDATABLE_COMPONENTS=(mpv fastfetch speedtest)
 
 # ==============================================================================
@@ -365,7 +389,7 @@ component_selected() {
 # ==============================================================================
 check_root() {
   if [[ $EUID -ne 0 ]]; then
-    log_err "Must be run as root (use sudo)."
+    log_err "Must be run as root (use sudo, or on a fresh install: su -c 'bash edge-mpv.sh')."
     exit 1
   fi
 }
@@ -421,6 +445,35 @@ ensure_curl() {
     log_info "Installing curl..."
     ensure_apt_updated
     DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates
+  fi
+}
+
+# ==============================================================================
+# COMPONENT: sudo (not part of base Debian when a root password is set)
+# ==============================================================================
+user_in_group() {
+  id -nG "$KIOSK_USER" 2>/dev/null | tr ' ' '\n' | grep -qx "$1"
+}
+
+status_sudo() {
+  command -v sudo >/dev/null 2>&1 && user_in_group sudo
+}
+
+install_sudo() {
+  if ! command -v sudo >/dev/null 2>&1; then
+    log_info "Installing sudo..."
+    ensure_apt_updated
+    DEBIAN_FRONTEND=noninteractive apt-get install -y sudo
+  fi
+  if ! user_in_group sudo; then
+    log_info "Adding ${KIOSK_USER} to the sudo group..."
+    usermod -aG sudo "$KIOSK_USER"
+  fi
+  if status_sudo; then
+    log_ok "sudo installed, ${KIOSK_USER} is in the sudo group."
+    log_info "Log out and back in as ${KIOSK_USER} for the group to apply."
+  else
+    log_err "sudo setup did not verify — check 'groups ${KIOSK_USER}'."
   fi
 }
 
@@ -626,7 +679,7 @@ apply_update_speedtest() { install_speedtest; }
 # The service has no login session, so the kiosk user needs the audio group
 # to open the sound device.
 user_in_audio_group() {
-  id -nG "$KIOSK_USER" 2>/dev/null | tr ' ' '\n' | grep -qx audio
+  user_in_group audio
 }
 
 status_audio() {
