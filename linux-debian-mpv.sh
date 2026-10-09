@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v2.5
+# EDGE MPV v2.7
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -130,8 +130,9 @@
 #     seconds. `mpvstatus` shows which source is playing.
 #   - The stick: label it VIDEO and format it exFAT (or FAT32 for files under
 #     4 GB). It is mounted read-only, so pulling it can't corrupt it. Files
-#     are found up to one folder deep; hidden files (including the "._" files
-#     macOS adds) are skipped. Extensions played: mp4 m4v mkv mov avi mpg
+#     are found up to one folder deep; hidden files and anything inside a
+#     hidden folder (the "._" files, .Spotlight-V100, .fseventsd and .Trashes
+#     that macOS adds) are skipped. Extensions played: mp4 m4v mkv mov avi mpg
 #     mpeg webm ts.
 #   - Neither the fallback video nor the stick's contents are deployed by
 #     this script. With no stick and no fallback file, mpv exits and the
@@ -174,6 +175,14 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v2.7  - --status counted every file on the USB stick, including the
+#           hidden bookkeeping files macOS writes, so one video showed as
+#           "5 file(s)". It now counts videos only, with the launcher's
+#           filter. The launcher also skips videos inside hidden folders
+#           (e.g. .Trashes), not just hidden files.
+#   v2.6  - Fixed "usermod: command not found" on the first run via `su -c`:
+#           su keeps the user's PATH, which has no sbin directories. The
+#           script now sets a full PATH itself.
 #   v2.5  - NOTES: first run on a new machine now uses --skip overlay, with
 #           the normal install (which enables the overlay) run once setup
 #           is complete.
@@ -248,7 +257,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="2.5"
+SCRIPT_VERSION="2.7"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -293,6 +302,10 @@ UPDATABLE_COMPONENTS=(mpv fastfetch speedtest)
 # OUTPUT HELPERS
 # ==============================================================================
 set -uo pipefail
+
+# `su -c` keeps the calling user's PATH, which on Debian has no sbin
+# directories — usermod, wpa_cli, overlayroot-chroot etc. live there.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
 if [[ -t 1 ]]; then
   C_GREEN=$'\033[0;32m'; C_CYAN=$'\033[0;36m'; C_YELLOW=$'\033[1;33m'
@@ -753,7 +766,7 @@ fi
 
 files=()
 if mountpoint -q "$USB_MOUNT"; then
-  mapfile -d '' files < <(find "$USB_MOUNT" -maxdepth 2 -type f ! -name '.*' \
+  mapfile -d '' files < <(find "$USB_MOUNT" -maxdepth 2 -type f ! -path '*/.*' \
     \( -iname '*.mp4' -o -iname '*.m4v' -o -iname '*.mkv' -o -iname '*.mov' \
        -o -iname '*.avi' -o -iname '*.mpg' -o -iname '*.mpeg' \
        -o -iname '*.webm' -o -iname '*.ts' \) -print0 | sort -z)
@@ -900,8 +913,13 @@ show_display_status() {
 show_video_source() {
   local n=0
   if mountpoint -q "$USB_MOUNT" 2>/dev/null; then
-    n=$(find "$USB_MOUNT" -maxdepth 2 -type f ! -name '.*' 2>/dev/null | wc -l)
-    log_info "Video source: USB stick ${USB_LABEL} mounted at ${USB_MOUNT} (${n} file(s))."
+    # Same filter as the launcher (edge-mpv-play): video files only, nothing
+    # hidden or inside a hidden folder.
+    n=$(find "$USB_MOUNT" -maxdepth 2 -type f ! -path '*/.*' \
+      \( -iname '*.mp4' -o -iname '*.m4v' -o -iname '*.mkv' -o -iname '*.mov' \
+         -o -iname '*.avi' -o -iname '*.mpg' -o -iname '*.mpeg' \
+         -o -iname '*.webm' -o -iname '*.ts' \) 2>/dev/null | wc -l)
+    log_info "Video source: USB stick ${USB_LABEL} mounted at ${USB_MOUNT} (${n} video(s))."
   elif [[ -e "/dev/disk/by-label/${USB_LABEL}" ]]; then
     log_info "Video source: USB stick ${USB_LABEL} is plugged in but not mounted — fallback ${VIDEO_PATH}."
   else
