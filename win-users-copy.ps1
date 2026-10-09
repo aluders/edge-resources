@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 2.4
+# Version: 2.5
 # Usage: irm users.vcc.net | iex
 #
 # Copies the user folders you pick (Desktop, Documents, Downloads, Pictures,
@@ -7,6 +7,7 @@
 # using VSSCopy.exe (VSS-aware, handles open/locked files).
 #
 # CHANGELOG (newest first):
+#   v2.5 - Banner renamed to "COPY USER FOLDERS" to match the script name.
 #   v2.4 - Logs now written to <Destination>:\VSSCopyLogs\<timestamp>\
 #          instead of C:\ (keeps them with the copied data).
 #   v2.3 - Interactive folder picker: numbered menu, accepts a list like
@@ -42,7 +43,7 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "2.4"
+$ScriptVersion       = "2.5"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FolderMenu          = @('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music')   # menu order; "All" is added as the last number
@@ -237,7 +238,7 @@ function Install-VSSCopy {
 $Host.UI.RawUI.WindowTitle = "Copy-UserFolders v$ScriptVersion"
 
 Write-Host "------------------------------------" -ForegroundColor Gray
-Write-Host "   USER FOLDER COPY (VSS) v$ScriptVersion" -ForegroundColor Black -BackgroundColor Cyan
+Write-Host "   COPY USER FOLDERS (VSS) v$ScriptVersion" -ForegroundColor Black -BackgroundColor Cyan
 Write-Host "------------------------------------" -ForegroundColor Gray
 
 # --- Admin check (VSS shadow copies require elevation) ---
