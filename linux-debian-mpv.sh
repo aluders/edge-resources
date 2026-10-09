@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v2.2
+# EDGE MPV v2.3
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
 # from a systemd service, no desktop environment required. Picture and sound
-# go out over HDMI.
+# go out over HDMI. Videos come from a USB stick labelled VIDEO, with a video
+# stored on the tablet as the fallback.
 #
 # Built for: Chuwi Hi12, Debian 12 minimal, user `edgeadmin`.
 #
@@ -15,7 +16,8 @@
 #   fastfetch  fastfetch from the latest GitHub release .deb
 #   speedtest  Ookla Speedtest CLI (static binary in /usr/local/bin)
 #   audio      alsa-utils (aplay, speaker-test) + kiosk user in the audio group
-#   service    /etc/systemd/system/mpv.service (enabled + started)
+#   service    /etc/systemd/system/mpv.service (enabled + started), the
+#              edge-mpv-play launcher and the USB plug/unplug udev rule
 #   reboot     Nightly reboot in root's crontab (00:00)
 #   aliases    mpvstatus / mpvedit / mpvrestart in the kiosk user's .bashrc
 #   overlay    overlayroot: read-only root with writes kept in RAM (runs
@@ -97,10 +99,27 @@
 #   - fastfetch is NOT packaged for bookworm (it first shipped in Debian 13),
 #     so `apt install fastfetch` fails here. It is installed from the GitHub
 #     release .deb instead, same as the Ubuntu baseline script.
-#   - The video file itself is not deployed by this script. The videos
-#     directory is created, and if VIDEO_PATH is missing the service is
-#     enabled but not started (it would just restart-loop every 5s). Copy the
-#     video into place and run `mpvrestart`, or re-run this script.
+#   - VIDEO SOURCE: the service runs the launcher /usr/local/bin/edge-mpv-play
+#     instead of mpv directly. Each time the service starts it:
+#       1. mounts the USB stick labelled VIDEO read-only at /media/video
+#          (if one is plugged in);
+#       2. plays every video file on the stick in alphabetical order and
+#          loops the whole set (--loop-playlist=inf);
+#       3. if there is no stick, or no video files on it, plays the fallback
+#          video on the tablet (VIDEO_PATH) in a loop instead.
+#     A udev rule restarts the service when a stick labelled VIDEO is plugged
+#     in or pulled, so swapping sticks switches the source within a few
+#     seconds. `mpvstatus` shows which source is playing.
+#   - The stick: label it VIDEO and format it exFAT (or FAT32 for files under
+#     4 GB). It is mounted read-only, so pulling it can't corrupt it. Files
+#     are found up to one folder deep; hidden files (including the "._" files
+#     macOS adds) are skipped. Extensions played: mp4 m4v mkv mov avi mpg
+#     mpeg webm ts.
+#   - Neither the fallback video nor the stick's contents are deployed by
+#     this script. With no stick and no fallback file, mpv exits and the
+#     service retries every 5s until one appears.
+#   - The label, mount point and fallback path are Environment= lines in the
+#     unit, so `mpvedit` can change them along with the mpv options.
 #   - mpv.service is only written when it doesn't exist yet. Once it's there,
 #     a repeat run leaves it alone, so edits made with `mpvedit` (a different
 #     video file name, different mpv options) survive. --status and the final
@@ -137,6 +156,14 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v2.3  - USB video source. The service now runs the edge-mpv-play
+#           launcher: it plays every video on a USB stick labelled VIDEO
+#           (alphabetical, looping the set) and falls back to the video on
+#           the tablet when no stick is present. A udev rule restarts the
+#           service on plug/unplug. --loop=inf moved out of MPV_OPTS (the
+#           launcher picks the loop mode). --status shows the video source.
+#           A missing fallback video no longer stops the service starting.
+#           Existing boxes need --force once to get the new unit.
 #   v2.2  - --status now also shows the Wi-Fi network the box is connected to
 #           and its IP address (from wpa_cli on WIFI_IFACE).
 #   v2.1  - --update now checks before it acts: it lists which components
@@ -197,11 +224,18 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="2.2"
+SCRIPT_VERSION="2.3"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
 BASHRC="/home/${KIOSK_USER}/.bashrc"
+
+# USB video stick: label to look for and where it is mounted (read-only).
+# VIDEO_PATH above is the fallback when no stick is present.
+USB_LABEL="VIDEO"
+USB_MOUNT="/media/video"
+PLAY_BIN="/usr/local/bin/edge-mpv-play"
+UDEV_RULE="/etc/udev/rules.d/99-edge-mpv-usb.rules"
 
 SERVICE_NAME="mpv"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -209,7 +243,7 @@ MPV_BIN="/usr/bin/mpv"
 # Display output (see --status for names) and ALSA device for HDMI sound
 DRM_CONNECTOR="HDMI-A-1"
 AUDIO_DEVICE="alsa/plughw:CARD=Audio,DEV=2"
-MPV_OPTS="--hwdec=drm --vo=gpu --gpu-context=drm --drm-connector=${DRM_CONNECTOR} --ao=alsa --audio-device=${AUDIO_DEVICE} --no-terminal --fullscreen --loop=inf"
+MPV_OPTS="--hwdec=drm --vo=gpu --gpu-context=drm --drm-connector=${DRM_CONNECTOR} --ao=alsa --audio-device=${AUDIO_DEVICE} --no-terminal --fullscreen"
 
 # Nightly reboot at 00:00
 REBOOT_SCHEDULE="0 0 * * *"
@@ -628,13 +662,77 @@ After=multi-user.target
 [Service]
 Type=simple
 User=${KIOSK_USER}
-ExecStart=${MPV_BIN} ${MPV_OPTS} ${VIDEO_PATH}
+Environment=USB_LABEL=${USB_LABEL}
+Environment=USB_MOUNT=${USB_MOUNT}
+Environment=FALLBACK_VIDEO=${VIDEO_PATH}
+ExecStartPre=+${PLAY_BIN} --mount
+ExecStart=${PLAY_BIN} ${MPV_OPTS}
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+}
+
+# The launcher the service runs. "--mount" (run as root via ExecStartPre=+)
+# mounts the USB stick; otherwise it execs mpv with the options it was given,
+# adding the video source and the matching loop mode.
+play_script_content() {
+  cat <<'EOF'
+#!/usr/bin/env bash
+# edge-mpv-play — installed by edge-mpv.sh. Don't edit; re-run edge-mpv.sh.
+USB_LABEL="${USB_LABEL:-VIDEO}"
+USB_MOUNT="${USB_MOUNT:-/media/video}"
+FALLBACK_VIDEO="${FALLBACK_VIDEO:-}"
+DEV="/dev/disk/by-label/${USB_LABEL}"
+
+if [[ "${1:-}" == "--mount" ]]; then
+  mkdir -p "$USB_MOUNT"
+  # Always start clean: a stick pulled earlier leaves a stale mount behind.
+  if mountpoint -q "$USB_MOUNT"; then umount -l "$USB_MOUNT"; fi
+  if [[ -e "$DEV" ]]; then
+    mount -o ro,nosuid,nodev,noexec "$DEV" "$USB_MOUNT" \
+      || echo "edge-mpv-play: could not mount ${DEV}" >&2
+  fi
+  exit 0
+fi
+
+files=()
+if mountpoint -q "$USB_MOUNT"; then
+  mapfile -d '' files < <(find "$USB_MOUNT" -maxdepth 2 -type f ! -name '.*' \
+    \( -iname '*.mp4' -o -iname '*.m4v' -o -iname '*.mkv' -o -iname '*.mov' \
+       -o -iname '*.avi' -o -iname '*.mpg' -o -iname '*.mpeg' \
+       -o -iname '*.webm' -o -iname '*.ts' \) -print0 | sort -z)
+fi
+
+if (( ${#files[@]} > 0 )); then
+  echo "edge-mpv-play: playing ${#files[@]} video(s) from USB stick ${USB_LABEL}"
+  exec /usr/bin/mpv "$@" --loop-playlist=inf -- "${files[@]}"
+fi
+
+echo "edge-mpv-play: no USB videos — playing fallback ${FALLBACK_VIDEO}"
+exec /usr/bin/mpv "$@" --loop-file=inf -- "$FALLBACK_VIDEO"
+EOF
+}
+
+# Restart playback when a stick with our label is plugged in or pulled.
+# try-restart: only acts if the service is already running (not at early boot).
+udev_rule_content() {
+  echo "ACTION==\"add|remove\", SUBSYSTEM==\"block\", ENV{ID_FS_LABEL}==\"${USB_LABEL}\", RUN+=\"/bin/systemctl --no-block try-restart ${SERVICE_NAME}.service\""
+}
+
+play_script_matches() {
+  [[ -x "$PLAY_BIN" ]] && [[ "$(cat "$PLAY_BIN")" == "$(play_script_content)" ]]
+}
+
+udev_rule_matches() {
+  [[ -f "$UDEV_RULE" ]] && [[ "$(cat "$UDEV_RULE")" == "$(udev_rule_content)" ]]
+}
+
+# True when the unit on disk predates the launcher (runs mpv directly).
+unit_is_legacy() {
+  [[ -f "$UNIT_PATH" ]] && ! grep -qF "$PLAY_BIN" "$UNIT_PATH"
 }
 
 unit_matches() {
@@ -645,6 +743,7 @@ unit_matches() {
 # status only requires that it exists — unless --force asks for CONFIG's version.
 status_service() {
   [[ -f "$UNIT_PATH" ]] || return 1
+  play_script_matches && udev_rule_matches || return 1
   if [[ $FORCE -eq 1 ]] && ! unit_matches; then return 1; fi
   systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null || return 1
   in_chroot || systemctl is-active --quiet "$SERVICE_NAME"
@@ -659,10 +758,26 @@ install_service() {
     install -d -o "$KIOSK_USER" -g "$KIOSK_USER" "$video_dir"
   fi
 
+  if ! play_script_matches; then
+    log_info "Writing ${PLAY_BIN}..."
+    play_script_content > "$PLAY_BIN"
+    chmod 755 "$PLAY_BIN"
+  fi
+  if ! udev_rule_matches; then
+    log_info "Writing ${UDEV_RULE}..."
+    udev_rule_content > "$UDEV_RULE"
+    chmod 644 "$UDEV_RULE"
+    in_chroot || udevadm control --reload
+  fi
+  mkdir -p "$USB_MOUNT"
+
   if unit_matches; then
     log_ok "${UNIT_PATH} already correct."
   elif [[ -f "$UNIT_PATH" && $FORCE -eq 0 ]]; then
     log_info "${UNIT_PATH} differs from CONFIG — keeping it (use --force to rewrite)."
+    if unit_is_legacy; then
+      log_warn "This unit runs mpv directly, so USB playback is NOT active. Run with --force once to switch it to ${PLAY_BIN}."
+    fi
   else
     log_info "Writing ${UNIT_PATH}..."
     unit_content > "$UNIT_PATH"
@@ -680,10 +795,8 @@ install_service() {
   systemctl daemon-reload
   systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
 
-  if unit_matches && [[ ! -f "$VIDEO_PATH" ]]; then
-    log_warn "Video not found at ${VIDEO_PATH} — service enabled but not started."
-    log_warn "Copy the video into place, then run 'mpvrestart' or re-run this script."
-    return
+  if [[ ! -f "$VIDEO_PATH" ]]; then
+    log_warn "Fallback video not found at ${VIDEO_PATH} — playback needs a USB stick labelled ${USB_LABEL} until it's there."
   fi
 
   if [[ $unit_changed -eq 1 ]]; then
@@ -728,6 +841,19 @@ show_display_status() {
     name=${name##*/}
     echo "    ${name#card*-}: $(cat "$f")"
   done
+  echo
+}
+
+show_video_source() {
+  local n=0
+  if mountpoint -q "$USB_MOUNT" 2>/dev/null; then
+    n=$(find "$USB_MOUNT" -maxdepth 2 -type f ! -name '.*' 2>/dev/null | wc -l)
+    log_info "Video source: USB stick ${USB_LABEL} mounted at ${USB_MOUNT} (${n} file(s))."
+  elif [[ -e "/dev/disk/by-label/${USB_LABEL}" ]]; then
+    log_info "Video source: USB stick ${USB_LABEL} is plugged in but not mounted — fallback ${VIDEO_PATH}."
+  else
+    log_info "Video source: no USB stick labelled ${USB_LABEL} — fallback ${VIDEO_PATH}."
+  fi
   echo
 }
 
@@ -866,6 +992,9 @@ print_status_report() {
   if [[ -f "$UNIT_PATH" ]] && ! unit_matches; then
     log_info "${SERVICE_NAME}.service differs from CONFIG (hand-edited) — kept. --force rewrites it."
   fi
+  if unit_is_legacy; then
+    log_warn "${SERVICE_NAME}.service runs mpv directly — USB playback NOT active. Run with --force once."
+  fi
   if root_is_overlay; then
     log_info "Root filesystem: overlay ACTIVE — writes go to RAM and are lost at reboot."
   elif in_chroot; then
@@ -962,6 +1091,7 @@ check_user
 if [[ $STATUS_ONLY -eq 1 ]]; then
   print_status_report
   show_display_status
+  show_video_source
   show_wifi_status
   show_service_status
   exit 0
