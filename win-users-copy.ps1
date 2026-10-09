@@ -1,12 +1,14 @@
 # Copy-UserFolders.ps1
-# Version: 2.2
+# Version: 2.3
 # Usage: irm users.vcc.net | iex
 #
-# Copies Documents, Desktop, and Pictures for every user under
-# <Source>:\Users to <Destination>:\Users using VSSCopy.exe (VSS-aware,
-# handles open/locked files).
+# Copies the user folders you pick (Desktop, Documents, Downloads, Pictures,
+# Videos, Music) for every user under <Source>:\Users to <Destination>:\Users
+# using VSSCopy.exe (VSS-aware, handles open/locked files).
 #
 # CHANGELOG (newest first):
+#   v2.3 - Interactive folder picker: numbered menu, accepts a list like
+#          "1,2,4" or the "All" option. Replaces the hardcoded folder list.
 #   v2.2 - Dependency check now prints Installed/Not installed status for
 #          .NET 3.5 and VSSCopy up front, not just when installing.
 #   v2.1 - Fixed scheduled task running at throttled priority vs console
@@ -38,10 +40,10 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "2.2"
+$ScriptVersion       = "2.3"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
-$FoldersToCopy = @('Documents', 'Desktop', 'Pictures')
+$FolderMenu          = @('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music')   # menu order; "All" is added as the last number
 $LogDir = "C:\VSSCopyLogs\$(Get-Date -Format 'yyyy-MM-dd_HHmmss')"
 
 function Exit-WithPause($code = 0) {
@@ -320,9 +322,35 @@ if (-not $users) {
     return
 }
 
+# --- Folder picker ---
+$allNumber = $FolderMenu.Count + 1
+$FoldersToCopy = @()
+while ($FoldersToCopy.Count -eq 0) {
+    Write-Host "------------------------------------" -ForegroundColor Gray
+    Write-Host " Folders to copy:" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $FolderMenu.Count; $i++) {
+        Write-Host ("   {0}) {1}" -f ($i + 1), $FolderMenu[$i]) -ForegroundColor Gray
+    }
+    Write-Host ("   {0}) All of the above" -f $allNumber) -ForegroundColor Gray
+    $pick = Read-Host " Enter numbers (e.g. 1,2,4)"
+    $nums = @($pick -split '[,\s]+' | Where-Object { $_ -ne '' })
+    $valid = ($nums.Count -gt 0) -and -not ($nums | Where-Object { $_ -notmatch '^\d+$' -or [int]$_ -lt 1 -or [int]$_ -gt $allNumber })
+    if (-not $valid) {
+        Write-Host " [!] Invalid selection. Use numbers 1-$allNumber separated by commas." -ForegroundColor Red
+        continue
+    }
+    if ($nums -contains "$allNumber") {
+        $FoldersToCopy = @($FolderMenu)
+    } else {
+        $idx = $nums | ForEach-Object { [int]$_ } | Sort-Object -Unique
+        $FoldersToCopy = @($idx | ForEach-Object { $FolderMenu[$_ - 1] })
+    }
+}
+
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " [i] Source:      $SourceUsersPath" -ForegroundColor Gray
 Write-Host " [i] Destination: $DestUsersPath" -ForegroundColor Gray
+Write-Host " [i] Folders:     $($FoldersToCopy -join ', ')" -ForegroundColor Gray
 Write-Host " [i] Users found: $($users.Count)" -ForegroundColor Gray
 Write-Host "------------------------------------" -ForegroundColor Gray
 
