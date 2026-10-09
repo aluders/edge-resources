@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v2.8
+# EDGE MPV v2.9
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -154,9 +154,10 @@
 #     test on the built-in screen, set DRM_CONNECTOR="eDP-1" and use --force.
 #     --status lists the connector names and which are connected.
 #   - PANEL_BRIGHTNESS dims the tablet's own screen to save power; the video
-#     is on the TV. It is written to /sys/class/backlight/*/brightness each
-#     time the service starts, because the level doesn't reliably survive a
-#     reboot. The console is still there, just dim. To read it, turn it up:
+#     is on the TV. It is written to /sys/class/backlight/*/brightness about
+#     10 seconds after each service start: mpv taking over the display turns
+#     the panel off and back on at full brightness, so the level has to be
+#     set after that, and it doesn't survive a reboot either. The console is still there, just dim. To read it, turn it up:
 #       echo 500 | sudo tee /sys/class/backlight/*/brightness
 #     (--status shows the current level and the maximum). Change the
 #     Environment=PANEL_BRIGHTNESS= line with `mpvedit` to make it stick.
@@ -182,6 +183,10 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v2.9  - Panel dimming moved from before mpv starts to 10 seconds after
+#           (ExecStartPost): mpv's display takeover was resetting the
+#           backlight to full right after it had been dimmed. Existing
+#           boxes need --force once.
 #   v2.8  - Added PANEL_BRIGHTNESS (default 0): the launcher dims the built-in
 #           panel's backlight each time the service starts. --status shows
 #           the current level. Existing boxes need --force once to get the
@@ -268,7 +273,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="2.8"
+SCRIPT_VERSION="2.9"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -749,6 +754,7 @@ Environment=FALLBACK_VIDEO=${VIDEO_PATH}
 Environment=PANEL_BRIGHTNESS=${PANEL_BRIGHTNESS}
 ExecStartPre=+${PLAY_BIN} --mount
 ExecStart=${PLAY_BIN} ${MPV_OPTS}
+ExecStartPost=+${PLAY_BIN} --dim
 Restart=always
 RestartSec=5
 
@@ -769,13 +775,22 @@ USB_MOUNT="${USB_MOUNT:-/media/video}"
 FALLBACK_VIDEO="${FALLBACK_VIDEO:-}"
 DEV="/dev/disk/by-label/${USB_LABEL}"
 
-if [[ "${1:-}" == "--mount" ]]; then
-  # Dim the built-in panel (the video goes out over HDMI).
+# Dim the built-in panel (the video goes out over HDMI). Run as root from
+# ExecStartPost. mpv taking over the display resets the backlight to full, so
+# this waits in the background until that has happened, then sets the level.
+if [[ "${1:-}" == "--dim" ]]; then
   if [[ -n "${PANEL_BRIGHTNESS:-}" ]]; then
-    for b in /sys/class/backlight/*/brightness; do
-      [[ -w "$b" ]] && echo "$PANEL_BRIGHTNESS" > "$b"
-    done
+    (
+      sleep 10
+      for b in /sys/class/backlight/*/brightness; do
+        [[ -w "$b" ]] && echo "$PANEL_BRIGHTNESS" > "$b"
+      done
+    ) >/dev/null 2>&1 &
   fi
+  exit 0
+fi
+
+if [[ "${1:-}" == "--mount" ]]; then
   mkdir -p "$USB_MOUNT"
   # Always start clean: a stick pulled earlier leaves a stale mount behind.
   if mountpoint -q "$USB_MOUNT"; then umount -l "$USB_MOUNT"; fi
