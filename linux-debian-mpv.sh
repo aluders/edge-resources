@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v2.7
+# EDGE MPV v2.8
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -153,6 +153,13 @@
 #     pinned, mpv fails and retries every 5s until the TV is connected. To
 #     test on the built-in screen, set DRM_CONNECTOR="eDP-1" and use --force.
 #     --status lists the connector names and which are connected.
+#   - PANEL_BRIGHTNESS dims the tablet's own screen to save power; the video
+#     is on the TV. It is written to /sys/class/backlight/*/brightness each
+#     time the service starts, because the level doesn't reliably survive a
+#     reboot. The console is still there, just dim. To read it, turn it up:
+#       echo 500 | sudo tee /sys/class/backlight/*/brightness
+#     (--status shows the current level and the maximum). Change the
+#     Environment=PANEL_BRIGHTNESS= line with `mpvedit` to make it stick.
 #   - Sound goes to AUDIO_DEVICE: the "Intel HDMI/DP LPE Audio" card (ALSA
 #     name "Audio"), device 2, which is the one wired to the Hi12's HDMI
 #     port. Naming the device also keeps mpv off the internal sound card
@@ -175,6 +182,10 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v2.8  - Added PANEL_BRIGHTNESS (default 0): the launcher dims the built-in
+#           panel's backlight each time the service starts. --status shows
+#           the current level. Existing boxes need --force once to get the
+#           new unit line.
 #   v2.7  - --status counted every file on the USB stick, including the
 #           hidden bookkeeping files macOS writes, so one video showed as
 #           "5 file(s)". It now counts videos only, with the launcher's
@@ -257,7 +268,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="2.7"
+SCRIPT_VERSION="2.8"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -273,6 +284,10 @@ UDEV_RULE="/etc/udev/rules.d/99-edge-mpv-usb.rules"
 SERVICE_NAME="mpv"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 MPV_BIN="/usr/bin/mpv"
+# Backlight level for the tablet's own panel, set each time the service
+# starts. 0 = dimmest (very dim on the Hi12, saves power). Empty = leave alone.
+PANEL_BRIGHTNESS="0"
+
 # Display output (see --status for names) and ALSA device for HDMI sound
 DRM_CONNECTOR="HDMI-A-1"
 AUDIO_DEVICE="alsa/plughw:CARD=Audio,DEV=2"
@@ -731,6 +746,7 @@ User=${KIOSK_USER}
 Environment=USB_LABEL=${USB_LABEL}
 Environment=USB_MOUNT=${USB_MOUNT}
 Environment=FALLBACK_VIDEO=${VIDEO_PATH}
+Environment=PANEL_BRIGHTNESS=${PANEL_BRIGHTNESS}
 ExecStartPre=+${PLAY_BIN} --mount
 ExecStart=${PLAY_BIN} ${MPV_OPTS}
 Restart=always
@@ -754,6 +770,12 @@ FALLBACK_VIDEO="${FALLBACK_VIDEO:-}"
 DEV="/dev/disk/by-label/${USB_LABEL}"
 
 if [[ "${1:-}" == "--mount" ]]; then
+  # Dim the built-in panel (the video goes out over HDMI).
+  if [[ -n "${PANEL_BRIGHTNESS:-}" ]]; then
+    for b in /sys/class/backlight/*/brightness; do
+      [[ -w "$b" ]] && echo "$PANEL_BRIGHTNESS" > "$b"
+    done
+  fi
   mkdir -p "$USB_MOUNT"
   # Always start clean: a stick pulled earlier leaves a stale mount behind.
   if mountpoint -q "$USB_MOUNT"; then umount -l "$USB_MOUNT"; fi
@@ -906,6 +928,10 @@ show_display_status() {
     name=${f%/status}
     name=${name##*/}
     echo "    ${name#card*-}: $(cat "$f")"
+  done
+  for f in /sys/class/backlight/*/brightness; do
+    [[ -r "$f" ]] || continue
+    echo "    built-in panel brightness: $(cat "$f") of $(cat "${f%/brightness}/max_brightness" 2>/dev/null)"
   done
   echo
 }
