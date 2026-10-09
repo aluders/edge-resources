@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v2.9
+# EDGE MPV v3.0
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -21,8 +21,6 @@
 #              edge-mpv-play launcher and the USB plug/unplug udev rule
 #   reboot     Nightly reboot in root's crontab (00:00)
 #   aliases    mpvstatus / mpvedit / mpvrestart in the kiosk user's .bashrc
-#   overlay    overlayroot: read-only root with writes kept in RAM (runs
-#              last, takes effect at the next reboot)
 #
 # FLAGS
 # -----
@@ -37,45 +35,46 @@
 #   -y, --yes         Answer yes to that prompt (apply and reboot unattended)
 #   --force           Rewrite mpv.service from the CONFIG block even if it
 #                     already exists (discards hand edits)
+#   --overlay         Enable the read-only overlay (overlayroot), then exit.
+#                     Not part of a normal run: do this last, when the
+#                     machine is set up, tested and ready to deploy
 #   --only LIST       Only act on the components in LIST
 #   --skip LIST       Act on all components except those in LIST
 #   -h, --help        Show usage and exit
 #
 #   LIST is a comma-separated list drawn from: sudo, mpv, fastfetch,
-#   speedtest, audio, service, reboot, aliases, overlay
+#   speedtest, audio, service, reboot, aliases
 #
 # USAGE
 # -----
-#   su -c 'bash edge-mpv.sh --skip overlay'   first run on a new machine
+#   su -c 'bash edge-mpv.sh'              first run on a new machine (no sudo yet)
 #   sudo ./edge-mpv.sh                    install/repair everything
 #   sudo ./edge-mpv.sh --status           report only
 #   sudo ./edge-mpv.sh --restart          restart playback
 #   sudo ./edge-mpv.sh --update           upgrade mpv/fastfetch/speedtest
 #   sudo ./edge-mpv.sh --update --only fastfetch
 #   sudo ./edge-mpv.sh --force            reset mpv.service to CONFIG
+#   sudo ./edge-mpv.sh --overlay          last step: enable the read-only overlay
 #   sudo ./edge-mpv.sh --only service     just the systemd unit
 #   sudo ./edge-mpv.sh --skip fastfetch
 #   curl -fsSL <url> | sudo bash          remote deploy (all)
 #
 # NOTES
 # -----
-#   - FIRST RUN ON A NEW MACHINE: a base Debian install with a root password
-#     has no sudo. Run the script once as root from the kiosk user's home
-#     directory, leaving the overlay off so the disk stays writable while
-#     you finish setting the machine up:
-#
-#       su -c 'bash edge-mpv.sh --skip overlay'
-#
-#     The sudo component installs sudo and adds the kiosk user to the sudo
-#     group. Log out and back in for the group to apply; after that
-#     `sudo ./edge-mpv.sh` and the mpv aliases work.
-#     When the new machine's setup is complete (Wi-Fi, video, sound and the
-#     HDMI output all confirmed across a reboot), run the normal install to
-#     turn the overlay on, then reboot:
-#
-#       sudo ./edge-mpv.sh
-#       sudo reboot
-#   - OVERLAY: the overlay component installs overlayroot and sets
+#   - NEW MACHINE, START TO FINISH:
+#     1. A base Debian install with a root password has no sudo. Run the
+#        script once as root from the kiosk user's home directory:
+#          su -c 'bash edge-mpv.sh'
+#        The sudo component installs sudo and adds the kiosk user to the
+#        sudo group. Log out and back in for the group to apply; after that
+#        `sudo ./edge-mpv.sh` and the mpv aliases work.
+#     2. Set the machine up and test it with the disk still writable: Wi-Fi,
+#        video, sound, HDMI, the USB stick, a few reboots. A normal run
+#        never enables the overlay, so re-run the script as often as needed.
+#     3. When it's ready to deploy, enable the overlay as the last step:
+#          sudo ./edge-mpv.sh --overlay
+#          sudo reboot
+#   - OVERLAY: --overlay installs overlayroot and sets
 #     overlayroot="tmpfs" in /etc/overlayroot.conf. From the next reboot the
 #     real disk is mounted read-only and every write goes to RAM, so a power
 #     cut can't corrupt it and each boot starts from the same state. Nothing
@@ -102,8 +101,7 @@
 #       sudo mount -o remount,rw /media/root-ro
 #       sudo cp FILE /media/root-ro/home/edgeadmin/
 #     To turn the overlay off, set overlayroot="" in /etc/overlayroot.conf
-#     from inside the chroot and reboot. Use --skip overlay on a box that
-#     should stay writable.
+#     from inside the chroot and reboot.
 #   - The reboot is nightly because of the overlay: logs and temp files
 #     accumulate in RAM and the reboot clears them.
 #   - Idempotent: every component has a status check, and a component that
@@ -183,6 +181,12 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.0  - The overlay is now opt-in. A normal run no longer installs or
+#           enables it; `--overlay` does, as the last step before deploying.
+#           overlay is no longer a component (not valid for --only/--skip).
+#           --status says whether it is active, enabled for the next reboot,
+#           or not enabled. NOTES rewritten as a start-to-finish new-machine
+#           sequence.
 #   v2.9  - Panel dimming moved from before mpv starts to 10 seconds after
 #           (ExecStartPost): mpv's display takeover was resetting the
 #           backlight to full right after it had been dimmed. Existing
@@ -273,7 +277,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="2.9"
+SCRIPT_VERSION="3.0"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -315,7 +319,7 @@ SPEEDTEST_BIN="/usr/local/bin/speedtest"
 ALIAS_BEGIN="# >>> mpv kiosk aliases >>>"
 ALIAS_END="# <<< mpv kiosk aliases <<<"
 
-ALL_COMPONENTS=(sudo mpv fastfetch speedtest audio service reboot aliases overlay)
+ALL_COMPONENTS=(sudo mpv fastfetch speedtest audio service reboot aliases)
 UPDATABLE_COMPONENTS=(mpv fastfetch speedtest)
 
 # ==============================================================================
@@ -354,6 +358,9 @@ edge-mpv v${SCRIPT_VERSION}
   -y, --yes         Answer yes to that prompt (apply and reboot unattended)
   --force           Rewrite mpv.service from the CONFIG block even if it
                     already exists (discards hand edits)
+  --overlay         Enable the read-only overlay (overlayroot), then exit.
+                    Not part of a normal run: do this last, when the
+                    machine is set up, tested and ready to deploy
   --only LIST       Only act on the components in LIST
   --skip LIST       Act on all components except those in LIST
   -h, --help        Show this help and exit
@@ -378,6 +385,7 @@ EOF
 STATUS_ONLY=0
 RESTART_ONLY=0
 UPDATE_MODE=0
+OVERLAY_MODE=0
 ASSUME_YES=0
 FORCE=0
 ONLY_LIST=""
@@ -389,6 +397,7 @@ while [[ $# -gt 0 ]]; do
     --restart) RESTART_ONLY=1 ;;
     --update)  UPDATE_MODE=1 ;;
     --force)   FORCE=1 ;;
+    --overlay) OVERLAY_MODE=1 ;;
     -y|--yes)  ASSUME_YES=1 ;;
     --only)    ONLY_LIST="${2:-}"; shift ;;
     --skip)    SKIP_LIST="${2:-}"; shift ;;
@@ -1053,7 +1062,7 @@ install_aliases() {
 }
 
 # ==============================================================================
-# COMPONENT: overlay (overlayroot — read-only root, writes go to RAM)
+# OVERLAY (overlayroot — read-only root, writes go to RAM). Opt-in: --overlay
 # ==============================================================================
 status_overlay() {
   command -v overlayroot-chroot >/dev/null 2>&1 \
@@ -1111,8 +1120,10 @@ print_status_report() {
     log_info "Root filesystem: overlay ACTIVE — writes go to RAM and are lost at reboot."
   elif in_chroot; then
     log_info "Root filesystem: inside overlayroot-chroot — changes here are permanent."
+  elif status_overlay; then
+    log_info "Root filesystem: writable for now — overlay is enabled and starts at the next reboot."
   else
-    log_info "Root filesystem: writable — overlay not active."
+    log_info "Root filesystem: writable — overlay not enabled (--overlay enables it when ready to deploy)."
   fi
   echo
 }
@@ -1211,6 +1222,19 @@ fi
 
 if [[ $RESTART_ONLY -eq 1 ]]; then
   restart_service
+  exit 0
+fi
+
+if [[ $OVERLAY_MODE -eq 1 ]]; then
+  echo
+  log_info "=== overlay ==="
+  if root_is_overlay; then
+    log_ok "The overlay is already active."
+  elif status_overlay; then
+    log_ok "The overlay is already enabled — it starts at the next reboot."
+  else
+    install_overlay
+  fi
   exit 0
 fi
 
