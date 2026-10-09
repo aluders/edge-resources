@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v1.8
+# EDGE MPV v2.2
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -16,17 +16,22 @@
 #   speedtest  Ookla Speedtest CLI (static binary in /usr/local/bin)
 #   audio      alsa-utils (aplay, speaker-test) + kiosk user in the audio group
 #   service    /etc/systemd/system/mpv.service (enabled + started)
-#   reboot     Weekly reboot in root's crontab (Saturday 00:00)
+#   reboot     Nightly reboot in root's crontab (00:00)
 #   aliases    mpvstatus / mpvedit / mpvrestart in the kiosk user's .bashrc
+#   overlay    overlayroot: read-only root with writes kept in RAM (runs
+#              last, takes effect at the next reboot)
 #
 # FLAGS
 # -----
-#   --status          Print component status, display connector status and
-#                     the mpv service status, then exit (no changes)
+#   --status          Print component status, overlay state, display
+#                     connectors, Wi-Fi and the mpv service status, then exit
 #   --restart         Reload systemd, restart the mpv service, show its
 #                     status, then exit
 #   --update          Check mpv, fastfetch and speedtest for newer versions
-#                     and upgrade the ones that have one, then exit
+#                     and upgrade the ones that have one, then exit. With
+#                     the overlay active it asks first, then applies them
+#                     to the real disk and reboots
+#   -y, --yes         Answer yes to that prompt (apply and reboot unattended)
 #   --force           Rewrite mpv.service from the CONFIG block even if it
 #                     already exists (discards hand edits)
 #   --only LIST       Only act on the components in LIST
@@ -34,7 +39,7 @@
 #   -h, --help        Show usage and exit
 #
 #   LIST is a comma-separated list drawn from: mpv, fastfetch, speedtest,
-#   audio, service, reboot, aliases
+#   audio, service, reboot, aliases, overlay
 #
 # USAGE
 # -----
@@ -50,6 +55,37 @@
 #
 # NOTES
 # -----
+#   - OVERLAY: the overlay component installs overlayroot and sets
+#     overlayroot="tmpfs" in /etc/overlayroot.conf. From the next reboot the
+#     real disk is mounted read-only and every write goes to RAM, so a power
+#     cut can't corrupt it and each boot starts from the same state. Nothing
+#     written after that survives a reboot. To make a permanent change:
+#
+#       sudo overlayroot-chroot
+#       # make changes here: edit the unit, copy a video, run apt
+#       exit
+#       sudo reboot
+#
+#     That covers `mpvedit`, swapping the video, apt, and a normal run of
+#     this script. Run outside the chroot with the overlay active, a normal
+#     run warns that its changes are temporary.
+#     --update is the exception and needs no manual chroot. It always checks
+#     first and changes nothing if everything is current. If updates are
+#     available and the overlay is active, it asks "apply to disk and
+#     reboot?"; on yes it re-runs itself inside overlayroot-chroot for just
+#     those components so they land on the real disk, then reboots. On no
+#     (or with no terminal and no --yes) nothing is changed. Inside the chroot
+#     systemd isn't running, so the script writes and enables things but
+#     doesn't start or restart services; the reboot does that.
+#     A file copied to the box over SSH also lands in RAM. To put it on the
+#     real disk from outside the chroot:
+#       sudo mount -o remount,rw /media/root-ro
+#       sudo cp FILE /media/root-ro/home/edgeadmin/
+#     To turn the overlay off, set overlayroot="" in /etc/overlayroot.conf
+#     from inside the chroot and reboot. Use --skip overlay on a box that
+#     should stay writable.
+#   - The reboot is nightly because of the overlay: logs and temp files
+#     accumulate in RAM and the reboot clears them.
 #   - Idempotent: every component has a status check, and a component that
 #     already passes is left alone. Safe to re-run at any time.
 #   - A plain re-run is NOT an update: an installed component is skipped, not
@@ -101,6 +137,25 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v2.2  - --status now also shows the Wi-Fi network the box is connected to
+#           and its IP address (from wpa_cli on WIFI_IFACE).
+#   v2.1  - --update now checks before it acts: it lists which components
+#           have an update and stops there if none do. With the overlay
+#           active it then asks once whether to apply them to the real disk
+#           and reboot, instead of applying first and asking after. Added
+#           -y/--yes to answer that prompt for unattended runs.
+#   v2.0  - --update with the overlay active now applies itself to the real
+#           disk: it re-runs the update pass inside overlayroot-chroot and,
+#           if anything was upgraded, prompts to reboot so the saved
+#           versions are loaded. Nothing to upgrade means no prompt.
+#   v1.9  - Added the overlay component (overlayroot, read-only root with a
+#           tmpfs overlay), run last. --status shows whether the overlay is
+#           active; install and --update runs warn when their changes will
+#           be lost at reboot. The script is chroot-aware so it can be run
+#           inside overlayroot-chroot. Documented the overlayroot-chroot
+#           procedure in NOTES and --help. Reboot changed from weekly
+#           (Saturday) to nightly at 00:00; the old weekly crontab line is
+#           replaced.
 #   v1.8  - HDMI output. Added DRM_CONNECTOR and AUDIO_DEVICE to CONFIG and
 #           to the mpv command line (--drm-connector=HDMI-A-1,
 #           --audio-device=alsa/plughw:CARD=Audio,DEV=2). Added the audio
@@ -142,7 +197,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="1.8"
+SCRIPT_VERSION="2.2"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -156,8 +211,15 @@ DRM_CONNECTOR="HDMI-A-1"
 AUDIO_DEVICE="alsa/plughw:CARD=Audio,DEV=2"
 MPV_OPTS="--hwdec=drm --vo=gpu --gpu-context=drm --drm-connector=${DRM_CONNECTOR} --ao=alsa --audio-device=${AUDIO_DEVICE} --no-terminal --fullscreen --loop=inf"
 
-# Weekly reboot: Saturday 00:00
-REBOOT_CRON="0 0 * * 6 /sbin/shutdown -r now"
+# Nightly reboot at 00:00
+REBOOT_SCHEDULE="0 0 * * *"
+REBOOT_CMD="/sbin/shutdown -r now"
+REBOOT_CRON="${REBOOT_SCHEDULE} ${REBOOT_CMD}"
+
+WIFI_IFACE="wlan0"
+
+OVERLAY_CONF="/etc/overlayroot.conf"
+OVERLAY_SETTING='overlayroot="tmpfs"'
 
 FASTFETCH_URL_BASE="https://github.com/fastfetch-cli/fastfetch/releases/latest/download"
 
@@ -166,7 +228,7 @@ SPEEDTEST_BIN="/usr/local/bin/speedtest"
 ALIAS_BEGIN="# >>> mpv kiosk aliases >>>"
 ALIAS_END="# <<< mpv kiosk aliases <<<"
 
-ALL_COMPONENTS=(mpv fastfetch speedtest audio service reboot aliases)
+ALL_COMPONENTS=(mpv fastfetch speedtest audio service reboot aliases overlay)
 UPDATABLE_COMPONENTS=(mpv fastfetch speedtest)
 
 # ==============================================================================
@@ -190,12 +252,15 @@ usage() {
   cat <<EOF
 edge-mpv v${SCRIPT_VERSION}
 
-  --status          Print component status, display connector status and
-                    the mpv service status, then exit (no changes)
+  --status          Print component status, overlay state, display
+                    connectors, Wi-Fi and the mpv service status, then exit
   --restart         Reload systemd, restart the mpv service, show its
                     status, then exit
   --update          Check mpv, fastfetch and speedtest for newer versions
-                    and upgrade the ones that have one, then exit
+                    and upgrade the ones that have one, then exit. With
+                    the overlay active it asks first, then applies them
+                    to the real disk and reboots
+  -y, --yes         Answer yes to that prompt (apply and reboot unattended)
   --force           Rewrite mpv.service from the CONFIG block even if it
                     already exists (discards hand edits)
   --only LIST       Only act on the components in LIST
@@ -203,6 +268,16 @@ edge-mpv v${SCRIPT_VERSION}
   -h, --help        Show this help and exit
 
   LIST is a comma-separated list drawn from: ${ALL_COMPONENTS[*]}
+
+  Once the overlay is active, nothing written to disk survives a reboot.
+  --update handles this itself. For any other permanent change (edit the
+  unit, copy a video, run apt, re-run this script), work inside the real
+  root filesystem:
+
+    sudo overlayroot-chroot
+    # make changes here: edit the unit, copy a video, run apt
+    exit
+    sudo reboot
 EOF
 }
 
@@ -212,6 +287,7 @@ EOF
 STATUS_ONLY=0
 RESTART_ONLY=0
 UPDATE_MODE=0
+ASSUME_YES=0
 FORCE=0
 ONLY_LIST=""
 SKIP_LIST=""
@@ -222,6 +298,7 @@ while [[ $# -gt 0 ]]; do
     --restart) RESTART_ONLY=1 ;;
     --update)  UPDATE_MODE=1 ;;
     --force)   FORCE=1 ;;
+    -y|--yes)  ASSUME_YES=1 ;;
     --only)    ONLY_LIST="${2:-}"; shift ;;
     --skip)    SKIP_LIST="${2:-}"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -280,6 +357,23 @@ check_user() {
   fi
 }
 
+# True when / is the overlayroot overlay (writes go to RAM).
+root_is_overlay() {
+  [[ "$(findmnt -n -o FSTYPE / 2>/dev/null)" == "overlay" ]]
+}
+
+# True inside overlayroot-chroot, where systemd isn't running.
+in_chroot() {
+  systemd-detect-virt --chroot --quiet 2>/dev/null
+}
+
+warn_if_overlay() {
+  if root_is_overlay; then
+    log_warn "The overlay is active — changes made by this run are lost at the next reboot."
+    log_warn "For permanent changes run inside 'sudo overlayroot-chroot' (see --help)."
+  fi
+}
+
 apt_updated=0
 ensure_apt_updated() {
   if [[ $apt_updated -eq 0 ]]; then
@@ -314,11 +408,12 @@ install_mpv() {
   fi
 }
 
-update_mpv() {
+# check_update_<c> prints the component's state and returns 0 when an update
+# (or a missing install) is pending; apply_update_<c> carries it out.
+check_update_mpv() {
   if ! status_mpv; then
-    log_warn "mpv not installed — installing instead of updating."
-    install_mpv
-    return
+    log_warn "mpv not installed — will be installed."
+    return 0
   fi
   local current candidate
   ensure_apt_updated
@@ -326,16 +421,22 @@ update_mpv() {
   candidate=$(apt-cache policy mpv 2>/dev/null | awk '/Candidate:/{print $2}')
   if [[ -z "$candidate" || "$current" == "$candidate" ]]; then
     log_ok "mpv up to date (${current})."
+    return 1
+  fi
+  log_warn "mpv update available: ${current} -> ${candidate}"
+  return 0
+}
+
+apply_update_mpv() {
+  if ! status_mpv; then
+    install_mpv
     return
   fi
-  log_info "Upgrading mpv ${current} -> ${candidate}..."
+  ensure_apt_updated
+  log_info "Upgrading mpv..."
   DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade mpv
-  if [[ "$(dpkg-query -W -f='${Version}' mpv 2>/dev/null)" != "$candidate" ]]; then
-    log_err "mpv upgrade did not complete — check apt output above."
-    return
-  fi
-  log_ok "mpv upgraded to ${candidate}."
-  if systemctl is-active --quiet "$SERVICE_NAME"; then
+  log_ok "mpv now at $(dpkg-query -W -f='${Version}' mpv 2>/dev/null)."
+  if ! in_chroot && systemctl is-active --quiet "$SERVICE_NAME"; then
     log_info "Restarting ${SERVICE_NAME}.service to pick up the new mpv..."
     systemctl restart "$SERVICE_NAME"
   fi
@@ -376,11 +477,10 @@ install_fastfetch() {
   fi
 }
 
-update_fastfetch() {
+check_update_fastfetch() {
   if ! status_fastfetch; then
-    log_warn "fastfetch not installed — installing instead of updating."
-    install_fastfetch
-    return
+    log_warn "fastfetch not installed — will be installed."
+    return 0
   fi
   local current latest
   ensure_curl
@@ -391,15 +491,17 @@ update_fastfetch() {
   latest=${latest#v}
   if [[ ! "$latest" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
     log_err "Could not determine the latest fastfetch version from GitHub."
-    return
+    return 1
   fi
   if [[ "$current" == "$latest" ]]; then
     log_ok "fastfetch up to date (${current})."
-    return
+    return 1
   fi
-  log_info "Updating fastfetch ${current:-unknown} -> ${latest}..."
-  install_fastfetch
+  log_warn "fastfetch update available: ${current:-unknown} -> ${latest}"
+  return 0
 }
+
+apply_update_fastfetch() { install_fastfetch; }
 
 # ==============================================================================
 # COMPONENT: speedtest (Ookla Speedtest CLI, static binary)
@@ -455,33 +557,34 @@ install_speedtest() {
   fi
 }
 
-update_speedtest() {
+check_update_speedtest() {
   if ! status_speedtest; then
-    log_warn "speedtest not installed — installing instead of updating."
-    install_speedtest
-    return
+    log_warn "speedtest not installed — will be installed."
+    return 0
   fi
   local arch tgz_url current latest
   if ! arch=$(speedtest_arch); then
     log_err "Unsupported architecture for static speedtest binary: $(uname -m)"
-    return
+    return 1
   fi
   ensure_curl
   tgz_url=$(speedtest_tgz_url "$arch")
   if [[ -z "$tgz_url" ]]; then
     log_err "Could not determine the latest speedtest version from Ookla."
-    return
+    return 1
   fi
   latest=$(sed -E 's/.*ookla-speedtest-([0-9.]+)-.*/\1/' <<<"$tgz_url")
   current=$("$SPEEDTEST_BIN" --version 2>/dev/null | head -n1 | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n1)
   # The binary reports a build number after the release (1.2.0.84 vs 1.2.0).
   if [[ "$current" == "$latest" || "$current" == "$latest".* ]]; then
     log_ok "speedtest up to date (${current})."
-    return
+    return 1
   fi
-  log_info "Updating speedtest ${current:-unknown} -> ${latest}..."
-  install_speedtest
+  log_warn "speedtest update available: ${current:-unknown} -> ${latest}"
+  return 0
 }
+
+apply_update_speedtest() { install_speedtest; }
 
 # ==============================================================================
 # COMPONENT: audio (alsa-utils + audio group for the kiosk user)
@@ -543,8 +646,8 @@ unit_matches() {
 status_service() {
   [[ -f "$UNIT_PATH" ]] || return 1
   if [[ $FORCE -eq 1 ]] && ! unit_matches; then return 1; fi
-  systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null \
-    && systemctl is-active --quiet "$SERVICE_NAME"
+  systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null || return 1
+  in_chroot || systemctl is-active --quiet "$SERVICE_NAME"
 }
 
 install_service() {
@@ -565,6 +668,12 @@ install_service() {
     unit_content > "$UNIT_PATH"
     chmod 644 "$UNIT_PATH"
     unit_changed=1
+  fi
+
+  if in_chroot; then
+    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+    log_ok "${SERVICE_NAME}.service enabled (in chroot — it starts at the next boot)."
+    return
   fi
 
   systemctl daemon-reexec
@@ -622,12 +731,24 @@ show_display_status() {
   echo
 }
 
+show_wifi_status() {
+  local out
+  log_info "Wi-Fi (${WIFI_IFACE}):"
+  out=$(wpa_cli -i "$WIFI_IFACE" status 2>/dev/null | grep -E '^ssid|^ip_address')
+  if [[ -n "$out" ]]; then
+    sed -e 's/^/    /' -e 's/=/: /' <<<"$out"
+  else
+    echo "    not connected"
+  fi
+  echo
+}
+
 show_service_status() {
   systemctl status "$SERVICE_NAME" --no-pager -l || true
 }
 
 # ==============================================================================
-# COMPONENT: reboot (weekly reboot in root's crontab)
+# COMPONENT: reboot (nightly reboot in root's crontab)
 # ==============================================================================
 status_reboot() {
   crontab -u root -l 2>/dev/null | grep -qxF "$REBOOT_CRON"
@@ -640,15 +761,18 @@ install_reboot() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y cron
   fi
 
-  log_info "Adding weekly reboot to root's crontab..."
+  # Drop any earlier reboot entry (e.g. the weekly one) before adding ours.
+  log_info "Setting the nightly reboot in root's crontab..."
   {
-    crontab -u root -l 2>/dev/null
-    echo "# weekly reboot saturday"
+    crontab -u root -l 2>/dev/null \
+      | grep -vF "$REBOOT_CMD" \
+      | grep -vxE '# (weekly|nightly) reboot.*'
+    echo "# nightly reboot"
     echo "$REBOOT_CRON"
   } | crontab -u root -
 
   if status_reboot; then
-    log_ok "Weekly reboot scheduled (${REBOOT_CRON})."
+    log_ok "Nightly reboot scheduled (${REBOOT_CRON})."
   else
     log_err "Could not add the reboot entry to root's crontab."
   fi
@@ -691,6 +815,40 @@ install_aliases() {
 }
 
 # ==============================================================================
+# COMPONENT: overlay (overlayroot — read-only root, writes go to RAM)
+# ==============================================================================
+status_overlay() {
+  command -v overlayroot-chroot >/dev/null 2>&1 \
+    && grep -qxF "$OVERLAY_SETTING" "$OVERLAY_CONF" 2>/dev/null
+}
+
+install_overlay() {
+  if ! command -v overlayroot-chroot >/dev/null 2>&1; then
+    log_info "Installing overlayroot..."
+    ensure_apt_updated
+    DEBIAN_FRONTEND=noninteractive apt-get install -y overlayroot
+  fi
+  if ! command -v overlayroot-chroot >/dev/null 2>&1; then
+    log_err "overlayroot install failed — overlayroot-chroot not found."
+    return
+  fi
+
+  log_info "Setting ${OVERLAY_SETTING} in ${OVERLAY_CONF}..."
+  if grep -q '^overlayroot=' "$OVERLAY_CONF" 2>/dev/null; then
+    sed -i "s|^overlayroot=.*|${OVERLAY_SETTING}|" "$OVERLAY_CONF"
+  else
+    echo "$OVERLAY_SETTING" >> "$OVERLAY_CONF"
+  fi
+
+  if status_overlay; then
+    log_ok "overlayroot configured."
+    log_warn "It takes effect at the next reboot. After that, permanent changes need 'sudo overlayroot-chroot'."
+  else
+    log_err "overlayroot config did not verify — check ${OVERLAY_CONF}."
+  fi
+}
+
+# ==============================================================================
 # STATUS REPORT
 # ==============================================================================
 print_status_report() {
@@ -708,7 +866,90 @@ print_status_report() {
   if [[ -f "$UNIT_PATH" ]] && ! unit_matches; then
     log_info "${SERVICE_NAME}.service differs from CONFIG (hand-edited) — kept. --force rewrites it."
   fi
+  if root_is_overlay; then
+    log_info "Root filesystem: overlay ACTIVE — writes go to RAM and are lost at reboot."
+  elif in_chroot; then
+    log_info "Root filesystem: inside overlayroot-chroot — changes here are permanent."
+  else
+    log_info "Root filesystem: writable — overlay not active."
+  fi
   echo
+}
+
+# ==============================================================================
+# UPDATE
+# ==============================================================================
+# Check first, act second. If nothing has an update, nothing is touched.
+run_update() {
+  local c
+  local -a pending=()
+
+  echo
+  log_info "Checking for updates..."
+  for c in "${UPDATABLE_COMPONENTS[@]}"; do
+    component_selected "$c" || continue
+    if "check_update_${c}"; then pending+=("$c"); fi
+  done
+
+  echo
+  if [[ ${#pending[@]} -eq 0 ]]; then
+    log_ok "Everything is up to date — nothing to do. (edge-mpv v${SCRIPT_VERSION})"
+    return
+  fi
+
+  if root_is_overlay && ! in_chroot; then
+    apply_updates_through_overlay "${pending[@]}"
+    return
+  fi
+
+  for c in "${pending[@]}"; do
+    log_info "=== ${c} (update) ==="
+    "apply_update_${c}"
+    echo
+  done
+  log_ok "Update pass complete. (edge-mpv v${SCRIPT_VERSION})"
+}
+
+# With the overlay active an update would only land in RAM. After confirming,
+# re-run the update for the pending components inside overlayroot-chroot (the
+# real disk, remounted read-write), then reboot to load what was saved. The
+# script text is handed to the chroot's bash directly, so this works even if
+# this file only exists in the RAM overlay.
+apply_updates_through_overlay() {
+  local self="${BASH_SOURCE[0]}" list ans rc
+  list=$(IFS=,; echo "$*")
+
+  if [[ ! -f "$self" ]]; then
+    log_err "Overlay is active and this script isn't running from a file — save it to disk and run it from there."
+    exit 1
+  fi
+  if ! command -v overlayroot-chroot >/dev/null 2>&1; then
+    log_err "Overlay is active but overlayroot-chroot was not found."
+    exit 1
+  fi
+
+  log_warn "Overlay is active — updates only stick if they are applied to the real disk, followed by a reboot."
+  if [[ $ASSUME_YES -ne 1 ]]; then
+    if [[ ! -t 0 ]]; then
+      log_info "No changes made (no terminal to confirm on). Re-run with --yes to apply and reboot."
+      return
+    fi
+    read -r -p "    Apply updates (${list}) to disk and reboot now? [y/N] " ans
+    if [[ ! "$ans" =~ ^[Yy] ]]; then
+      log_info "No changes made."
+      return
+    fi
+  fi
+
+  overlayroot-chroot bash -c "$(cat "$self")" edge-mpv --update --only "$list"
+  rc=$?
+  echo
+  if [[ $rc -ne 0 ]]; then
+    log_err "The update inside overlayroot-chroot failed (exit ${rc}) — not rebooting."
+    exit 1
+  fi
+  log_ok "Updates saved to disk. Rebooting to load them..."
+  systemctl reboot
 }
 
 # ==============================================================================
@@ -721,6 +962,7 @@ check_user
 if [[ $STATUS_ONLY -eq 1 ]]; then
   print_status_report
   show_display_status
+  show_wifi_status
   show_service_status
   exit 0
 fi
@@ -731,16 +973,11 @@ if [[ $RESTART_ONLY -eq 1 ]]; then
 fi
 
 if [[ $UPDATE_MODE -eq 1 ]]; then
-  for c in "${UPDATABLE_COMPONENTS[@]}"; do
-    component_selected "$c" || continue
-    echo
-    log_info "=== ${c} (update) ==="
-    "update_${c}"
-  done
-  echo
-  log_ok "Update pass complete. (edge-mpv v${SCRIPT_VERSION})"
+  run_update
   exit 0
 fi
+
+warn_if_overlay
 
 for c in "${ALL_COMPONENTS[@]}"; do
   component_selected "$c" || continue
