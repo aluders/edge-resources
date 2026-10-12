@@ -47,14 +47,14 @@
 #
 # USAGE
 # -----
-#   su -c 'bash edge-mpv.sh'              first run on a new machine (no sudo yet)
+#   su -c 'bash edge-mpv.sh'              first run on a new machine
 #   sudo ./edge-mpv.sh                    install/repair everything
 #   sudo ./edge-mpv.sh --status           report only
 #   sudo ./edge-mpv.sh --restart          restart playback
 #   sudo ./edge-mpv.sh --update           upgrade mpv/fastfetch/speedtest
 #   sudo ./edge-mpv.sh --update --only fastfetch
 #   sudo ./edge-mpv.sh --force            reset mpv.service to CONFIG
-#   sudo ./edge-mpv.sh --overlay          last step: enable the read-only overlay
+#   sudo ./edge-mpv.sh --overlay          last step: enable the overlay
 #   sudo ./edge-mpv.sh --only service     just the systemd unit
 #   sudo ./edge-mpv.sh --skip fastfetch
 #   curl -fsSL <url> | sudo bash          remote deploy (all)
@@ -74,11 +74,11 @@
 #     3. When it's ready to deploy, enable the overlay as the last step:
 #          sudo ./edge-mpv.sh --overlay
 #          sudo reboot
-#   - OVERLAY: --overlay installs overlayroot and sets
-#     overlayroot="tmpfs" in /etc/overlayroot.conf. From the next reboot the
-#     real disk is mounted read-only and every write goes to RAM, so a power
-#     cut can't corrupt it and each boot starts from the same state. Nothing
-#     written after that survives a reboot. To make a permanent change:
+#   - OVERLAY: --overlay installs overlayroot and sets overlayroot="tmpfs" in
+#     /etc/overlayroot.conf. From the next reboot the real disk is mounted
+#     read-only and every write goes to RAM, so a power cut can't corrupt it
+#     and each boot starts from the same state. Nothing written after that
+#     survives a reboot. To make a permanent change:
 #
 #       sudo overlayroot-chroot
 #       # make changes here: edit the unit, copy a video, run apt
@@ -155,10 +155,12 @@
 #     is on the TV. It is written to /sys/class/backlight/*/brightness about
 #     10 seconds after each service start: mpv taking over the display turns
 #     the panel off and back on at full brightness, so the level has to be
-#     set after that, and it doesn't survive a reboot either. The console is still there, just dim. To read it, turn it up:
+#     set after that, and it doesn't survive a reboot either.
+#     The console is still there, just dim. To read it, turn it up until the
+#     next service start (--status shows the current level and the maximum):
 #       echo 500 | sudo tee /sys/class/backlight/*/brightness
-#     (--status shows the current level and the maximum). Change the
-#     Environment=PANEL_BRIGHTNESS= line with `mpvedit` to make it stick.
+#     To change the level for good, edit the Environment=PANEL_BRIGHTNESS=
+#     line with `mpvedit`.
 #   - Sound goes to AUDIO_DEVICE: the "Intel HDMI/DP LPE Audio" card (ALSA
 #     name "Audio"), device 2, which is the one wired to the Hi12's HDMI
 #     port. Naming the device also keeps mpv off the internal sound card
