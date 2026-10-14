@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v3.6
+#  emailprint.sh  —  Email-to-Print  v3.7
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer as PWG-Raster (raw), avoiding Brother
@@ -18,13 +18,14 @@
 #    sudo ./emailprint.sh --restart         Restart the service
 #         ./emailprint.sh --logs            Live tail of service logs
 #    sudo ./emailprint.sh --clear-logs      Clear service journal logs
-#    sudo ./emailprint.sh --backup          Save & email a config backup
+#    sudo ./emailprint.sh --backup          Save a config backup to current directory
 #    sudo ./emailprint.sh --restore <file>  Restore config from backup file
 #    sudo ./emailprint.sh --printer-info    Show printer IPP capabilities
 #    sudo ./emailprint.sh --uninstall       Remove everything
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    3.7  — Remove email backup sending; save config backup locally with YYYYMMDD-HHMMSS name
 #    3.6  — Backup mail subject "Email Print Backup"; real newline in body
 #    3.5  — Fetch with BODY.PEEK so a failed print stays unread
 #    3.4  — Point cupsfilter at the real PPD; simplify gs PWG fallback
@@ -277,7 +278,6 @@ prompt_config() {
     local def_imap_ssl="true" def_printer_ip="" def_printer="PRINTER"
     local def_poll="60" def_senders="" def_lp_media="na_letter_8.5x11in"
     local def_lp_sides="one-sided" def_lp_color="color"
-    local def_backup_email="" def_smtp_host="smtp.gmail.com" def_smtp_port="587"
     if [[ -f "$CONFIG_FILE" ]]; then
         source "$CONFIG_FILE" 2>/dev/null || true
         def_imap_host="${IMAP_HOST:-$def_imap_host}"
@@ -293,9 +293,6 @@ prompt_config() {
         def_lp_media="${LP_MEDIA:-$def_lp_media}"
         def_lp_sides="${LP_SIDES:-$def_lp_sides}"
         def_lp_color="${LP_COLOR:-$def_lp_color}"
-        def_backup_email="${BACKUP_EMAIL:-$def_backup_email}"
-        def_smtp_host="${SMTP_HOST:-$def_smtp_host}"
-        def_smtp_port="${SMTP_PORT:-$def_smtp_port}"
     fi
     echo
     echo -e "  ${YELLOW}Press ENTER to accept [defaults].${NC}"
@@ -326,12 +323,6 @@ prompt_config() {
     prompt_choice "Duplex"     "one-sided two-sided-long-edge two-sided-short-edge" "$def_lp_sides"; LP_SIDES="$REPLY"
     prompt_choice "Colour"     "color monochrome"                                   "$def_lp_color"; LP_COLOR="$REPLY"
     echo
-    echo -e "  ${BOLD}── Backup ──${NC}"
-    echo    "  Config backups can be emailed via --backup. Leave blank to skip email."
-    echo
-    prompt_value "Backup destination email"  "$def_backup_email"; BACKUP_EMAIL="$REPLY"
-    prompt_value "SMTP hostname"             "$def_smtp_host";    SMTP_HOST="$REPLY"
-    prompt_value "SMTP port"                 "$def_smtp_port";    SMTP_PORT="$REPLY"
     write_config
 }
 prompt_value() {
@@ -406,10 +397,6 @@ LP_COLOR="${LP_COLOR}"
 LP_SANITIZE="true"
 # ── Allowed attachment types ──────────────────────────────────────────────────
 ALLOWED_MIME="application/pdf"
-# ── Backup ────────────────────────────────────────────────────────────────────
-BACKUP_EMAIL="${BACKUP_EMAIL}"
-SMTP_HOST="${SMTP_HOST}"
-SMTP_PORT="${SMTP_PORT}"
 CONF
     chmod 640 "$CONFIG_FILE"
     chown "root:${SERVICE_USER}" "$CONFIG_FILE"
@@ -454,71 +441,10 @@ cmd_backup() {
     require_root
     [[ -f "$CONFIG_FILE" ]] || die "No config found. Run: sudo $0 --install"
     header "Config backup"
-    local backup_file="/tmp/emailprint-backup-$(date +%Y-%m-%d_%H%M%S).txt"
+    local backup_file="./emailprint-backup-$(date +%Y%m%d-%H%M%S).txt"
     cp "$CONFIG_FILE" "$backup_file"
-    ok "Local backup saved → ${backup_file}"
-    source "$CONFIG_FILE" 2>/dev/null || true
-    if [[ -z "${BACKUP_EMAIL:-}" ]]; then
-        info "BACKUP_EMAIL not set — email skipped."
-        return
-    fi
-    info "Emailing backup to ${BACKUP_EMAIL} via ${SMTP_HOST}:${SMTP_PORT}..."
-    local py_tmp
-    py_tmp=$(mktemp /tmp/emailprint-backup-XXXXXX.py)
-    cat > "$py_tmp" << 'PYEOF'
-import smtplib, sys
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
-from datetime import datetime
-from pathlib import Path
-cfg = {}
-config_path = sys.argv[1]
-with open(config_path) as f:
-    for line in f:
-        line = line.strip()
-        if not line or line.startswith('#') or '=' not in line:
-            continue
-        k, _, v = line.partition('=')
-        cfg[k.strip()] = v.strip().strip('"').strip("'")
-smtp_host    = cfg.get('SMTP_HOST', 'smtp.gmail.com')
-smtp_port    = int(cfg.get('SMTP_PORT', 587))
-imap_user    = cfg['IMAP_USER']
-imap_pass    = cfg['IMAP_PASS']
-backup_email = cfg['BACKUP_EMAIL']
-timestamp    = datetime.now().strftime('%Y-%m-%d %H:%M')
-msg = MIMEMultipart()
-msg['From']    = imap_user
-msg['To']      = backup_email
-msg['Subject'] = 'Email Print Backup'
-msg.attach(MIMEText(
-    "Email-to-Print configuration backup.\n"
-    "Restore with: sudo ./emailprint.sh --restore emailprint.conf\n",
-    'plain'
-))
-with open(config_path, 'rb') as f:
-    part = MIMEBase('application', 'octet-stream')
-    part.set_payload(f.read())
-    encoders.encode_base64(part)
-    attach_name = 'emailprint-backup-' + datetime.now().strftime('%Y-%m-%d_%H%M%S') + '.txt'
-    part.add_header('Content-Disposition', 'attachment; filename="' + attach_name + '"')
-    msg.attach(part)
-server = smtplib.SMTP(smtp_host, smtp_port)
-server.ehlo()
-server.starttls()
-server.login(imap_user, imap_pass)
-server.sendmail(imap_user, backup_email, msg.as_string())
-server.quit()
-print('OK')
-PYEOF
-    if python3 "$py_tmp" "$CONFIG_FILE"; then
-        ok "Backup emailed to ${BACKUP_EMAIL}"
-    else
-        error "Failed to email backup — check SMTP settings in config"
-        info "Local backup is still available at: ${backup_file}"
-    fi
-    rm -f "$py_tmp"
+    ok "Config backup saved → ${backup_file}"
+    info "Restore later with: sudo $0 --restore ${backup_file}"
 }
 cmd_restore() {
     require_root
@@ -708,7 +634,7 @@ cmd_help() {
     echo    "  sudo $0 --restart             Restart the service"
     echo    "       $0 --logs                Live tail of service logs"
     echo    "  sudo $0 --clear-logs          Clear all journal logs"
-    echo    "  sudo $0 --backup              Save & email a config backup"
+    echo    "  sudo $0 --backup              Save a config backup to current directory"
     echo    "  sudo $0 --restore <file>      Restore config from backup file"
     echo    "  sudo $0 --printer-info        Show printer IPP capabilities"
     echo    "  sudo $0 --uninstall           Remove everything"
