@@ -19,9 +19,11 @@ set -euo pipefail
 #   ./oracle-fileserver.sh --version    # Print script version
 #   ./oracle-fileserver.sh --help       # Show help
 #
-# VERSION 3.1
+# VERSION 3.2
 #
 # CHANGELOG (newest first):
+#   3.2  - Directory listings now use a dark theme (dark bg, light text,
+#          blue links). Still shows human-readable sizes.
 #   3.1  - Directory listings now show human-readable file sizes
 #          (KB/MB/GB etc., similar to ls -lh). Custom Python handler
 #          replaces stock http.server. Version scheme switched to
@@ -60,7 +62,7 @@ set -euo pipefail
 #   1.1  - Versioned header, colorized status, --version / --help.
 #   1.0  - Initial: install, --status, --logs, --restart, --update, --uninstall.
 ############################################
-VERSION="3.1"
+VERSION="3.2"
 ############################################
 # CONFIGURATION
 ############################################
@@ -530,6 +532,28 @@ class HumanSizeHandler(SimpleHTTPRequestHandler):
         r.append('<head>')
         r.append(f'<meta charset="{enc}">')
         r.append(f'<title>{title}</title>')
+        r.append('''<style>
+            :root {
+                color-scheme: dark;
+            }
+            body {
+                background: #0d1117;
+                color: #c9d1d9;
+                font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+                margin: 2rem;
+                line-height: 1.5;
+            }
+            h1 { color: #f0f6fc; font-size: 1.4rem; }
+            hr { border: 0; border-top: 1px solid #30363d; margin: 1rem 0; }
+            ul { list-style: none; padding: 0; margin: 0; }
+            li { margin: 0.25rem 0; }
+            a {
+                color: #58a6ff;
+                text-decoration: none;
+            }
+            a:hover { text-decoration: underline; color: #79c0ff; }
+            .size { color: #8b949e; font-variant-numeric: tabular-nums; }
+        </style>''')
         r.append('</head>')
         r.append('<body>')
         r.append(f'<h1>{title}</h1>')
@@ -550,9 +574,9 @@ class HumanSizeHandler(SimpleHTTPRequestHandler):
             if os.path.isfile(fullname):
                 try:
                     size = os.path.getsize(fullname)
-                    size_str = f" ({human_readable(size)})"
+                    size_str = f' <span class="size">({human_readable(size)})</span>'
                 except OSError:
-                    size_str = " (size unknown)"
+                    size_str = ' <span class="size">(size unknown)</span>'
             r.append(f'<li><a href="{urllib.parse.quote(linkname)}">{escape(displayname)}</a>{size_str}</li>')
         r.append('</ul>')
         r.append('<hr>')
@@ -569,7 +593,7 @@ class HumanSizeHandler(SimpleHTTPRequestHandler):
 if __name__ == '__main__':
     os.chdir('/home/opc/files')
     server = ThreadingHTTPServer(('', 8080), HumanSizeHandler)
-    print("Serving /home/opc/files on port 8080 with human-readable sizes")
+    print("Serving /home/opc/files on port 8080 with human-readable sizes (dark mode)")
     server.serve_forever()
 PYEOF
 chmod 755 "$CUSTOM_SERVER"
