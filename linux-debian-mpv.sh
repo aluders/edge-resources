@@ -78,17 +78,34 @@
 #     /etc/overlayroot.conf. From the next reboot the real disk is mounted
 #     read-only and every write goes to RAM, so a power cut can't corrupt it
 #     and each boot starts from the same state. Nothing written after that
-#     survives a reboot. To make a permanent change:
+#     survives a reboot. There are two ways to make permanent changes:
 #
-#       sudo overlayroot-chroot
-#       # make changes here: edit the unit, copy a video, run apt
-#       exit
-#       sudo reboot
+#     A. For one session, overlay stays on. Work on the real disk in a
+#        chroot, then reboot:
+#          sudo overlayroot-chroot
+#          # make changes here: edit the unit, copy a video, run apt
+#          exit
+#          sudo reboot
+#        Good for quick edits and a normal run of this script. Limits: no
+#        services start inside the chroot, and DNS can fail there (the real
+#        disk's /etc/resolv.conf may hold an old network's DNS server).
 #
-#     That covers `mpvedit`, swapping the video, apt, and a normal run of
-#     this script. Run outside the chroot with the overlay active, a normal
-#     run warns that its changes are temporary.
-#     --update is the exception and needs no manual chroot. It always checks
+#     B. Turn the overlay off until you turn it back on. Survives any
+#        number of reboots, and the machine runs normally meanwhile:
+#          sudo overlayroot-chroot
+#          sed -i 's/^overlayroot=.*/overlayroot=""/' /etc/overlayroot.conf
+#          exit
+#          sudo reboot
+#        ...make and test changes, reboot as often as needed, then:
+#          sudo ./edge-mpv.sh --overlay
+#          sudo reboot
+#        Use this for anything that needs the network, running services or
+#        state written on first run, e.g. installing a remote-management
+#        agent, which would otherwise lose its registration every night.
+#
+#     Run outside the chroot with the overlay active, a normal run of this
+#     script warns that its changes are temporary.
+#     --update is the exception and needs neither method. It always checks
 #     first and changes nothing if everything is current. If updates are
 #     available and the overlay is active, it asks "apply to disk and
 #     reboot?"; on yes it re-runs itself inside overlayroot-chroot for just
@@ -100,8 +117,6 @@
 #     real disk from outside the chroot:
 #       sudo mount -o remount,rw /media/root-ro
 #       sudo cp FILE /media/root-ro/home/edgeadmin/
-#     To turn the overlay off, set overlayroot="" in /etc/overlayroot.conf
-#     from inside the chroot and reboot.
 #   - The reboot is nightly because of the overlay: logs and temp files
 #     accumulate in RAM and the reboot clears them.
 #   - Idempotent: every component has a status check, and a component that
