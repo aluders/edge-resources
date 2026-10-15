@@ -19,30 +19,34 @@ set -euo pipefail
 #   ./oracle-fileserver.sh --version    # Print script version
 #   ./oracle-fileserver.sh --help       # Show help
 #
-# VERSION 1.20
+# VERSION 3.1
 #
 # CHANGELOG (newest first):
-#   1.20 - Call remove_impostor_speedtest() *before* install/check
+#   3.1  - Directory listings now show human-readable file sizes
+#          (KB/MB/GB etc., similar to ls -lh). Custom Python handler
+#          replaces stock http.server. Version scheme switched to
+#          sequential 2-digit (1.9 → 2.0 → 2.1 …).
+#   3.0  - Call remove_impostor_speedtest() *before* install/check
 #          (step 11 + --update) so pip uninstall can't delete our
-#          binary as collateral. Removed the reactive reinstall from 1.19.
-#   1.19 - After pip uninstall, re-verify $SPEEDTEST_BIN and reinstall
+#          binary as collateral. Removed the reactive reinstall from 2.9.
+#   2.9  - After pip uninstall, re-verify $SPEEDTEST_BIN and reinstall
 #          Ookla if it was deleted (pip removes every path in its record).
-#   1.18 - Also uninstall pip-installed speedtest-cli even if not in PATH
+#   2.8  - Also uninstall pip-installed speedtest-cli even if not in PATH
 #          (dead weight; real conflict was a shell alias we leave alone).
-#   1.17 - Confirm remove_impostor_speedtest() outcome with [+]/[x].
-#   1.16 - remove_impostor_speedtest(): remove non-Ookla 'speedtest'
+#   2.7  - Confirm remove_impostor_speedtest() outcome with [+]/[x].
+#   2.6  - remove_impostor_speedtest(): remove non-Ookla 'speedtest'
 #          earlier in PATH (dnf if rpm-owned, else rm). Called from
 #          step 11 and --update.
-#   1.15 - Skip cloudflared download if already present (idempotent
+#   2.5  - Skip cloudflared download if already present (idempotent
 #          re-runs; --update is for upgrades).
-#   1.14 - Capture DNS route output; report via [+]/[x] instead of
+#   2.4  - Capture DNS route output; report via [+]/[x] instead of
 #          dumping cloudflared's raw log.
-#   1.13 - DOMAIN fixed to files.edgeintegrated.net (was placeholder;
+#   2.3  - DOMAIN fixed to files.edgeintegrated.net (was placeholder;
 #          prior runs left a stray CNAME — remove manually in dashboard).
-#   1.12 - fastfetch version: take field 2 (not the arch suffix).
+#   2.2  - fastfetch version: take field 2 (not the arch suffix).
 #          speedtest checks use $SPEEDTEST_BIN (sudo secure_path issue).
-#   1.11 - Pin HOME=/home/opc for tunnel route dns too.
-#   1.10 - Idempotent auth + tunnel create: skip login if cert.pem
+#   2.1  - Pin HOME=/home/opc for tunnel route dns too.
+#   2.0  - Idempotent auth + tunnel create: skip login if cert.pem
 #          exists; reuse existing tunnel by name.
 #   1.9  - Call "$CLOUDFLARED_BIN" directly (sudo secure_path).
 #          Pin HOME=/home/opc for login/create/delete.
@@ -56,13 +60,14 @@ set -euo pipefail
 #   1.1  - Versioned header, colorized status, --version / --help.
 #   1.0  - Initial: install, --status, --logs, --restart, --update, --uninstall.
 ############################################
-VERSION="1.20"
+VERSION="3.1"
 ############################################
 # CONFIGURATION
 ############################################
 TUNNEL_NAME="oracle"
 DOMAIN="files.edgeintegrated.net"
 FILE_DIR="/home/opc/files"
+CUSTOM_SERVER="/home/opc/fileserver.py"
 CLOUDFLARED_BIN="/usr/local/sbin/cloudflared"
 SPEEDTEST_BIN="/usr/local/bin/speedtest"
 CONFIG_DIR="/home/opc/.cloudflared"
@@ -89,12 +94,6 @@ get_cloudflared_version() {
     fi
 }
 download_cloudflared_binary() {
-    # Download to a temp file and mv (atomic rename) into place, rather
-    # than curl -o'ing straight over $CLOUDFLARED_BIN. Overwriting a binary
-    # in place fails with ETXTBSY ("Text file busy") if that exact file is
-    # the currently-running cloudflared service; mv replaces the directory
-    # entry instead of writing into the busy inode, so it works whether or
-    # not the service happens to be running.
     local tmp_bin="${CLOUDFLARED_BIN}.new"
     sudo curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 \
         -o "$tmp_bin"
@@ -133,8 +132,6 @@ get_speedtest_version() {
     fi
 }
 speedtest_latest_tgz_url() {
-    # Ookla only ships static tarballs, no aarch64 dnf/packagecloud repo,
-    # so this scrapes the same URL pattern the CLI download page publishes.
     curl -fsSL https://www.speedtest.net/apps/cli 2>/dev/null \
         | grep -Eo 'https://install\.speedtest\.net/app/cli/ookla-speedtest-[0-9.]+-linux-aarch64\.tgz' \
         | head -n1
@@ -156,11 +153,6 @@ install_speedtest_binary() {
     rm -rf "$tmp"
 }
 remove_impostor_speedtest() {
-    # $SPEEDTEST_BIN being correct doesn't mean a bare `speedtest` in an
-    # interactive shell resolves to it -- something earlier in PATH (e.g.
-    # a dnf/EPEL 'speedtest-cli' package at /usr/bin/speedtest) can still
-    # shadow it. Find whatever PATH actually resolves and remove it if
-    # it's not our own binary and not some other Ookla install.
     local found pkg
     found=$(command -v speedtest 2>/dev/null || true)
     if [[ -n "$found" && "$found" != "$SPEEDTEST_BIN" ]] && ! "$found" --version 2>/dev/null | grep -qi ookla; then
@@ -176,16 +168,6 @@ remove_impostor_speedtest() {
             success "Removed impostor speedtest at $found."
         fi
     fi
-    # Separately, clean up a pip-installed speedtest-cli even if it isn't
-    # currently winning PATH resolution -- e.g. only reachable through a
-    # shell alias, which command -v can't see and this script shouldn't
-    # touch (that's the person's own dotfiles, not ours to edit). The
-    # package itself is still dead weight and a recurring source of
-    # confusion, so pull it regardless. Called before we ever write
-    # $SPEEDTEST_BIN (see step 11 / --update) so that if pip's own
-    # install record happens to reference that same path -- pip
-    # uninstall deletes whatever's on record unconditionally -- there's
-    # nothing of ours there yet for it to take out as collateral damage.
     if command -v pip3 >/dev/null 2>&1 && pip3 show speedtest-cli >/dev/null 2>&1; then
         warn "Found pip-installed speedtest-cli package -- uninstalling it."
         if sudo pip3 uninstall -y speedtest-cli >/dev/null 2>&1; then
@@ -397,21 +379,23 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     echo " UNINSTALL Cloudflare Tunnel + File Server"
     echo "=========================================="
     echo
-    info "[1/6] Stopping services..."
+    info "[1/7] Stopping services..."
     sudo systemctl stop cloudflared fileserver 2>/dev/null || true
     sudo systemctl disable cloudflared fileserver 2>/dev/null || true
-    info "[2/6] Removing systemd files..."
+    info "[2/7] Removing systemd files..."
     sudo rm -f "$SYSTEMD_CF" "$SYSTEMD_FS"
     sudo systemctl daemon-reload
-    info "[3/6] Removing cloudflared binary..."
+    info "[3/7] Removing cloudflared binary..."
     sudo rm -f "$CLOUDFLARED_BIN"
-    info "[4/6] Removing cloudflared configs..."
+    info "[4/7] Removing cloudflared configs..."
     rm -rf "$CONFIG_DIR" || true
     sudo rm -rf /etc/cloudflared || true
-    info "[5/6] Removing SELinux labels..."
+    info "[5/7] Removing custom file server..."
+    rm -f "$CUSTOM_SERVER" || true
+    info "[6/7] Removing SELinux labels..."
     sudo semanage fcontext -d "$CLOUDFLARED_BIN" 2>/dev/null || true
     sudo restorecon -R -v /usr/local/sbin 2>/dev/null || true
-    info "[6/6] File directory cleanup"
+    info "[7/7] File directory cleanup"
     if [[ -d "$FILE_DIR" ]]; then
         read -p "Delete file directory ($FILE_DIR)? [y/N]: " ans
         if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
@@ -513,16 +497,90 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable cloudflared
-info "[8/11] Installing Python file server..."
+info "[8/11] Installing Python file server with human-readable sizes..."
 mkdir -p "$FILE_DIR"
+cat << 'PYEOF' > "$CUSTOM_SERVER"
+#!/usr/bin/env python3
+import os
+import urllib.parse
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from html import escape
+
+def human_readable(size):
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024.0:
+            return f"{size:.1f}{unit}"
+        size /= 1024.0
+    return f"{size:.1f}PB"
+
+class HumanSizeHandler(SimpleHTTPRequestHandler):
+    def list_directory(self, path):
+        try:
+            listdir = os.listdir(path)
+        except OSError:
+            self.send_error(404, "No permission to list directory")
+            return None
+        listdir.sort(key=lambda a: a.lower())
+        displaypath = urllib.parse.unquote(self.path)
+        enc = 'utf-8'
+        title = f"Directory listing for {escape(displaypath)}"
+        r = []
+        r.append('<!DOCTYPE HTML>')
+        r.append('<html lang="en">')
+        r.append('<head>')
+        r.append(f'<meta charset="{enc}">')
+        r.append(f'<title>{title}</title>')
+        r.append('</head>')
+        r.append('<body>')
+        r.append(f'<h1>{title}</h1>')
+        r.append('<hr>')
+        r.append('<ul>')
+        # Parent directory link
+        if displaypath != '/':
+            r.append('<li><a href="../">..</a></li>')
+        for name in listdir:
+            fullname = os.path.join(path, name)
+            displayname = linkname = name
+            if os.path.isdir(fullname):
+                displayname = name + "/"
+                linkname = name + "/"
+            if os.path.islink(fullname):
+                displayname = name + "@"
+            size_str = ""
+            if os.path.isfile(fullname):
+                try:
+                    size = os.path.getsize(fullname)
+                    size_str = f" ({human_readable(size)})"
+                except OSError:
+                    size_str = " (size unknown)"
+            r.append(f'<li><a href="{urllib.parse.quote(linkname)}">{escape(displayname)}</a>{size_str}</li>')
+        r.append('</ul>')
+        r.append('<hr>')
+        r.append('</body>')
+        r.append('</html>')
+        encoded = '\n'.join(r).encode(enc, 'surrogateescape')
+        self.send_response(200)
+        self.send_header("Content-type", f"text/html; charset={enc}")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+        return None
+
+if __name__ == '__main__':
+    os.chdir('/home/opc/files')
+    server = ThreadingHTTPServer(('', 8080), HumanSizeHandler)
+    print("Serving /home/opc/files on port 8080 with human-readable sizes")
+    server.serve_forever()
+PYEOF
+chmod 755 "$CUSTOM_SERVER"
 sudo tee "$SYSTEMD_FS" >/dev/null <<EOF
 [Unit]
-Description=Python File Server
+Description=Python File Server (human-readable sizes)
 After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$FILE_DIR
-ExecStart=/usr/bin/python3 -m http.server 8080
+ExecStart=/usr/bin/python3 $CUSTOM_SERVER
 Restart=always
 RestartSec=3
 User=opc
