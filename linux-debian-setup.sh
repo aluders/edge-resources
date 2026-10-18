@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU BASELINE SETUP v1.16
+# UBUNTU / DEBIAN BASELINE SETUP v2.9
 # ==============================================================================
 #
 # WHAT IT DOES
 # ------------
-# Installs and configures a default toolset on a fresh Ubuntu box:
+# Installs and configures a default toolset on a fresh Ubuntu or Debian box:
 #
 #   dns        - disables the systemd-resolved stub listener (frees :53) and
-#                points /etc/resolv.conf at the real systemd-resolved socket
+#                points /etc/resolv.conf at the real systemd-resolved socket.
+#                Ubuntu only in practice: skipped automatically ("n/a") on
+#                systems where systemd-resolved isn't in use, e.g. minimal
+#                Debian, where nothing is squatting on :53 to begin with
 #   pihole     - installs Pi-hole (official installer)
 #   dnscrypt   - installs dnscrypt-proxy, sets upstream to cloudflare-family,
 #                rebinds it to 127.0.0.1:5053 (socket override), and — if
@@ -53,13 +56,18 @@
 #   sudo ./setup-ubuntu-baseline.sh --update --only tautulli   update just one component
 #   sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
 #   sudo ./setup-ubuntu-baseline.sh --skip pihole,tautulli
-#   curl -fsSL ubuntu.vcc.net | sudo bash                 remote deploy (all)
 #
 # NOTES
 # -----
-#   - Must be run as root (re-execs itself with sudo if it isn't).
-#   - Built/tested against Ubuntu 26.04 (Server). Falls back gracefully on
-#     other 22.04+ releases; anything older will warn and continue.
+#   - Must be run as root (re-execs itself with sudo if it isn't; if sudo
+#     isn't installed, which is the case on minimal Debian, it says so and
+#     exits instead of failing cryptically).
+#   - Built/tested against Ubuntu 26.04 (Server). Debian 13 (trixie) support
+#     was added in v2.7 from known package/unit layouts and has not yet been
+#     run on a real Debian box — treat the first Debian deploy as the test.
+#     Other releases/distros warn and continue.
+#   - python3 isn't part of a minimal Debian install; the tautulli component
+#     installs it (plus the venv package) on demand.
 #   - The Pi-hole installer is Pi-hole's own upstream script and is
 #     interactive by design (asks about interface, upstream DNS, blocklists,
 #     web UI). This script does not attempt to silently answer those
@@ -114,14 +122,37 @@
 #
 # VERSION HISTORY
 # ----------------
-#   v1.16 - --update no longer prints the final Component status report.
+#   v2.9 - Docs only: removed the `curl -fsSL ubuntu.vcc.net | sudo bash`
+#          remote-deploy example from the USAGE block and from `--help`.
+#          The script is only ever run locally.
+#   v2.8 - Docs only: removed the "Minimal Debian bootstrap" note (the
+#          su -/apt-get/curl one-liner) from NOTES — the script is always
+#          run locally, so the remote-bootstrap instructions didn't apply.
+#   v2.7 - Debian capable (written for Debian 13; see NOTES — untested on
+#          real Debian as of this version). Versioning scheme is now X.0
+#          through X.9 then rolls to the next major (1.9 -> 2.0, never 1.10);
+#          v1.10-v1.16 were renumbered v2.0-v2.6 throughout this history.
+#          - check_os accepts Debian/Raspbian (13) alongside Ubuntu (26.04).
+#          - dns is now skipped as "n/a" when systemd-resolved isn't in use
+#            (new generic na_<component> hook; the main loop and status
+#            report both honor it). Keyed on whether resolved is actually
+#            running/enabled, not on distro name, so a Debian box that does
+#            run resolved still gets the stub-listener fix.
+#          - Root check: if not root and sudo is missing (minimal Debian),
+#            print how to proceed instead of "sudo: command not found".
+#          - New ensure_prerequisites: installs curl + ca-certificates when
+#            absent (silent no-op otherwise, so Ubuntu runs are unchanged).
+#          - tautulli: installs python3 itself when missing before probing
+#            versions/venv (minimal Debian has no python3; the old code
+#            called it unconditionally).
+#   v2.6 - --update no longer prints the final Component status report.
 #           That report calls every status_<c> function — the same
-#           config-correctness checks v1.15 deliberately removed from the
+#           config-correctness checks v2.5 deliberately removed from the
 #           update path itself — so showing it after --update reintroduced
 #           config-checking through the back door. --update now ends with
 #           a plain "Update pass complete" line instead; use a normal run
 #           or --status for full config state.
-#   v1.15 - --update no longer touches config at all, only versions. The
+#   v2.5 - --update no longer touches config at all, only versions. The
 #           previous update_dnscrypt/update_tautulli gated on the full
 #           status_<c> check (deep config/service validation) and fell
 #           through to install_<c> (full repair: rewrite config, reassert
@@ -136,7 +167,7 @@
 #           — no config rewrite, no ownership/systemd-unit reassertion.
 #           If a component isn't installed, --update reports that and
 #           stops; install/repair still only happens via a normal run.
-#   v1.14 - dns and pihole_upstream removed from --update entirely (new
+#   v2.4 - dns and pihole_upstream removed from --update entirely (new
 #           UPDATABLE_COMPONENTS list). Neither has a versioned artifact,
 #           so under --update they were only ever printing a no-op
 #           "nothing to do" — that's not an update, it's noise. A normal
@@ -144,7 +175,7 @@
 #           always. If explicitly selected via --update --only dns, a
 #           one-line note explains why nothing happened rather than
 #           silently doing nothing.
-#   v1.13 - Every scripted package-manager call switched from `apt` to
+#   v2.3 - Every scripted package-manager call switched from `apt` to
 #           `apt-get`/`apt-cache`. `apt` explicitly warns "does not have a
 #           stable CLI interface, use with caution in scripts" and prints
 #           that to stderr on essentially every invocation — apt-get is
@@ -153,20 +184,20 @@
 #           tool actually meant for this. (The one remaining `apt install`
 #           reference is inside a manual-troubleshooting log message meant
 #           for a human to type interactively, left as-is on purpose.)
-#   v1.12 - fastfetch_install_latest_deb: chmod the mktemp dir/deb to
+#   v2.2 - fastfetch_install_latest_deb: chmod the mktemp dir/deb to
 #           world-readable before handing off to `apt install`. apt's
 #           sandboxed download step runs as the _apt user, which can't
 #           read into mktemp's default 0700 dir — harmless but noisy
 #           ("Download is performed unsandboxed... Permission denied")
 #           on every fastfetch install/update. Purely cosmetic fix.
-#   v1.11 - fastfetch dropped apt entirely — same reasoning as speedtest's
+#   v2.1 - fastfetch dropped apt entirely — same reasoning as speedtest's
 #           v1.2 change: Ubuntu's repo version lags upstream (this is what
-#           caused the v1.10 bug, apt silently satisfying an older version
+#           caused the v2.0 bug, apt silently satisfying an older version
 #           and masking a real update). install_fastfetch and
 #           update_fastfetch both now go straight to the latest GitHub
 #           release .deb via the shared fastfetch_install_latest_deb(),
 #           no apt-first/apt-upgradable branching left.
-#   v1.10 - Real bug fix: update_fastfetch correctly detected a newer
+#   v2.0 - Real bug fix: update_fastfetch correctly detected a newer
 #           GitHub release but then called install_fastfetch(), which
 #           tries `apt install fastfetch` first — that's a silent no-op
 #           when fastfetch is already installed via apt, even at an older
@@ -256,7 +287,7 @@
 set -uo pipefail
 
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="1.16"
+SCRIPT_VERSION="2.9"
 DNSCRYPT_SERVER_NAMES="cloudflare-family"
 DNSCRYPT_TOML="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
 DNSCRYPT_SOCKET_OVERRIDE_DIR="/etc/systemd/system/dnscrypt-proxy.socket.d"
@@ -293,7 +324,7 @@ SKIP_LIST=""
 # ------------------------------------------------------------------ USAGE --
 usage() {
   cat <<EOF
-UBUNTU BASELINE SETUP (v${SCRIPT_VERSION})
+UBUNTU / DEBIAN BASELINE SETUP (v${SCRIPT_VERSION})
 
 Installs/repairs: dns (stub-listener disable), pihole, dnscrypt-proxy
 (cloudflare-family @ 127.0.0.1:5053), fastfetch, Ookla speedtest, tautulli
@@ -317,7 +348,6 @@ Usage:
   sudo ./setup-ubuntu-baseline.sh --update --only tautulli   update just one component
   sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
   sudo ./setup-ubuntu-baseline.sh --skip pihole,tautulli
-  curl -fsSL ubuntu.vcc.net | sudo bash                 remote deploy (all)
 EOF
 }
 
@@ -353,23 +383,61 @@ component_updatable() {
   return 1
 }
 
+# True if the component defines a na_<c> hook and it says "not applicable here".
+component_na() {
+  declare -F "na_${1}" >/dev/null 2>&1 && "na_${1}"
+}
+
 # -------------------------------------------------------------- ROOT CHECK --
 if [[ $EUID -ne 0 ]]; then
-  log_info "Re-running with sudo..."
-  exec sudo -E bash "$0" "$@"
+  if command -v sudo >/dev/null 2>&1; then
+    log_info "Re-running with sudo..."
+    exec sudo -E bash "$0" "$@"
+  fi
+  # Minimal Debian doesn't ship sudo. Fail with a usable instruction instead
+  # of a bare "sudo: command not found".
+  log_err "Must run as root, and sudo isn't installed (normal on minimal Debian)."
+  log_err "Either become root and re-run:   su -   then   $0"
+  log_err "or install sudo first (as root): apt-get install -y sudo"
+  exit 1
 fi
 
 # ---------------------------------------------------------------- OS CHECK --
+DISTRO_ID="unknown"
 check_os() {
   if [[ -r /etc/os-release ]]; then
     . /etc/os-release
-    if [[ "${ID:-}" != "ubuntu" ]]; then
-      log_warn "This doesn't look like Ubuntu (ID=${ID:-unknown}). Continuing anyway."
-    elif [[ "${VERSION_ID:-}" != "26.04" ]]; then
-      log_warn "Built for Ubuntu 26.04, detected ${VERSION_ID:-unknown}. Continuing anyway."
-    fi
+    DISTRO_ID="${ID:-unknown}"
+    case "$DISTRO_ID" in
+      ubuntu)
+        [[ "${VERSION_ID:-}" == "26.04" ]] \
+          || log_warn "Built for Ubuntu 26.04, detected ${VERSION_ID:-unknown}. Continuing anyway."
+        ;;
+      debian|raspbian)
+        [[ "${VERSION_ID:-}" == "13" ]] \
+          || log_warn "Built for Debian 13, detected ${VERSION_ID:-unknown}. Continuing anyway."
+        ;;
+      *)
+        log_warn "Built for Ubuntu/Debian (apt + systemd); detected ID=${DISTRO_ID}. Continuing anyway."
+        ;;
+    esac
   else
     log_warn "Could not read /etc/os-release; skipping OS version check."
+  fi
+}
+
+# Minimal Debian installs can lack curl and a CA bundle, which every download
+# in this script (Pi-hole, fastfetch, speedtest, Tautulli's git clone) needs.
+# Silent no-op when both are already present, so Ubuntu runs are unchanged.
+ensure_prerequisites() {
+  local missing=()
+  command -v curl >/dev/null 2>&1 || missing+=(curl)
+  dpkg -s ca-certificates >/dev/null 2>&1 || missing+=(ca-certificates)
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_info "Installing base prerequisites: ${missing[*]}"
+    ensure_apt_updated
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" \
+      || log_err "Could not install ${missing[*]} — downloads below will likely fail."
   fi
 }
 
@@ -384,7 +452,22 @@ ensure_apt_updated() {
 # ==============================================================================
 # COMPONENT: dns (disable systemd-resolved stub listener)
 # ==============================================================================
+# The stub listener only exists where systemd-resolved is running, which is
+# Ubuntu's default but NOT minimal Debian's (resolved isn't installed there,
+# so nothing is squatting on :53). Decided by whether resolved is actually in
+# use rather than by distro name, so a Debian box that did install and enable
+# systemd-resolved still gets the fix.
+resolved_in_use() {
+  systemctl is-active --quiet systemd-resolved 2>/dev/null \
+    || systemctl is-enabled --quiet systemd-resolved 2>/dev/null
+}
+
+# na_<component>: optional hook. Returns 0 when the component doesn't apply
+# on this system; the main loop and status report then show "n/a" and skip it.
+na_dns() { ! resolved_in_use; }
+
 status_dns() {
+  na_dns && return 0
   local ok=1
   if [[ -f "$RESOLVED_DROPIN" ]] && grep -q '^DNSStubListener=no' "$RESOLVED_DROPIN"; then
     :
@@ -668,10 +751,19 @@ status_tautulli() {
 install_tautulli() {
   ensure_apt_updated
 
-  # ---- dependencies (git, python3-venv/ensurepip) ----
-  log_info "Checking tautulli dependencies (git, venv, pip)..."
-  local missing=()
+  # ---- dependencies (git, python3, python3-venv/ensurepip) ----
+  log_info "Checking tautulli dependencies (git, python3, venv, pip)..."
+  local missing=() pkg
   command -v git >/dev/null 2>&1 || missing+=(git)
+  command -v python3 >/dev/null 2>&1 || missing+=(python3)
+  # Minimal Debian ships without python3, and the version/venv probes below
+  # all need it — so install git/python3 first, then probe what's left.
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_info "Installing: ${missing[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" \
+      || { log_err "Could not install ${missing[*]} — aborting tautulli install."; return; }
+    missing=()
+  fi
   local py_ver
   py_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
   if ! python3 -m venv --without-pip /tmp/.tautulli_venv_check_$$ >/dev/null 2>&1; then
@@ -869,7 +961,9 @@ print_status_report() {
   local c ok
   for c in "${ALL_COMPONENTS[@]}"; do
     component_selected "$c" || continue
-    if "status_${c}" >/dev/null 2>&1; then
+    if component_na "$c"; then
+      log_info "$c — n/a on this system"
+    elif "status_${c}" >/dev/null 2>&1; then
       log_ok "$c"
     else
       log_warn "$c — not configured / needs attention"
@@ -887,6 +981,8 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   print_status_report
   exit 0
 fi
+
+ensure_prerequisites
 
 for c in "${ALL_COMPONENTS[@]}"; do
   component_selected "$c" || continue
@@ -909,7 +1005,9 @@ for c in "${ALL_COMPONENTS[@]}"; do
   else
     echo
     log_info "=== ${c} ==="
-    if "status_${c}"; then
+    if component_na "$c"; then
+      log_ok "${c} not applicable on this system — skipped."
+    elif "status_${c}"; then
       log_ok "${c} already configured correctly — nothing to do."
     else
       "install_${c}"
