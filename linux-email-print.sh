@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  emailprint.sh  —  Email-to-Print  v3.7
+#  emailprint.sh  —  Email-to-Print  v3.8
 # =============================================================================
 #  Monitors an IMAP mailbox folder for unread emails and sends PDF attachments
 #  to a CUPS-registered network printer as PWG-Raster (raw), avoiding Brother
@@ -25,6 +25,7 @@
 #         ./emailprint.sh --help            Show this help
 # =============================================================================
 #  Version history:
+#    3.8  — Backup file is chowned back to SUDO_USER so it is readable
 #    3.7  — Remove email backup sending; save config backup locally with YYYYMMDD-HHMMSS name
 #    3.6  — Backup mail subject "Email Print Backup"; real newline in body
 #    3.5  — Fetch with BODY.PEEK so a failed print stays unread
@@ -443,7 +444,15 @@ cmd_backup() {
     header "Config backup"
     local backup_file="./emailprint-backup-$(date +%Y%m%d-%H%M%S).txt"
     cp "$CONFIG_FILE" "$backup_file"
-    ok "Config backup saved → ${backup_file}"
+    # Hand ownership back to the invoking user so the file is readable without sudo
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        chown "$SUDO_USER:$SUDO_USER" "$backup_file" 2>/dev/null || true
+        chmod 644 "$backup_file"
+        ok "Config backup saved → ${backup_file} (owned by ${SUDO_USER})"
+    else
+        chmod 644 "$backup_file"
+        ok "Config backup saved → ${backup_file}"
+    fi
     info "Restore later with: sudo $0 --restore ${backup_file}"
 }
 cmd_restore() {
