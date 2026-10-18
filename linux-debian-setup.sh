@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU / DEBIAN BASELINE SETUP v2.9
+# UBUNTU / DEBIAN BASELINE SETUP v3.0
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -50,18 +50,27 @@
 #
 # USAGE
 # -----
-#   sudo ./setup-ubuntu-baseline.sh                      install/repair everything
-#   sudo ./setup-ubuntu-baseline.sh --status              report only
-#   sudo ./setup-ubuntu-baseline.sh --update               update everything to latest
-#   sudo ./setup-ubuntu-baseline.sh --update --only tautulli   update just one component
-#   sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
-#   sudo ./setup-ubuntu-baseline.sh --skip pihole,tautulli
+#   su -c 'bash debian-setup.sh'                      first run on a new Debian install
+#   sudo ./debian-setup.sh                            install/repair everything
+#   sudo ./debian-setup.sh --status                   report only
+#   sudo ./debian-setup.sh --update                   update everything to latest
+#   sudo ./debian-setup.sh --update --only tautulli   update just one component
+#   sudo ./debian-setup.sh --only dnscrypt,fastfetch
+#   sudo ./debian-setup.sh --skip pihole,tautulli
 #
 # NOTES
 # -----
-#   - Must be run as root (re-execs itself with sudo if it isn't; if sudo
-#     isn't installed, which is the case on minimal Debian, it says so and
-#     exits instead of failing cryptically).
+#   - Must be run as root (re-execs itself with sudo if it isn't). Minimal
+#     Debian has no sudo, so the first run there is
+#         su -c 'bash debian-setup.sh'
+#     which installs sudo and adds your login user (found via `logname`) to
+#     the sudo group — Debian only does that at install time if root's
+#     password was left blank. Log out and back in afterwards so the new
+#     group applies; from then on every `sudo ./...` usage below works. If
+#     the login user can't be determined it says so and prints the
+#     `usermod -aG sudo <user>` command instead of guessing. Only the run
+#     that installs sudo ever changes group membership. Run without root
+#     and without sudo and it just prints the first-run command and exits.
 #   - Built/tested against Ubuntu 26.04 (Server). Debian 13 (trixie) support
 #     was added in v2.7 from known package/unit layouts and has not yet been
 #     run on a real Debian box — treat the first Debian deploy as the test.
@@ -122,6 +131,17 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.0 - First-run bootstrap on a fresh Debian: ensure_prerequisites now
+#          also installs sudo when it's missing, then (that run only) adds
+#          the login user to the sudo group via the new
+#          grant_sudo_to_login_user, because the package alone doesn't help
+#          — Debian skips the sudo-group step when a root password is set.
+#          User is identified by `logname`, never guessed; if unknown, a
+#          warning with the manual `usermod -aG sudo` command is printed
+#          instead. Ubuntu and repeat runs are unaffected (sudo already
+#          present = nothing happens). Added the `su -c 'bash ...'` first-
+#          run line to USAGE/--help, and the no-sudo error now prints that
+#          same command.
 #   v2.9 - Docs only: removed the `curl -fsSL ubuntu.vcc.net | sudo bash`
 #          remote-deploy example from the USAGE block and from `--help`.
 #          The script is only ever run locally.
@@ -287,7 +307,7 @@
 set -uo pipefail
 
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="2.9"
+SCRIPT_VERSION="3.0"
 DNSCRYPT_SERVER_NAMES="cloudflare-family"
 DNSCRYPT_TOML="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
 DNSCRYPT_SOCKET_OVERRIDE_DIR="/etc/systemd/system/dnscrypt-proxy.socket.d"
@@ -342,12 +362,13 @@ Flags:
   LIST is a comma-separated list drawn from: $(IFS=,; echo "${ALL_COMPONENTS[*]}" | sed 's/,/, /g')
 
 Usage:
-  sudo ./setup-ubuntu-baseline.sh                      install/repair everything
-  sudo ./setup-ubuntu-baseline.sh --status              report only
-  sudo ./setup-ubuntu-baseline.sh --update               update everything to latest
-  sudo ./setup-ubuntu-baseline.sh --update --only tautulli   update just one component
-  sudo ./setup-ubuntu-baseline.sh --only dnscrypt,fastfetch
-  sudo ./setup-ubuntu-baseline.sh --skip pihole,tautulli
+  su -c 'bash debian-setup.sh'                      first run on a new Debian install
+  sudo ./debian-setup.sh                            install/repair everything
+  sudo ./debian-setup.sh --status                   report only
+  sudo ./debian-setup.sh --update                   update everything to latest
+  sudo ./debian-setup.sh --update --only tautulli   update just one component
+  sudo ./debian-setup.sh --only dnscrypt,fastfetch
+  sudo ./debian-setup.sh --skip pihole,tautulli
 EOF
 }
 
@@ -396,9 +417,9 @@ if [[ $EUID -ne 0 ]]; then
   fi
   # Minimal Debian doesn't ship sudo. Fail with a usable instruction instead
   # of a bare "sudo: command not found".
-  log_err "Must run as root, and sudo isn't installed (normal on minimal Debian)."
-  log_err "Either become root and re-run:   su -   then   $0"
-  log_err "or install sudo first (as root): apt-get install -y sudo"
+  log_err "Must run as root, and sudo isn't installed (normal on a new Debian install)."
+  log_err "First run, as root:   su -c 'bash $0'"
+  log_err "(that run installs sudo and gives your login user access to it)"
   exit 1
 fi
 
@@ -426,18 +447,48 @@ check_os() {
   fi
 }
 
-# Minimal Debian installs can lack curl and a CA bundle, which every download
-# in this script (Pi-hole, fastfetch, speedtest, Tautulli's git clone) needs.
-# Silent no-op when both are already present, so Ubuntu runs are unchanged.
+# First-run bootstrap on a fresh minimal Debian, where sudo doesn't exist yet.
+# Installing the package isn't enough: Debian's installer only adds the first
+# user to the sudo group when root's password is left blank, and anyone using
+# `su -c` has a root password — so `sudo ./script` would still be refused
+# ("not in the sudoers file"). Add whoever actually ran this, identified by
+# their login name (never guessed). Only called on the run that installed sudo,
+# so Ubuntu and repeat runs never touch group membership.
+grant_sudo_to_login_user() {
+  local u
+  u="$(logname 2>/dev/null || true)"
+  if [[ -z "$u" || "$u" == "root" ]] || ! id "$u" >/dev/null 2>&1; then
+    log_warn "sudo installed, but couldn't tell which user ran this."
+    log_warn "Give a user access with:  usermod -aG sudo <username>"
+    return
+  fi
+  if id -nG "$u" 2>/dev/null | tr ' ' '\n' | grep -qx sudo; then
+    return
+  fi
+  if usermod -aG sudo "$u"; then
+    log_ok "Added '${u}' to the sudo group — log out and back in before using sudo."
+  else
+    log_warn "Could not add '${u}' to the sudo group. Try:  usermod -aG sudo ${u}"
+  fi
+}
+
+# Minimal Debian installs can lack curl, a CA bundle, and sudo. Every download
+# in this script (Pi-hole, fastfetch, speedtest, Tautulli's git clone) needs
+# the first two; sudo is so `sudo ./script --flags` works after the first run.
+# Silent no-op when all are present, so Ubuntu runs are unchanged.
 ensure_prerequisites() {
-  local missing=()
+  local missing=() sudo_was_missing=0
   command -v curl >/dev/null 2>&1 || missing+=(curl)
   dpkg -s ca-certificates >/dev/null 2>&1 || missing+=(ca-certificates)
+  command -v sudo >/dev/null 2>&1 || { missing+=(sudo); sudo_was_missing=1; }
   if [[ ${#missing[@]} -gt 0 ]]; then
     log_info "Installing base prerequisites: ${missing[*]}"
     ensure_apt_updated
     DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" \
-      || log_err "Could not install ${missing[*]} — downloads below will likely fail."
+      || log_err "Could not install ${missing[*]} — later steps may fail."
+  fi
+  if [[ $sudo_was_missing -eq 1 ]] && command -v sudo >/dev/null 2>&1; then
+    grant_sudo_to_login_user
   fi
 }
 
@@ -1020,8 +1071,8 @@ if [[ $UPDATE_MODE -eq 1 ]]; then
   # check, which is exactly what --update is not supposed to touch. Run
   # without --update (or with --status) to see full config state.
   echo
-  log_ok "Update pass complete. (setup-ubuntu-baseline v${SCRIPT_VERSION})"
+  log_ok "Update pass complete. (debian-setup v${SCRIPT_VERSION})"
 else
   print_status_report
-  log_ok "Done. (setup-ubuntu-baseline v${SCRIPT_VERSION})"
+  log_ok "Done. (debian-setup v${SCRIPT_VERSION})"
 fi
