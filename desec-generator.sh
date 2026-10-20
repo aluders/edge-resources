@@ -10,10 +10,10 @@
 #   against update.dedyn.io.
 #
 #   Steps performed:
-#     1. Authenticate (API token, or email/password — flags or interactive)
+#     1. Authenticate (API token, or email/password -- flags or interactive)
 #     2. Verify the target domain exists on the account
-#     3. Create a placeholder A record (1.1.1.1) if one doesn't exist yet,
-#        since a policy can't be scoped to an RRset that doesn't exist
+#     3. Create a placeholder A record (1.1.1.1) if one does not exist yet,
+#        since a policy cannot be scoped to an RRset that does not exist
 #     4. Create a new restricted token
 #     5. Attach a default deny-all policy, then grant write-only access to
 #        just the A and AAAA RRsets for the target subname
@@ -29,12 +29,14 @@
 #
 # Output:
 #   FQDN / Username / Password / Server / Protocol values ready to drop
-#   into a router's or UDM's DDNS configuration.
+#   into a router or UDM DDNS configuration.
 #
-# Version:     1.1
-# Last Update: 2026-07-23
+# Version:     1.2
+# Last Update: 2026-10-20
 #
 # Changelog:
+#   1.2 - Removed apostrophes from comments to avoid nano syntax highlighting
+#         artifacts; bumped version and date
 #   1.1 - Auto-copy the final DDNS settings summary to the clipboard
 #         (pbcopy / xclip / xsel / clip.exe, with fallback notice)
 #   1.0 - Initial version
