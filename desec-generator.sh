@@ -1,20 +1,22 @@
 #!/bin/bash
 
 ################################################################################
-# deSEC Restricted Token Generator
+# deSEC Dynamic DNS Generator
 ################################################################################
 #
 # Description:
-#   Creates (or removes) a deSEC API token scoped to DDNS-only access for a
-#   single subdomain, for use with routers/UDMs speaking the dyndns2 protocol
-#   against update.dedyn.io.
+#   Sets up or tears down a complete DDNS entry on deSEC for a single
+#   subdomain. In create mode, this registers the subdomain as a DNS record
+#   and provisions a restricted API token scoped exclusively to that record,
+#   ready to drop into a router or UDM as DDNS credentials. In remove mode,
+#   it deletes the token and the associated DNS records.
 #
 #   Create steps performed:
 #     1. Authenticate (API token, or email/password -- flags or interactive)
 #     2. Verify the target domain exists on the account
-#     3. Create a placeholder A record (1.1.1.1) if one does not exist yet,
-#        since a policy cannot be scoped to an RRset that does not exist
-#     4. Create a new restricted token
+#     3. Create an A record for the subdomain (1.1.1.1 placeholder) if one
+#        does not exist yet -- the router will update it on first DDNS check
+#     4. Create a new restricted API token named for the subdomain
 #     5. Attach a default deny-all policy, then grant write-only access to
 #        just the A and AAAA RRsets for the target subname
 #
@@ -53,7 +55,7 @@
 #
 ################################################################################
 
-echo "=== deSEC Restricted Token Generator ==="
+echo "=== deSEC Dynamic DNS Generator ==="
 
 ################################################################################
 # PARSE FLAGS
