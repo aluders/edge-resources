@@ -5,11 +5,11 @@
 ################################################################################
 #
 # Description:
-#   Creates a deSEC API token scoped to DDNS-only access for a single
-#   subdomain, for use with routers/UDMs speaking the dyndns2 protocol
+#   Creates (or removes) a deSEC API token scoped to DDNS-only access for a
+#   single subdomain, for use with routers/UDMs speaking the dyndns2 protocol
 #   against update.dedyn.io.
 #
-#   Steps performed:
+#   Create steps performed:
 #     1. Authenticate (API token, or email/password -- flags or interactive)
 #     2. Verify the target domain exists on the account
 #     3. Create a placeholder A record (1.1.1.1) if one does not exist yet,
@@ -18,10 +18,19 @@
 #     5. Attach a default deny-all policy, then grant write-only access to
 #        just the A and AAAA RRsets for the target subname
 #
+#   Remove steps performed:
+#     1. Authenticate (same as above)
+#     2. Verify the target domain exists on the account
+#     3. Find all tokens whose name matches the derived token name
+#     4. Confirm before deleting (lists matches if more than one found)
+#     5. Delete the matching token(s) -- policies are removed automatically
+#     6. Delete the A and AAAA RRsets for the subname
+#
 # Usage:
-#   ./desec-restricted-token.sh [--email EMAIL] [--password PASSWORD]
-#                                [--token TOKEN] [--domain FULLDOMAIN]
-#   ./desec-restricted-token.sh --help
+#   ./desec.sh [--email EMAIL] [--password PASSWORD]
+#              [--token TOKEN] [--domain FULLDOMAIN]
+#   ./desec.sh --remove [--token TOKEN] [--domain FULLDOMAIN]
+#   ./desec.sh --help
 #
 #   --email/--password and --token are mutually exclusive; if neither is
 #   given, the script prompts interactively (token recommended if 2FA is
@@ -31,10 +40,11 @@
 #   FQDN / Username / Password / Server / Protocol values ready to drop
 #   into a router or UDM DDNS configuration.
 #
-# Version:     1.2
-# Last Update: 2026-10-20
+# Version:     1.3
+# Last Update: 2026-10-21
 #
 # Changelog:
+#   1.3 - Added --remove mode to delete a DDNS token and its RRsets
 #   1.2 - Removed apostrophes from comments to avoid nano syntax highlighting
 #         artifacts; bumped version and date
 #   1.1 - Auto-copy the final DDNS settings summary to the clipboard
@@ -53,6 +63,7 @@ EMAIL=""
 PASSWORD=""
 AUTH_TOKEN=""
 FULLDOMAIN=""
+REMOVE_MODE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --password) PASSWORD="$2";   shift 2 ;;
     --token)    AUTH_TOKEN="$2"; shift 2 ;;
     --domain)   FULLDOMAIN="$2"; shift 2 ;;
+    --remove)   REMOVE_MODE=true; shift ;;
     --help)
       echo ""
       echo "Usage: $0 [OPTIONS]"
@@ -68,7 +80,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --email EMAIL       deSEC account email (use with --password)"
       echo "  --password PASSWORD deSEC account password (use with --email)"
       echo "  --token TOKEN       deSEC API token (use instead of email/password, recommended with 2FA)"
-      echo "  --domain DOMAIN     Full domain to create DDNS entry for (e.g. test.example.com)"
+      echo "  --domain DOMAIN     Full domain to create/remove DDNS entry for (e.g. test.example.com)"
+      echo "  --remove            Remove the DDNS token and RRsets for the given domain"
       echo "  --help              Show this help message"
       echo ""
       exit 0
@@ -77,7 +90,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Unknown flag: $1"
       echo ""
-      echo "Usage: $0 [--email EMAIL] [--password PASSWORD] [--token TOKEN] [--domain DOMAIN]"
+      echo "Usage: $0 [--email EMAIL] [--password PASSWORD] [--token TOKEN] [--domain DOMAIN] [--remove]"
       echo "Run '$0 --help' for more information."
       exit 1
       ;;
@@ -154,7 +167,7 @@ fi
 
 
 ################################################################################
-# SINGLE DOMAIN INPUT
+# DOMAIN INPUT + PARSE
 ################################################################################
 
 if [[ -z "$FULLDOMAIN" ]]; then
@@ -194,6 +207,114 @@ if [[ -z "$DOMAIN_EXISTS" ]]; then
 fi
 
 echo "✔ Domain exists."
+echo ""
+
+
+################################################################################
+# REMOVE MODE
+################################################################################
+
+if [[ "$REMOVE_MODE" == true ]]; then
+
+  echo "=== Remove Mode ==="
+  echo ""
+
+  # Find all tokens matching the derived token name
+  echo "Looking for token(s) named '$TOKEN_NAME'..."
+
+  ALL_TOKENS=$(curl -s -X GET https://desec.io/api/v1/auth/tokens/ \
+    -H "Authorization: Token $AUTH_TOKEN")
+
+  MATCHING_TOKENS=$(echo "$ALL_TOKENS" | jq -r --arg name "$TOKEN_NAME" \
+    '[.[] | select(.name == $name)]')
+
+  MATCH_COUNT=$(echo "$MATCHING_TOKENS" | jq 'length')
+
+  if [[ "$MATCH_COUNT" -eq 0 ]]; then
+    echo "❌ No token found with name '$TOKEN_NAME'."
+    exit 1
+  fi
+
+  echo "Found $MATCH_COUNT token(s) matching '$TOKEN_NAME':"
+  echo "$MATCHING_TOKENS" | jq -r '.[] | "  ID: \(.id)  Name: \(.name)"'
+  echo ""
+
+  # Confirm before deleting
+  read -p "Delete all matching token(s) and remove A/AAAA RRsets for $FULLDOMAIN? [y/N] " CONFIRM
+  if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    exit 0
+  fi
+  echo ""
+
+  # Delete each matching token
+  echo "$MATCHING_TOKENS" | jq -r '.[].id' | while read -r TID; do
+    echo "Deleting token ID: $TID..."
+
+    DEL_TOKEN_RESPONSE=$(curl -s -w "\n%{http_code}" \
+      -X DELETE "https://desec.io/api/v1/auth/tokens/$TID/" \
+      -H "Authorization: Token $AUTH_TOKEN")
+
+    DEL_TOKEN_CODE=$(echo "$DEL_TOKEN_RESPONSE" | tail -n1)
+
+    if [[ "$DEL_TOKEN_CODE" == "204" ]]; then
+      echo "✔ Token $TID deleted."
+    else
+      DEL_TOKEN_BODY=$(echo "$DEL_TOKEN_RESPONSE" | sed '$d')
+      echo "❌ Failed to delete token $TID"
+      echo "HTTP $DEL_TOKEN_CODE"
+      echo "$DEL_TOKEN_BODY"
+    fi
+  done
+  echo ""
+
+  # Delete A RRset
+  echo "Deleting A RRset for $FULLDOMAIN..."
+
+  DEL_A_RESPONSE=$(curl -s -w "\n%{http_code}" \
+    -X DELETE "https://desec.io/api/v1/domains/$DOMAIN/rrsets/$SUBNAME/A/" \
+    -H "Authorization: Token $AUTH_TOKEN")
+
+  DEL_A_CODE=$(echo "$DEL_A_RESPONSE" | tail -n1)
+
+  if [[ "$DEL_A_CODE" == "204" ]]; then
+    echo "✔ A RRset deleted."
+  elif [[ "$DEL_A_CODE" == "404" ]]; then
+    echo "! A RRset not found; skipping."
+  else
+    DEL_A_BODY=$(echo "$DEL_A_RESPONSE" | sed '$d')
+    echo "❌ Failed to delete A RRset"
+    echo "HTTP $DEL_A_CODE"
+    echo "$DEL_A_BODY"
+  fi
+
+  # Delete AAAA RRset
+  echo "Deleting AAAA RRset for $FULLDOMAIN..."
+
+  DEL_AAAA_RESPONSE=$(curl -s -w "\n%{http_code}" \
+    -X DELETE "https://desec.io/api/v1/domains/$DOMAIN/rrsets/$SUBNAME/AAAA/" \
+    -H "Authorization: Token $AUTH_TOKEN")
+
+  DEL_AAAA_CODE=$(echo "$DEL_AAAA_RESPONSE" | tail -n1)
+
+  if [[ "$DEL_AAAA_CODE" == "204" ]]; then
+    echo "✔ AAAA RRset deleted."
+  elif [[ "$DEL_AAAA_CODE" == "404" ]]; then
+    echo "! AAAA RRset not found; skipping."
+  else
+    DEL_AAAA_BODY=$(echo "$DEL_AAAA_RESPONSE" | sed '$d')
+    echo "❌ Failed to delete AAAA RRset"
+    echo "HTTP $DEL_AAAA_CODE"
+    echo "$DEL_AAAA_BODY"
+  fi
+
+  echo ""
+  echo "=============================================="
+  echo " Removal complete for $FULLDOMAIN"
+  echo "=============================================="
+  echo ""
+  exit 0
+fi
 
 
 ################################################################################
