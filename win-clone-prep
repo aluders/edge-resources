@@ -3,6 +3,7 @@ manage-bde -status c:
 manage-bde -off c:
 
 # best to convert user to a local account if a microsoft account is being used
+# remove pin if applicable
 
 # ensure gpt file system (if moving to uefi)
 mbr2gpt /convert /disk:0 /allowfullos
