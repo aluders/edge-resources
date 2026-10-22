@@ -7,6 +7,8 @@ manage-bde -on c: -used
 manage-bde -protectors -add c: -recoverypassword
 manage-bde -protectors -get c:
 
+shutdown /r /f /t 0
+
 # decrypt drive offline (another windows machine)...
 # unlock the volume for the current session
 manage-bde -unlock E: -RecoveryPassword "XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX"
