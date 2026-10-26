@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="55"
+INSTALLER_VERSION="57"
 
 # ==========================================
-# ATEM AGENT (v55)
+# ATEM AGENT (v57)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -393,6 +393,36 @@ _cf_arch() {
     esac
 }
 
+# _cf_download_binary URL
+# Downloads cloudflared to a temp file, verifies it, then atomically replaces
+# the installed binary. The existing binary is never touched until the new one
+# passes verification — a failed or corrupt download leaves the old one intact.
+_cf_download_binary() {
+    local URL="$1"
+    local TMP_FILE
+    TMP_FILE=$(mktemp /tmp/cloudflared.XXXXXX)
+
+    log "⬇️  Downloading cloudflared binary..."
+
+    if ! wget -q -O "$TMP_FILE" "$URL" 2>/dev/null; then
+        rm -f "$TMP_FILE"
+        return 1
+    fi
+
+    # Verify before replacing
+    chmod +x "$TMP_FILE"
+    if ! "$TMP_FILE" --version >/dev/null 2>&1; then
+        log "   ⚠️ Downloaded binary failed verification — keeping existing binary"
+        rm -f "$TMP_FILE"
+        return 1
+    fi
+
+    # Atomic replace — existing binary untouched until this point
+    sudo mv "$TMP_FILE" /usr/local/bin/cloudflared
+    sudo chmod +x /usr/local/bin/cloudflared
+    return 0
+}
+
 # ==========================================
 # cmd_install — full install / re-install
 # ==========================================
@@ -451,9 +481,11 @@ cmd_install() {
         CF_ARCH=$(_cf_arch)
         CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
         echo ">>> Installing cloudflared for ${CF_ARCH}..."
-        sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared
-        sudo chmod +x /usr/local/bin/cloudflared
-        echo ">>> cloudflared installed: $(cloudflared --version 2>&1 | head -1)"
+        if _cf_download_binary "$CF_URL"; then
+            echo ">>> cloudflared installed: $(cloudflared --version 2>&1 | head -1)"
+        else
+            echo ">>> ❌ cloudflared install failed — continuing without it"
+        fi
     fi
 
     # --- sudoers rule for passwordless cloudflared update ---
@@ -608,14 +640,10 @@ cmd_update() {
             echo "   ✅ cloudflared up to date v${CF_INSTALLED}"
         else
             echo "   ⬆️  cloudflared v${CF_INSTALLED} -> v${CF_LATEST} — updating..."
-            if sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared; then
-                if cloudflared --version >/dev/null 2>&1; then
-                    echo "   ✅ cloudflared updated to v${CF_LATEST}"
-                else
-                    echo "   ❌ cloudflared binary failed verification after update"
-                fi
+            if _cf_download_binary "$CF_URL"; then
+                echo "   ✅ cloudflared updated to v${CF_LATEST}"
             else
-                echo "   ❌ cloudflared download failed"
+                echo "   ❌ cloudflared download/verification failed — existing binary preserved"
             fi
         fi
     fi
@@ -1338,21 +1366,15 @@ _tunnel_and_notify() {
 
             _cf_download() {
                 local reason="$1" from_ver="$2" to_ver="$3"
-                log "⬇️  Downloading cloudflared binary..."
-                if sudo curl -fsSL "$CF_URL" -o /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared; then
-                    if cloudflared --version >/dev/null 2>&1; then
-                        if [[ "$reason" == "reinstalled" ]]; then
-                            email_log "☁️  cloudflared reinstalled v${from_ver} -> v${from_ver}"
-                        else
-                            email_log "☁️  cloudflared updated v${from_ver} -> v${to_ver}"
-                        fi
-                        return 0
+                if _cf_download_binary "$CF_URL"; then
+                    if [[ "$reason" == "reinstalled" ]]; then
+                        email_log "☁️  cloudflared reinstalled v${from_ver} -> v${from_ver}"
                     else
-                        email_log "⚠️ cloudflared binary downloaded but failed verification"
-                        return 1
+                        email_log "☁️  cloudflared updated v${from_ver} -> v${to_ver}"
                     fi
+                    return 0
                 else
-                    email_log "⚠️ cloudflared download failed"
+                    email_log "⚠️ cloudflared download failed — existing binary preserved"
                     return 1
                 fi
             }
