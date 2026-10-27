@@ -19,3 +19,7 @@ nano ~/.bashrc
 alias checkdrive='sudo smartctl -i -H /dev/sda'
 
 source ~/.bashrc
+
+# set locale to US (reboot after)
+
+sudo raspi-config nonint do_change_locale en_US.UTF-8
