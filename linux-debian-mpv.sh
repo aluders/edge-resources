@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v3.0
+# EDGE MPV v3.1
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -17,6 +17,8 @@
 #   fastfetch  fastfetch from the latest GitHub release .deb
 #   speedtest  Ookla Speedtest CLI (static binary in /usr/local/bin)
 #   audio      alsa-utils (aplay, speaker-test) + kiosk user in the audio group
+#   battery    Caps the battery's charge voltage at each boot (edge-battery
+#              service) so it isn't held at 100% while always plugged in
 #   service    /etc/systemd/system/mpv.service (enabled + started), the
 #              edge-mpv-play launcher and the USB plug/unplug udev rule
 #   reboot     Nightly reboot in root's crontab (00:00)
@@ -43,7 +45,7 @@
 #   -h, --help        Show usage and exit
 #
 #   LIST is a comma-separated list drawn from: sudo, mpv, fastfetch,
-#   speedtest, audio, service, reboot, aliases
+#   speedtest, audio, battery, service, reboot, aliases
 #
 # USAGE
 # -----
@@ -185,6 +187,16 @@
 #     the first moment of a new stream, which swallows short test clips:
 #       speaker-test -D plughw:CARD=Audio,DEV=2 -c 2 -t pink -l 3
 #     `aplay -l` lists the sound cards.
+#   - BATTERY: a lithium cell held at 100% around the clock wears faster and
+#     can swell. The Hi12 has no "stop at 80%" setting, but its charger chip
+#     (AXP288) lets the maximum charge voltage be lowered. The cell is 4.2 V;
+#     BATTERY_CHARGE_VOLTAGE="4100000" (4.1 V) holds it at very roughly
+#     85-90%. The charger accepts 4100000, 4150000 or 4200000 (full).
+#     The setting resets at every boot, so the edge-battery service applies
+#     it at each boot. While plugged in, the power supply runs the tablet, so
+#     the charge level drifts down slowly over days, not at once.
+#     --status shows the charge level, voltage and current limit. Check the
+#     case for bulging now and then regardless.
 #   - The first `speedtest` run asks you to accept Ookla's license; use
 #     `speedtest --accept-license --accept-gdpr` to skip the prompts.
 #   - Aliases are written as a marked block in the kiosk user's .bashrc and
@@ -198,6 +210,10 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.1  - Added the battery component: an edge-battery service that sets
+#           the charger's maximum charge voltage (BATTERY_CHARGE_VOLTAGE,
+#           default 4.1 V, roughly 85-90%) at each boot, so an always-on
+#           tablet isn't held at 100%. --status shows the battery.
 #   v3.0  - The overlay is now opt-in. A normal run no longer installs or
 #           enables it; `--overlay` does, as the last step before deploying.
 #           overlay is no longer a component (not valid for --only/--skip).
@@ -294,7 +310,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="3.0"
+SCRIPT_VERSION="3.1"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -326,6 +342,12 @@ REBOOT_CRON="${REBOOT_SCHEDULE} ${REBOOT_CMD}"
 
 WIFI_IFACE="wlan0"
 
+# Battery charge cap: maximum charge voltage in microvolts, applied at each
+# boot. 4100000 = 4.1 V, roughly 85-90% on the Hi12's 4.2 V cell. Valid:
+# 4100000, 4150000, 4200000 (full). Empty = leave the charger alone.
+BATTERY_CHARGE_VOLTAGE="4100000"
+BATTERY_UNIT="/etc/systemd/system/edge-battery.service"
+
 OVERLAY_CONF="/etc/overlayroot.conf"
 OVERLAY_SETTING='overlayroot="tmpfs"'
 
@@ -336,7 +358,7 @@ SPEEDTEST_BIN="/usr/local/bin/speedtest"
 ALIAS_BEGIN="# >>> mpv kiosk aliases >>>"
 ALIAS_END="# <<< mpv kiosk aliases <<<"
 
-ALL_COMPONENTS=(sudo mpv fastfetch speedtest audio service reboot aliases)
+ALL_COMPONENTS=(sudo mpv fastfetch speedtest audio battery service reboot aliases)
 UPDATABLE_COMPONENTS=(mpv fastfetch speedtest)
 
 # ==============================================================================
@@ -763,6 +785,71 @@ install_audio() {
 }
 
 # ==============================================================================
+# COMPONENT: battery (cap the charge voltage at each boot)
+# ==============================================================================
+# The charger's sysfs setting, if this hardware has one (AXP288 on the Hi12).
+battery_cv_file() {
+  local f
+  for f in /sys/class/power_supply/*/constant_charge_voltage; do
+    [[ -w "$f" ]] && { echo "$f"; return 0; }
+  done
+  return 1
+}
+
+battery_unit_content() {
+  # $$ escapes $ for systemd, which would otherwise expand $f itself.
+  cat <<EOF
+[Unit]
+Description=Cap battery charge voltage (edge-mpv)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for f in /sys/class/power_supply/*/constant_charge_voltage; do [ -w "\$\$f" ] && echo ${BATTERY_CHARGE_VOLTAGE} > "\$\$f"; done; exit 0'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+status_battery() {
+  # Nothing to do when disabled, or on hardware without the setting.
+  [[ -z "$BATTERY_CHARGE_VOLTAGE" ]] && return 0
+  battery_cv_file >/dev/null || return 0
+  [[ -f "$BATTERY_UNIT" ]] && [[ "$(cat "$BATTERY_UNIT")" == "$(battery_unit_content)" ]] || return 1
+  systemctl is-enabled --quiet edge-battery 2>/dev/null || return 1
+  in_chroot && return 0
+  [[ "$(cat "$(battery_cv_file)")" == "$BATTERY_CHARGE_VOLTAGE" ]]
+}
+
+install_battery() {
+  if [[ -z "$BATTERY_CHARGE_VOLTAGE" ]]; then
+    log_info "BATTERY_CHARGE_VOLTAGE is empty — battery left alone."
+    return
+  fi
+  if ! battery_cv_file >/dev/null; then
+    log_warn "No writable charge-voltage setting on this hardware — battery left alone."
+    return
+  fi
+  log_info "Writing ${BATTERY_UNIT} (charge voltage ${BATTERY_CHARGE_VOLTAGE} µV)..."
+  battery_unit_content > "$BATTERY_UNIT"
+  chmod 644 "$BATTERY_UNIT"
+  if in_chroot; then
+    systemctl enable edge-battery >/dev/null 2>&1
+    log_ok "edge-battery enabled (in chroot — it applies at the next boot)."
+    return
+  fi
+  systemctl daemon-reload
+  systemctl enable edge-battery >/dev/null 2>&1
+  systemctl restart edge-battery
+  if status_battery; then
+    log_ok "Battery charge voltage capped at ${BATTERY_CHARGE_VOLTAGE} µV, applied at each boot."
+  else
+    log_err "Battery cap did not verify — read $(battery_cv_file) and check 'systemctl status edge-battery'."
+  fi
+}
+
+# ==============================================================================
 # COMPONENT: service (mpv.service)
 # ==============================================================================
 unit_content() {
@@ -993,6 +1080,22 @@ show_video_source() {
     log_info "Video source: no USB stick labelled ${USB_LABEL} — fallback ${VIDEO_PATH}."
   fi
   echo
+}
+
+show_battery_status() {
+  local d cv
+  for d in /sys/class/power_supply/*; do
+    [[ "$(cat "$d/type" 2>/dev/null)" == "Battery" ]] || continue
+    log_info "Battery:"
+    local v; v=$(cat "$d/voltage_now" 2>/dev/null); v=${v:-0}
+    echo "    $(cat "$d/capacity" 2>/dev/null)% $(cat "$d/status" 2>/dev/null), $(( v / 1000 )) mV, health $(cat "$d/health" 2>/dev/null)"
+    if cv=$(battery_cv_file); then
+      v=$(cat "$cv" 2>/dev/null); v=${v:-0}
+      echo "    charge limit: $(( v / 1000 )) mV (CONFIG: ${BATTERY_CHARGE_VOLTAGE:-not set})"
+    fi
+    echo
+    return
+  done
 }
 
 show_wifi_status() {
@@ -1233,6 +1336,7 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   show_display_status
   show_video_source
   show_wifi_status
+  show_battery_status
   show_service_status
   exit 0
 fi
