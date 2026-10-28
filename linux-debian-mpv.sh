@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v3.1
+# EDGE MPV v3.3
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -37,9 +37,13 @@
 #   -y, --yes         Answer yes to that prompt (apply and reboot unattended)
 #   --force           Rewrite mpv.service from the CONFIG block even if it
 #                     already exists (discards hand edits)
-#   --overlay         Enable the read-only overlay (overlayroot), then exit.
+#   --overlay-on      Enable the read-only overlay (overlayroot), then exit.
 #                     Not part of a normal run: do this last, when the
 #                     machine is set up, tested and ready to deploy
+#   --overlay-off     Disable the overlay until --overlay-on, then offer to
+#                     reboot. Survives reboots; the disk is writable again
+#   --overlay-temp    Overlay stays on: open a shell on the real disk for
+#                     one-off permanent changes, then offer to reboot
 #   --only LIST       Only act on the components in LIST
 #   --skip LIST       Act on all components except those in LIST
 #   -h, --help        Show usage and exit
@@ -56,7 +60,9 @@
 #   sudo ./edge-mpv.sh --update           upgrade mpv/fastfetch/speedtest
 #   sudo ./edge-mpv.sh --update --only fastfetch
 #   sudo ./edge-mpv.sh --force            reset mpv.service to CONFIG
-#   sudo ./edge-mpv.sh --overlay          last step: enable the overlay
+#   sudo ./edge-mpv.sh --overlay-on       last step: enable the overlay
+#   sudo ./edge-mpv.sh --overlay-off      disable it for maintenance
+#   sudo ./edge-mpv.sh --overlay-temp     quick permanent edit, overlay on
 #   sudo ./edge-mpv.sh --only service     just the systemd unit
 #   sudo ./edge-mpv.sh --skip fastfetch
 #   curl -fsSL <url> | sudo bash          remote deploy (all)
@@ -74,9 +80,9 @@
 #        video, sound, HDMI, the USB stick, a few reboots. A normal run
 #        never enables the overlay, so re-run the script as often as needed.
 #     3. When it's ready to deploy, enable the overlay as the last step:
-#          sudo ./edge-mpv.sh --overlay
+#          sudo ./edge-mpv.sh --overlay-on
 #          sudo reboot
-#   - OVERLAY: --overlay installs overlayroot and sets overlayroot="tmpfs" in
+#   - OVERLAY: --overlay-on installs overlayroot and sets overlayroot="tmpfs" in
 #     /etc/overlayroot.conf. From the next reboot the real disk is mounted
 #     read-only and every write goes to RAM, so a power cut can't corrupt it
 #     and each boot starts from the same state. Nothing written after that
@@ -84,22 +90,31 @@
 #
 #     A. For one session, overlay stays on. Work on the real disk in a
 #        chroot, then reboot:
+#          sudo ./edge-mpv.sh --overlay-temp
+#        It copies the current DNS settings to the real disk, prints what
+#        to do, opens a root shell there, and offers to reboot when you
+#        type `exit`. Good for quick edits and a normal run of this script.
+#        Limit: no services start inside the chroot. The script inside is
+#        the copy on the real disk, so put a newer copy there first.
+#        By hand it is:
 #          sudo overlayroot-chroot
 #          # make changes here: edit the unit, copy a video, run apt
 #          exit
 #          sudo reboot
-#        Good for quick edits and a normal run of this script. Limits: no
-#        services start inside the chroot, and DNS can fail there (the real
-#        disk's /etc/resolv.conf may hold an old network's DNS server).
+#        (by hand, DNS can fail inside: the real disk's /etc/resolv.conf
+#        may hold an old network's DNS server)
 #
 #     B. Turn the overlay off until you turn it back on. Survives any
 #        number of reboots, and the machine runs normally meanwhile:
+#          sudo ./edge-mpv.sh --overlay-off      (offers to reboot)
+#        ...make and test changes, reboot as often as needed, then:
+#          sudo ./edge-mpv.sh --overlay-on
+#          sudo reboot
+#        --overlay-off sets overlayroot="" on the real disk (through
+#        overlayroot-chroot when the overlay is active). By hand it is:
 #          sudo overlayroot-chroot
 #          sed -i 's/^overlayroot=.*/overlayroot=""/' /etc/overlayroot.conf
 #          exit
-#          sudo reboot
-#        ...make and test changes, reboot as often as needed, then:
-#          sudo ./edge-mpv.sh --overlay
 #          sudo reboot
 #        Use this for anything that needs the network, running services or
 #        state written on first run, e.g. installing a remote-management
@@ -210,6 +225,12 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.3  - Added --overlay-temp (method A in NOTES): copies the current
+#           DNS settings to the real disk, prints what to do, opens a shell
+#           in overlayroot-chroot, then offers to reboot on exit.
+#   v3.2  - --overlay renamed to --overlay-on. Added --overlay-off: disables
+#           the overlay on the real disk until --overlay-on (method B in
+#           NOTES), then offers to reboot (-y reboots without asking).
 #   v3.1  - Added the battery component: an edge-battery service that sets
 #           the charger's maximum charge voltage (BATTERY_CHARGE_VOLTAGE,
 #           default 4.1 V, roughly 85-90%) at each boot, so an always-on
@@ -310,7 +331,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="3.1"
+SCRIPT_VERSION="3.3"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -397,9 +418,13 @@ edge-mpv v${SCRIPT_VERSION}
   -y, --yes         Answer yes to that prompt (apply and reboot unattended)
   --force           Rewrite mpv.service from the CONFIG block even if it
                     already exists (discards hand edits)
-  --overlay         Enable the read-only overlay (overlayroot), then exit.
+  --overlay-on      Enable the read-only overlay (overlayroot), then exit.
                     Not part of a normal run: do this last, when the
                     machine is set up, tested and ready to deploy
+  --overlay-off     Disable the overlay until --overlay-on, then offer to
+                    reboot. Survives reboots; the disk is writable again
+  --overlay-temp    Overlay stays on: open a shell on the real disk for
+                    one-off permanent changes, then offer to reboot
   --only LIST       Only act on the components in LIST
   --skip LIST       Act on all components except those in LIST
   -h, --help        Show this help and exit
@@ -425,6 +450,8 @@ STATUS_ONLY=0
 RESTART_ONLY=0
 UPDATE_MODE=0
 OVERLAY_MODE=0
+OVERLAY_OFF_MODE=0
+OVERLAY_TEMP_MODE=0
 ASSUME_YES=0
 FORCE=0
 ONLY_LIST=""
@@ -436,7 +463,9 @@ while [[ $# -gt 0 ]]; do
     --restart) RESTART_ONLY=1 ;;
     --update)  UPDATE_MODE=1 ;;
     --force)   FORCE=1 ;;
-    --overlay) OVERLAY_MODE=1 ;;
+    --overlay-on)  OVERLAY_MODE=1 ;;
+    --overlay-off) OVERLAY_OFF_MODE=1 ;;
+    --overlay-temp) OVERLAY_TEMP_MODE=1 ;;
     -y|--yes)  ASSUME_YES=1 ;;
     --only)    ONLY_LIST="${2:-}"; shift ;;
     --skip)    SKIP_LIST="${2:-}"; shift ;;
@@ -1182,7 +1211,7 @@ install_aliases() {
 }
 
 # ==============================================================================
-# OVERLAY (overlayroot — read-only root, writes go to RAM). Opt-in: --overlay
+# OVERLAY (overlayroot — read-only root, writes go to RAM). Opt-in: --overlay-on / --overlay-off
 # ==============================================================================
 status_overlay() {
   command -v overlayroot-chroot >/dev/null 2>&1 \
@@ -1243,7 +1272,7 @@ print_status_report() {
   elif status_overlay; then
     log_info "Root filesystem: writable for now — overlay is enabled and starts at the next reboot."
   else
-    log_info "Root filesystem: writable — overlay not enabled (--overlay enables it when ready to deploy)."
+    log_info "Root filesystem: writable — overlay not enabled (--overlay-on enables it when ready to deploy)."
   fi
   echo
 }
@@ -1349,12 +1378,109 @@ fi
 if [[ $OVERLAY_MODE -eq 1 ]]; then
   echo
   log_info "=== overlay ==="
-  if root_is_overlay; then
-    log_ok "The overlay is already active."
-  elif status_overlay; then
-    log_ok "The overlay is already enabled — it starts at the next reboot."
+  if status_overlay; then
+    if root_is_overlay; then
+      log_ok "The overlay is already active."
+    else
+      log_ok "The overlay is already enabled — it starts at the next reboot."
+    fi
+  elif root_is_overlay && ! in_chroot; then
+    # Still active from before an --overlay-off: undo that on the real disk.
+    overlayroot-chroot sed -i "s|^overlayroot=.*|${OVERLAY_SETTING}|" "$OVERLAY_CONF" \
+      && sed -i "s|^overlayroot=.*|${OVERLAY_SETTING}|" "$OVERLAY_CONF" \
+      && log_ok "Overlay re-enabled — it stays on after the next reboot." \
+      || log_err "Could not change ${OVERLAY_CONF} through overlayroot-chroot."
   else
     install_overlay
+  fi
+  exit 0
+fi
+
+if [[ $OVERLAY_TEMP_MODE -eq 1 ]]; then
+  echo
+  log_info "=== overlay temp ==="
+  if in_chroot; then
+    log_ok "Already inside overlayroot-chroot — changes here are permanent."
+    exit 0
+  fi
+  if ! root_is_overlay; then
+    log_ok "The overlay isn't active — the disk is writable, so changes stick as normal."
+    exit 0
+  fi
+  if ! command -v overlayroot-chroot >/dev/null 2>&1; then
+    log_err "Overlay is active but overlayroot-chroot was not found."
+    exit 1
+  fi
+  # The real disk's resolv.conf can hold an old network's DNS server, which
+  # breaks downloads inside the chroot. Give it the current one.
+  if cat /etc/resolv.conf | overlayroot-chroot sh -c 'cat > /etc/resolv.conf' 2>/dev/null; then
+    log_ok "Current DNS settings copied to the real disk."
+  else
+    log_warn "Could not copy DNS settings — downloads inside may fail."
+  fi
+  cat <<EOF
+
+    Opening a root shell on the REAL disk. Changes made here are permanent
+    and take effect after a reboot. The overlay stays on.
+
+      Run this script:   cd /home/${KIOSK_USER} && ./edge-mpv.sh
+      Edit the unit:     nano ${UNIT_PATH}
+      Install packages:  apt-get install PACKAGE
+
+    Services don't start in here. Type 'exit' when done.
+
+EOF
+  overlayroot-chroot
+  echo
+  log_info "Left the real disk."
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    ans=y
+  elif [[ -t 0 ]]; then
+    read -r -p "    Reboot now to load the changes? [y/N] " ans
+  else
+    ans=n
+  fi
+  if [[ "${ans:-n}" =~ ^[Yy] ]]; then
+    log_info "Rebooting..."
+    systemctl reboot
+  else
+    log_info "Changes load at the next reboot (sudo reboot, or the nightly one)."
+  fi
+  exit 0
+fi
+
+if [[ $OVERLAY_OFF_MODE -eq 1 ]]; then
+  echo
+  log_info "=== overlay off ==="
+  if ! status_overlay && ! root_is_overlay; then
+    log_ok "The overlay is already off."
+    exit 0
+  fi
+  if root_is_overlay && ! in_chroot; then
+    # Change the real disk's copy; the RAM copy is updated to match.
+    if ! overlayroot-chroot sed -i 's/^overlayroot=.*/overlayroot=""/' "$OVERLAY_CONF"; then
+      log_err "Could not change ${OVERLAY_CONF} through overlayroot-chroot."
+      exit 1
+    fi
+  fi
+  sed -i 's/^overlayroot=.*/overlayroot=""/' "$OVERLAY_CONF"
+  log_ok "Overlay disabled — it stays off across reboots until --overlay-on."
+  if ! root_is_overlay || in_chroot; then
+    exit 0
+  fi
+  log_warn "The overlay is still active until the next reboot."
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    ans=y
+  elif [[ -t 0 ]]; then
+    read -r -p "    Reboot now? [y/N] " ans
+  else
+    ans=n
+  fi
+  if [[ "${ans:-n}" =~ ^[Yy] ]]; then
+    log_info "Rebooting..."
+    systemctl reboot
+  else
+    log_info "Reboot when ready (sudo reboot)."
   fi
   exit 0
 fi
