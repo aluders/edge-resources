@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v3.3
+# EDGE MPV v3.4
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -13,6 +13,7 @@
 # COMPONENTS
 # ----------
 #   sudo       sudo, with the kiosk user added to the sudo group
+#   dns        Fixed DNS servers (DNS_SERVERS); address and gateway stay DHCP
 #   mpv        mpv from the Debian repos
 #   fastfetch  fastfetch from the latest GitHub release .deb
 #   speedtest  Ookla Speedtest CLI (static binary in /usr/local/bin)
@@ -49,7 +50,7 @@
 #   -h, --help        Show usage and exit
 #
 #   LIST is a comma-separated list drawn from: sudo, mpv, fastfetch,
-#   speedtest, audio, battery, service, reboot, aliases
+#   speedtest, audio, battery, service, reboot, aliases, dns
 #
 # USAGE
 # -----
@@ -202,6 +203,17 @@
 #     the first moment of a new stream, which swallows short test clips:
 #       speaker-test -D plughw:CARD=Audio,DEV=2 -c 2 -t pink -l 3
 #     `aplay -l` lists the sound cards.
+#   - DNS: DNS_SERVERS (default 8.8.8.8 8.8.4.4) is added to
+#     /etc/dhcp/dhclient.conf as a "supersede domain-name-servers" line, so
+#     the tablet still gets its address and gateway by DHCP but always uses
+#     these DNS servers, on any network. /etc/resolv.conf is written to match
+#     straight away. That keeps the real disk's copy correct too, so DNS works
+#     inside overlayroot-chroot and for --update with the overlay on.
+#     Caveats: a network that blocks outside DNS (some guest Wi-Fi and
+#     stricter firewalls) leaves the tablet with no name lookups (video still
+#     plays; MeshCentral and updates stop), and local names known only to the
+#     site's own DNS won't resolve. Set DNS_SERVERS="" to use DHCP's DNS; the
+#     marked line is then removed on the next run.
 #   - BATTERY: a lithium cell held at 100% around the clock wears faster and
 #     can swell. The Hi12 has no "stop at 80%" setting, but its charger chip
 #     (AXP288) lets the maximum charge voltage be lowered. The cell is 4.2 V;
@@ -225,6 +237,11 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.4  - Added the dns component: DNS_SERVERS (default Google, 8.8.8.8
+#           and 8.8.4.4) supersedes DHCP's DNS in dhclient.conf, and
+#           /etc/resolv.conf is written to match. Address and gateway stay
+#           DHCP. Fixes stale DNS inside overlayroot-chroot on a new
+#           network. --status shows the DNS servers in use.
 #   v3.3  - Added --overlay-temp (method A in NOTES): copies the current
 #           DNS settings to the real disk, prints what to do, opens a shell
 #           in overlayroot-chroot, then offers to reboot on exit.
@@ -331,7 +348,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="3.3"
+SCRIPT_VERSION="3.4"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -363,6 +380,12 @@ REBOOT_CRON="${REBOOT_SCHEDULE} ${REBOOT_CMD}"
 
 WIFI_IFACE="wlan0"
 
+# Fixed DNS servers, space-separated; address and gateway stay DHCP.
+# Empty = use whatever DNS the network hands out.
+DNS_SERVERS="8.8.8.8 8.8.4.4"
+DHCLIENT_CONF="/etc/dhcp/dhclient.conf"
+DNS_MARK="# edge-mpv: fixed DNS"
+
 # Battery charge cap: maximum charge voltage in microvolts, applied at each
 # boot. 4100000 = 4.1 V, roughly 85-90% on the Hi12's 4.2 V cell. Valid:
 # 4100000, 4150000, 4200000 (full). Empty = leave the charger alone.
@@ -379,7 +402,7 @@ SPEEDTEST_BIN="/usr/local/bin/speedtest"
 ALIAS_BEGIN="# >>> mpv kiosk aliases >>>"
 ALIAS_END="# <<< mpv kiosk aliases <<<"
 
-ALL_COMPONENTS=(sudo mpv fastfetch speedtest audio battery service reboot aliases)
+ALL_COMPONENTS=(sudo dns mpv fastfetch speedtest audio battery service reboot aliases)
 UPDATABLE_COMPONENTS=(mpv fastfetch speedtest)
 
 # ==============================================================================
@@ -584,6 +607,50 @@ install_sudo() {
     log_info "Log out and back in as ${KIOSK_USER} for the group to apply."
   else
     log_err "sudo setup did not verify — check 'groups ${KIOSK_USER}'."
+  fi
+}
+
+# ==============================================================================
+# COMPONENT: dns (fixed DNS servers, DHCP for everything else)
+# ==============================================================================
+dns_line() {
+  echo "supersede domain-name-servers ${DNS_SERVERS// /, }; ${DNS_MARK}"
+}
+
+resolv_matches() {
+  local want got
+  want=$(printf '%s\n' $DNS_SERVERS)
+  got=$(awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null)
+  [[ "$want" == "$got" ]]
+}
+
+status_dns() {
+  if [[ -z "$DNS_SERVERS" ]]; then
+    ! grep -qF "$DNS_MARK" "$DHCLIENT_CONF" 2>/dev/null
+    return
+  fi
+  grep -qxF "$(dns_line)" "$DHCLIENT_CONF" 2>/dev/null && resolv_matches
+}
+
+install_dns() {
+  touch "$DHCLIENT_CONF"
+  sed -i "/${DNS_MARK}\$/d" "$DHCLIENT_CONF"
+  if [[ -z "$DNS_SERVERS" ]]; then
+    log_ok "Fixed DNS removed — DHCP's DNS is used from the next reconnect."
+    return
+  fi
+  log_info "Setting DNS to ${DNS_SERVERS} (address and gateway stay DHCP)..."
+  dns_line >> "$DHCLIENT_CONF"
+  # Apply now without reconnecting Wi-Fi (which would drop an SSH session).
+  if [[ -L /etc/resolv.conf ]]; then
+    log_warn "/etc/resolv.conf is a link — the new DNS applies at the next reconnect or reboot."
+  else
+    printf 'nameserver %s\n' $DNS_SERVERS > /etc/resolv.conf
+  fi
+  if status_dns; then
+    log_ok "DNS fixed to ${DNS_SERVERS}."
+  else
+    log_err "DNS setup did not verify — check ${DHCLIENT_CONF} and /etc/resolv.conf."
   fi
 }
 
@@ -1136,6 +1203,7 @@ show_wifi_status() {
   else
     echo "    not connected"
   fi
+  echo "    dns: $(awk '/^nameserver/{printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)"
   echo
 }
 
