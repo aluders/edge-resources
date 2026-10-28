@@ -201,6 +201,18 @@ INSTALLER_VERSION="58"
 #
 # CHANGELOG
 # ------------------------------------------
+# v58 - Removed version number from systemd service description to avoid stale
+#       version showing in systemctl status after updates.
+#
+# v57 - Simplified _cf_download_binary() to use wget only (dropped curl fallback).
+#       wget is installed by default on all Debian systems; curl is not guaranteed.
+#
+# v56 - Added _cf_download_binary() helper for safe atomic cloudflared replacement.
+#       Downloads to temp file, verifies with --version, then sudo mv into place.
+#       Existing binary is never touched until new one passes verification.
+#       Wired into all three download sites: cmd_install, cmd_update, and
+#       _cf_download() inside _tunnel_and_notify().
+#
 # v55 - Renamed --update to --redeploy (re- prefix matches --renotify convention).
 #       Added --update: checks and updates apt packages (nodejs, npm, lftp, swaks,
 #       ffmpeg, fastfetch, smartmontools, speedtest), cloudflared binary, and
