@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="57"
+INSTALLER_VERSION="58"
 
 # ==========================================
-# ATEM AGENT (v57)
+# ATEM AGENT (v58)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -1200,7 +1200,7 @@ _deploy_service() {
 
     sudo bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
-Description=ATEM Automation System v${INSTALLER_VERSION}
+Description=ATEM Automation System
 After=network-online.target
 Wants=network-online.target
 [Service]
