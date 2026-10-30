@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU / DEBIAN BASELINE SETUP v3.0
+# UBUNTU / DEBIAN BASELINE SETUP v3.1
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -30,6 +30,14 @@
 #                Idempotent: re-running pulls latest and reinstalls deps
 #                but leaves an existing config.ini/tautulli.db alone. No
 #                snap detection or migration logic — assumes a fresh box.
+#   debloat    - purges Ubuntu-default services this box doesn't use (apport,
+#                avahi-daemon, modemmanager, multipath-tools, open-iscsi,
+#                lxd-installer, snapd) and masks the dnscrypt-proxy-resolvconf
+#                unit that fails every boot on Ubuntu. Keeps CUPS and its
+#                filters (the email-to-print daemon needs them). snapd is
+#                only purged if no real snaps remain. Every apt action is
+#                dry-run first and abandoned if it would remove a protected
+#                package. No-op on minimal Debian (nothing to remove).
 #
 # Every component has a status check that runs first. Already-correct
 # components are left alone; only what's missing or misconfigured is
@@ -46,7 +54,7 @@
 #   -h, --help        Show usage and exit
 #
 #   LIST is a comma-separated list drawn from: dns, pihole, dnscrypt,
-#   pihole_upstream, fastfetch, speedtest, tautulli
+#   pihole_upstream, fastfetch, speedtest, tautulli, debloat
 #
 # USAGE
 # -----
@@ -106,7 +114,7 @@
 #     comparing versions; it never calls the deep status_<c>/install_<c>
 #     config-repair path. If a component isn't installed, --update just
 #     says so and leaves it — run without --update to install/repair it.
-#     dns and pihole_upstream have no versioned artifact at all, so
+#     dns, pihole_upstream and debloat have no versioned artifact at all, so
 #     --update skips them entirely (they're excluded from
 #     UPDATABLE_COMPONENTS) — use a normal run to check/repair their
 #     config instead. For the same reason, --update does not print the
@@ -131,6 +139,12 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.1 - New `debloat` component: purges apport, avahi-daemon, modemmanager,
+#          multipath-tools, open-iscsi, lxd-installer and (when no real snaps
+#          remain) snapd, then autoremoves; masks the failing
+#          dnscrypt-proxy-resolvconf.service on resolved systems. Dry-runs
+#          every apt action and refuses if CUPS, its filters, dnscrypt,
+#          cloudflared, nodejs, etc. would go with it. Excluded from --update.
 #   v3.0 - First-run bootstrap on a fresh Debian: ensure_prerequisites now
 #          also installs sudo when it's missing, then (that run only) adds
 #          the login user to the sudo group via the new
@@ -307,7 +321,7 @@
 set -uo pipefail
 
 # ------------------------------------------------------------------ CONFIG --
-SCRIPT_VERSION="3.0"
+SCRIPT_VERSION="3.1"
 DNSCRYPT_SERVER_NAMES="cloudflare-family"
 DNSCRYPT_TOML="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
 DNSCRYPT_SOCKET_OVERRIDE_DIR="/etc/systemd/system/dnscrypt-proxy.socket.d"
@@ -321,11 +335,11 @@ TAUTULLI_DATA_DIR="${TAUTULLI_DIR}/data"
 TAUTULLI_USER="tautulli"
 TAUTULLI_REPO="https://github.com/Tautulli/Tautulli.git"
 TAUTULLI_PORT="8181"
-ALL_COMPONENTS=(dns pihole dnscrypt pihole_upstream fastfetch speedtest tautulli)
-# Subset with an actual versioned artifact to check/update. dns and
-# pihole_upstream are pure config-state (no version to compare against),
-# so they're excluded from --update entirely rather than reporting a
-# no-op "nothing to do" every run.
+ALL_COMPONENTS=(dns pihole dnscrypt pihole_upstream fastfetch speedtest tautulli debloat)
+# Subset with an actual versioned artifact to check/update. dns,
+# pihole_upstream and debloat are pure config-state (no version to compare
+# against), so they're excluded from --update entirely rather than reporting
+# a no-op "nothing to do" every run.
 UPDATABLE_COMPONENTS=(pihole dnscrypt fastfetch speedtest tautulli)
 # ------------------------------------------------------------------------- --
 
@@ -348,7 +362,7 @@ UBUNTU / DEBIAN BASELINE SETUP (v${SCRIPT_VERSION})
 
 Installs/repairs: dns (stub-listener disable), pihole, dnscrypt-proxy
 (cloudflare-family @ 127.0.0.1:5053), fastfetch, Ookla speedtest, tautulli
-(native, no snap).
+(native, no snap), debloat (removes unused Ubuntu-default services).
 Idempotent - safe to re-run.
 
 Flags:
@@ -900,6 +914,94 @@ EOF
   else
     log_err "tautulli.service did not verify cleanly. 'systemctl status tautulli' for detail:"
     systemctl --no-pager status tautulli 2>&1 | sed 's/^/    /'
+  fi
+}
+
+# ==============================================================================
+# COMPONENT: debloat (remove unused Ubuntu-default services)
+# ==============================================================================
+# Purges packages a stock Ubuntu Server install ships that this box has no use
+# for. On minimal Debian none of them are installed, so this is a silent no-op
+# there. Deliberately NOT removed: cups, cups-client, cups-filters, ghostscript,
+# qpdf (the email-to-print daemon needs them).
+DEBLOAT_PKGS=(apport avahi-daemon modemmanager multipath-tools open-iscsi lxd-installer snapd)
+# If a purge (or the autoremove after it) would take any of these with it, the
+# step is abandoned instead of run.
+DEBLOAT_PROTECT=(cups cups-client cups-filters ghostscript qpdf dnscrypt-proxy cloudflared nodejs git python3 curl sudo openssh-server)
+DEBLOAT_MASK_UNIT="dnscrypt-proxy-resolvconf.service"
+
+pkg_installed() {
+  dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null | grep -q '^ii'
+}
+
+# Packages from DEBLOAT_PKGS that are currently installed. snapd is held back
+# while any real snap (anything besides core*/snapd/bare/gnome-*/gtk-*) is
+# installed, so this never yanks an app out from under the box.
+debloat_targets() {
+  local p
+  for p in "${DEBLOAT_PKGS[@]}"; do
+    pkg_installed "$p" || continue
+    if [[ "$p" == "snapd" ]] && command -v snap >/dev/null 2>&1; then
+      if snap list 2>/dev/null | awk 'NR>1{print $1}' | grep -qvE '^(core[0-9]*|snapd|bare|gnome-.*|gtk-.*|mesa-.*)$'; then
+        continue
+      fi
+    fi
+    echo "$p"
+  done
+}
+
+# dnscrypt-proxy-resolvconf pipes the socket address into `resolvconf -a`,
+# which systemd-resolved's shim rejects for loopback, so it fails every boot
+# on Ubuntu. Pi-hole is the real resolver here, so the unit is pointless.
+debloat_needs_mask() {
+  resolved_in_use || return 1
+  systemctl list-unit-files "$DEBLOAT_MASK_UNIT" 2>/dev/null | grep -q "$DEBLOAT_MASK_UNIT" || return 1
+  [[ "$(systemctl is-enabled "$DEBLOAT_MASK_UNIT" 2>/dev/null)" != "masked" ]]
+}
+
+# Run an apt-get action only if a dry run shows it won't remove anything on
+# the protect list. Args: apt-get args (e.g. purge -y pkg...).
+debloat_apt_safe() {
+  local pat sim
+  pat="^Remv ($(IFS='|'; echo "${DEBLOAT_PROTECT[*]}"))( |\$)"
+  sim=$(apt-get -s "$@" 2>/dev/null) || { log_err "apt dry run failed for: $*"; return 1; }
+  if echo "$sim" | grep -Eq "$pat"; then
+    log_err "Refusing 'apt-get $*' — it would remove protected packages:"
+    echo "$sim" | grep -E "$pat" | sed 's/^/      /'
+    return 1
+  fi
+  DEBIAN_FRONTEND=noninteractive apt-get "$@"
+}
+
+status_debloat() {
+  [[ -z "$(debloat_targets)" ]] && ! debloat_needs_mask
+}
+
+install_debloat() {
+  local targets=()
+  mapfile -t targets < <(debloat_targets)
+  if [[ ${#targets[@]} -gt 0 ]]; then
+    log_info "Purging: ${targets[*]}"
+    if debloat_apt_safe purge -y "${targets[@]}" >/dev/null; then
+      log_ok "Purged ${targets[*]}."
+      debloat_apt_safe autoremove --purge -y >/dev/null \
+        || log_warn "autoremove skipped — run 'apt-get autoremove --purge' by hand after checking."
+    else
+      log_warn "Purge skipped — nothing was removed."
+    fi
+  fi
+  if pkg_installed snapd; then
+    log_info "snapd kept: snaps still installed (see 'snap list')."
+  fi
+  if debloat_needs_mask; then
+    systemctl mask "$DEBLOAT_MASK_UNIT" >/dev/null 2>&1 \
+      && systemctl reset-failed "$DEBLOAT_MASK_UNIT" >/dev/null 2>&1
+    log_ok "Masked ${DEBLOAT_MASK_UNIT} (fails on Ubuntu; Pi-hole handles DNS)."
+  fi
+  if status_debloat; then
+    log_ok "Debloat complete."
+  else
+    log_warn "Some debloat items remain (see above)."
   fi
 }
 
