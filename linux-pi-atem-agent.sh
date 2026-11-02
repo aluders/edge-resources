@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="58"
+INSTALLER_VERSION="61"
 
 # ==========================================
-# ATEM AGENT (v58)
+# ATEM AGENT (v61)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -201,6 +201,21 @@ INSTALLER_VERSION="58"
 #
 # CHANGELOG
 # ------------------------------------------
+# v61 - _tunnel_and_notify: rm -f log files at start of function to prevent
+#       "Permission denied" errors when a prior run was killed mid-way (e.g.
+#       SSH broken pipe) leaving root-owned /tmp log files behind.
+#       Also use $HTTPD_LOG variable consistently instead of hardcoded path.
+#
+# v60 - _cf_download_binary: show wget progress bar when running interactively
+#       (stdout is a terminal), silent when running from service.
+#       Tunnel retry message now says "no URL returned within 30s" to distinguish
+#       a timeout from a cloudflared crash.
+#
+# v59 - Fixed tunnel URL parsing: clear CF log before each attempt (prevents stale
+#       URL bleed-through on retry), broaden subdomain regex to allow dots
+#       (Cloudflare now uses multi-part subdomains), explicitly exclude
+#       api.trycloudflare.com which is the API endpoint not a tunnel URL.
+#
 # v58 - Removed version number from systemd service description to avoid stale
 #       version showing in systemctl status after updates.
 #
@@ -416,7 +431,12 @@ _cf_download_binary() {
 
     log "⬇️  Downloading cloudflared binary..."
 
-    if ! wget -q -O "$TMP_FILE" "$URL" 2>/dev/null; then
+    if [ -t 1 ]; then
+        wget --show-progress -O "$TMP_FILE" "$URL"
+    else
+        wget -q -O "$TMP_FILE" "$URL" 2>/dev/null
+    fi
+    if [ $? -ne 0 ]; then
         rm -f "$TMP_FILE"
         return 1
     fi
@@ -1367,6 +1387,11 @@ _tunnel_and_notify() {
 
     local TUNNEL_URL=""
     local CF_LOG="/tmp/atem-cloudflared.log"
+    local HTTPD_LOG="/tmp/atem-httpd.log"
+
+    # Remove stale log files from previous runs (avoids permission issues if a
+    # prior run was killed mid-way and left root-owned files behind)
+    rm -f "$CF_LOG" "$HTTPD_LOG"
 
     if [ "${ENABLE_TUNNEL:-false}" = "true" ]; then
         if ! command -v cloudflared >/dev/null 2>&1; then
@@ -1415,7 +1440,7 @@ _tunnel_and_notify() {
             sleep 2
 
             # Start Python HTTP server (stays up across tunnel retries)
-            python3 - "$DEST_DIR" <<'PYEOF' > /tmp/atem-httpd.log 2>&1 &
+            python3 - "$DEST_DIR" <<'PYEOF' > "$HTTPD_LOG" 2>&1 &
 import http.server
 import socketserver
 import os
@@ -1465,11 +1490,14 @@ PYEOF
                 TUNNEL_ATTEMPT=$((TUNNEL_ATTEMPT + 1))
                 pkill -f "cloudflared tunnel" 2>/dev/null || true
                 sleep 1
+                > "$CF_LOG"  # clear log before each attempt so stale URLs can't bleed through
                 cloudflared tunnel --url "http://localhost:8080" --no-autoupdate > "$CF_LOG" 2>&1 &
 
                 TUNNEL_URL=""
                 for i in $(seq 1 30); do
-                    TUNNEL_URL=$(grep -oE 'https://[-a-zA-Z0-9]+\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | tail -1 || true)
+                    # Subdomain may contain dots; strip trailing pipe/space from banner output
+                    TUNNEL_URL=$(grep -oE 'https://[-a-zA-Z0-9.]+\.trycloudflare\.com' "$CF_LOG" 2>/dev/null \
+                                 | grep -v 'api\.trycloudflare\.com' | tail -1 || true)
                     [[ -n "$TUNNEL_URL" ]] && break
                     sleep 1
                 done
@@ -1480,7 +1508,7 @@ PYEOF
                 fi
 
                 if [ $TUNNEL_ATTEMPT -lt $TUNNEL_MAX_ATTEMPTS ]; then
-                    email_log "⚠️ Tunnel attempt ${TUNNEL_ATTEMPT}/${TUNNEL_MAX_ATTEMPTS} failed — retrying in ${TUNNEL_RETRY_DELAY}s..."
+                    email_log "⚠️ Tunnel attempt ${TUNNEL_ATTEMPT}/${TUNNEL_MAX_ATTEMPTS}: no URL returned within 30s — retrying in ${TUNNEL_RETRY_DELAY}s..."
                     sleep $TUNNEL_RETRY_DELAY
                 else
                     email_log "❌ Tunnel failed after ${TUNNEL_MAX_ATTEMPTS} attempts — use --renotify when Cloudflare recovers"
