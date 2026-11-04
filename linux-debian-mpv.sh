@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v3.4
+# EDGE MPV v3.5
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -160,11 +160,23 @@
 #     in or pulled, so swapping sticks switches the source within a few
 #     seconds. `mpvstatus` shows which source is playing.
 #   - The stick: label it VIDEO and format it exFAT (or FAT32 for files under
-#     4 GB). It is mounted read-only, so pulling it can't corrupt it. Files
+#     4 GB). With the overlay on it is mounted read-only, so pulling it can't
+#     corrupt it; with the overlay off it is writable (see ADDING A VIDEO). Files
 #     are found up to one folder deep; hidden files and anything inside a
 #     hidden folder (the "._" files, .Spotlight-V100, .fseventsd and .Trashes
 #     that macOS adds) are skipped. Extensions played: mp4 m4v mkv mov avi mpg
 #     mpeg webm ts.
+#   - ADDING A VIDEO REMOTELY: the stick's mount follows the overlay. Overlay
+#     on = read-only; overlay off = writable by the kiosk user, so a video
+#     can be copied straight onto it over the network:
+#       sudo ./edge-mpv.sh --overlay-off            (answer y to reboot)
+#       scp film.mkv edgeadmin@TABLET:/media/video/   (from your computer)
+#       mpvrestart                                  (picks up the new file)
+#       sudo ./edge-mpv.sh --overlay-on && sudo reboot
+#     While writable, pulling the stick or a power cut mid-copy can corrupt
+#     it, so keep that window short. A copy that drops leaves a partial file
+#     that mpv will try to play: delete it (rm /media/video/FILE) and copy
+#     again. To delete old videos, rm them in the same window.
 #   - Neither the fallback video nor the stick's contents are deployed by
 #     this script. With no stick and no fallback file, mpv exits and the
 #     service retries every 5s until one appears.
@@ -237,6 +249,11 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.5  - The USB stick's mount now follows the overlay: read-only when the
+#           overlay is on, writable by the kiosk user when it's off, so a
+#           video can be scp'd onto it in maintenance mode. --status shows
+#           which. Applied by a normal run (the launcher is rewritten; no
+#           --force needed).
 #   v3.4  - Added the dns component: DNS_SERVERS (default Google, 8.8.8.8
 #           and 8.8.4.4) supersedes DHCP's DNS in dhclient.conf, and
 #           /etc/resolv.conf is written to match. Address and gateway stay
@@ -348,7 +365,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="3.4"
+SCRIPT_VERSION="3.5"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -976,9 +993,12 @@ EOF
 # mounts the USB stick; otherwise it execs mpv with the options it was given,
 # adding the video source and the matching loop mode.
 play_script_content() {
-  cat <<'EOF'
+  { cat <<'EOF'
 #!/usr/bin/env bash
 # edge-mpv-play — installed by edge-mpv.sh. Don't edit; re-run edge-mpv.sh.
+EOF
+  echo "KIOSK_USER=\"${KIOSK_USER}\""
+  cat <<'EOF'
 USB_LABEL="${USB_LABEL:-VIDEO}"
 USB_MOUNT="${USB_MOUNT:-/media/video}"
 FALLBACK_VIDEO="${FALLBACK_VIDEO:-}"
@@ -1004,8 +1024,19 @@ if [[ "${1:-}" == "--mount" ]]; then
   # Always start clean: a stick pulled earlier leaves a stale mount behind.
   if mountpoint -q "$USB_MOUNT"; then umount -l "$USB_MOUNT"; fi
   if [[ -e "$DEV" ]]; then
-    mount -o ro,nosuid,nodev,noexec "$DEV" "$USB_MOUNT" \
-      || echo "edge-mpv-play: could not mount ${DEV}" >&2
+    if [[ "$(findmnt -n -o FSTYPE / 2>/dev/null)" == "overlay" ]]; then
+      # Overlay on (deployed): read-only, so pulling the stick can't corrupt it.
+      mount -o ro,nosuid,nodev,noexec "$DEV" "$USB_MOUNT" \
+        || echo "edge-mpv-play: could not mount ${DEV}" >&2
+    else
+      # Overlay off (maintenance): writable by the kiosk user, so videos can
+      # be copied on over the network. uid/gid suit exFAT/FAT; a stick in
+      # another format is mounted writable by root only.
+      uid=$(id -u "$KIOSK_USER" 2>/dev/null) gid=$(id -g "$KIOSK_USER" 2>/dev/null)
+      mount -o "rw,nosuid,nodev,noexec,uid=${uid},gid=${gid},fmask=0133,dmask=0022" "$DEV" "$USB_MOUNT" 2>/dev/null \
+        || mount -o rw,nosuid,nodev,noexec "$DEV" "$USB_MOUNT" \
+        || echo "edge-mpv-play: could not mount ${DEV}" >&2
+    fi
   fi
   exit 0
 fi
@@ -1026,6 +1057,7 @@ fi
 echo "edge-mpv-play: no USB videos — playing fallback ${FALLBACK_VIDEO}"
 exec /usr/bin/mpv "$@" --loop-file=inf -- "$FALLBACK_VIDEO"
 EOF
+  }
 }
 
 # Restart playback when a stick with our label is plugged in or pulled.
@@ -1169,7 +1201,9 @@ show_video_source() {
       \( -iname '*.mp4' -o -iname '*.m4v' -o -iname '*.mkv' -o -iname '*.mov' \
          -o -iname '*.avi' -o -iname '*.mpg' -o -iname '*.mpeg' \
          -o -iname '*.webm' -o -iname '*.ts' \) 2>/dev/null | wc -l)
-    log_info "Video source: USB stick ${USB_LABEL} mounted at ${USB_MOUNT} (${n} video(s))."
+    local mode="read-only"
+    findmnt -n -o OPTIONS "$USB_MOUNT" 2>/dev/null | grep -q '^rw' && mode="WRITABLE (overlay off)"
+    log_info "Video source: USB stick ${USB_LABEL} mounted at ${USB_MOUNT}, ${mode} (${n} video(s))."
   elif [[ -e "/dev/disk/by-label/${USB_LABEL}" ]]; then
     log_info "Video source: USB stick ${USB_LABEL} is plugged in but not mounted — fallback ${VIDEO_PATH}."
   else
@@ -1533,6 +1567,7 @@ if [[ $OVERLAY_OFF_MODE -eq 1 ]]; then
   fi
   sed -i 's/^overlayroot=.*/overlayroot=""/' "$OVERLAY_CONF"
   log_ok "Overlay disabled — it stays off across reboots until --overlay-on."
+  log_info "After the reboot the disk and the USB stick are writable."
   if ! root_is_overlay || in_chroot; then
     exit 0
   fi
