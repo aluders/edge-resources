@@ -7,3 +7,9 @@ powershell -Command "$req = Invoke-WebRequest -Uri 'https://www.speedtest.net/ap
 # exclusion
 Add-MpPreference -ExclusionPath 'C:\Program Files\Mesh Agent' -ExclusionProcess 'C:\Program Files\Mesh Agent\MeshAgent.exe'
 Get-MpPreference | Select ExclusionPath, ExclusionProcess
+
+# smart app control
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name VerifiedAndReputablePolicyState -Value 0 -Type DWord
+
+# combined
+Add-MpPreference -ExclusionPath 'C:\Program Files\Mesh Agent' -ExclusionProcess 'C:\Program Files\Mesh Agent\MeshAgent.exe' -ErrorAction SilentlyContinue; Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name VerifiedAndReputablePolicyState -Value 0 -Type DWord -ErrorAction SilentlyContinue
