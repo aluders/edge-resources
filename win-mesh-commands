@@ -13,3 +13,6 @@ Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name Verifi
 
 # combined
 Add-MpPreference -ExclusionPath 'C:\Program Files\Mesh Agent' -ExclusionProcess 'C:\Program Files\Mesh Agent\MeshAgent.exe' -ErrorAction SilentlyContinue; Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -Name VerifiedAndReputablePolicyState -Value 0 -Type DWord -ErrorAction SilentlyContinue
+
+# fastfetch
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; $d='C:\Program Files\fastfetch'; $z=Join-Path $env:TEMP 'ff.zip'; Invoke-WebRequest 'https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-windows-amd64.zip' -OutFile $z -UseBasicParsing; Expand-Archive $z $d -Force; Remove-Item $z; $e=(Get-ChildItem $d -Recurse -Filter fastfetch.exe | Select-Object -First 1).DirectoryName; $k='HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'; $p=(Get-Item $k).GetValue('Path','','DoNotExpandEnvironmentNames'); if(($p -split ';') -notcontains $e){Set-ItemProperty $k Path ($p.TrimEnd(';')+';'+$e) -Type ExpandString}; & (Join-Path $e 'fastfetch.exe')"
