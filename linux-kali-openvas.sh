@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v1.9
+# KALI SCRIPT v2.0
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -57,7 +57,7 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v1.9
+# NOTES — Kali Script v2.0
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
@@ -98,6 +98,13 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v2.0 - gvmd schema migration. After a GVM package upgrade (--update),
+#          a normal run, or a restore, the script compares the gvmd DB
+#          revision with what the installed gvmd supports. If it is behind,
+#          it stops gvmd, snapshots the DB to /var/tmp (0600), runs
+#          `gvmd --migrate` as _gvm, and waits for /run/gvmd/gvmd.sock.
+#          Refuses to migrate if the gvmd DB is not on the online
+#          PostgreSQL cluster (stranded pg major upgrade).
 #   v1.9 - Config-only --backup also strips scap2.* (post-upgrade
 #          duplicate SCAP schema) and any scap*/cert* schema.
 #   v1.8 - Config-only --backup also strips scap.* / cert.* and the
@@ -126,7 +133,7 @@
 #   v1.0 - Initial release from live recon of the existing Kali GVM VM.
 # ==============================================================================
 set -uo pipefail
-SCRIPT_VERSION="1.9"
+SCRIPT_VERSION="2.0"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -257,6 +264,69 @@ unit_enabled() { systemctl is-enabled --quiet "$1"; }
 gvm_db_exists() {
   sudo -u postgres psql -Atc "SELECT 1 FROM pg_database WHERE datname='gvmd'" 2>/dev/null | grep -q 1
 }
+gvm_db_rev() {
+  sudo -u postgres psql -d gvmd -Atc "SELECT value FROM meta WHERE name='database_version'" 2>/dev/null | head -n1
+}
+gvm_supported_rev() {
+  gvmd --version 2>/dev/null | grep -Eio 'db revision[[:space:]]+[0-9]+' | grep -Eo '[0-9]+$' | head -n1
+}
+gvm_wait_socket() {
+  local i
+  for i in $(seq 1 90); do
+    [[ -S /run/gvmd/gvmd.sock ]] && return 0
+    sleep 2
+  done
+  return 1
+}
+gvm_pg_cluster_check() {
+  command -v pg_lsclusters >/dev/null 2>&1 || return 0
+  local n
+  n=$(pg_lsclusters -h 2>/dev/null | wc -l)
+  (( n > 1 )) || return 0
+  log_warn "More than one PostgreSQL cluster present:"
+  pg_lsclusters | sed 's/^/    /'
+  if ! gvm_db_exists; then
+    log_err "No gvmd database on the online cluster — looks like a stranded pg major upgrade."
+    log_err "Move it with pg_upgradecluster (or restore a backup) before re-running. Not migrating."
+    return 1
+  fi
+  log_warn "gvmd DB is on the online cluster. Drop the old one once verified (pg_dropcluster VER main)."
+  return 0
+}
+gvm_migrate_if_needed() {
+  gvm_db_exists || return 0
+  gvm_pg_cluster_check || return 1
+  local have want dump
+  have=$(gvm_db_rev)
+  want=$(gvm_supported_rev)
+  if [[ -n "$have" && -n "$want" && "$have" == "$want" ]]; then
+    log_ok "gvmd database schema current (rev ${have})."
+    return 0
+  fi
+  log_warn "gvmd DB rev ${have:-?}, gvmd wants ${want:-?} — migrating."
+  systemctl stop gvmd >/dev/null 2>&1 || true
+  dump="/var/tmp/gvmd-pre-migrate-rev${have:-unknown}-$(date +%Y%m%d-%H%M%S).dump"
+  log_info "Snapshotting gvmd to ${dump}..."
+  if ! sudo -u postgres sh -c "umask 077; pg_dump --format=custom --file='${dump}' gvmd"; then
+    rm -f "$dump"
+    log_err "Pre-migrate pg_dump failed (disk full?) — not migrating."
+    return 1
+  fi
+  log_info "Running gvmd --migrate (can take a while)..."
+  if ! runuser -u _gvm -- gvmd --migrate; then
+    log_err "gvmd --migrate failed. Snapshot kept at ${dump}. See /var/log/gvm/gvmd.log"
+    return 1
+  fi
+  log_ok "gvmd migrated to rev $(gvm_db_rev). Snapshot kept at ${dump} — delete once happy."
+  systemctl start gvmd >/dev/null 2>&1 || true
+  log_info "Waiting for /run/gvmd/gvmd.sock..."
+  if gvm_wait_socket; then
+    systemctl restart gsad >/dev/null 2>&1 || true
+    log_ok "gvmd is accepting connections."
+  else
+    log_warn "gvmd socket not up after 3 min — it may still be rebuilding. Watch /var/log/gvm/gvmd.log"
+  fi
+}
 status_openvas() {
   dpkg -s gvm >/dev/null 2>&1 || return 1
   dpkg -s gsad >/dev/null 2>&1 || return 1
@@ -277,6 +347,7 @@ status_openvas() {
   grep -q -- "--listen ${GSAD_LISTEN}" "$GSAD_OVERRIDE" || return 1
   grep -q -- "--port ${GSAD_PORT}" "$GSAD_OVERRIDE" || return 1
   gvm_db_exists || return 1
+  [[ -S /run/gvmd/gvmd.sock ]] || return 1
   feed_cron_ok || return 1
   return 0
 }
@@ -335,6 +406,7 @@ EOF
     gvm-setup
   fi
   ensure_feed_cron
+  gvm_migrate_if_needed
   systemctl restart ospd-openvas gvmd gsad >/dev/null 2>&1 || true
   sleep 2
   if status_openvas; then
@@ -357,11 +429,14 @@ update_openvas() {
   DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y "${GVM_PKGS[@]}" >/dev/null
   after=$(dpkg-query -W -f='${Package}=${Version}\n' "${GVM_PKGS[@]}" 2>/dev/null | sort | sha256sum | awk '{print $1}')
   if [[ "$before" != "$after" ]]; then
-    log_info "GVM packages upgraded — restarting services..."
+    log_info "GVM packages upgraded — checking gvmd schema before restart..."
+    systemctl stop gvmd >/dev/null 2>&1 || true
+    gvm_migrate_if_needed
     systemctl restart ospd-openvas notus-scanner gvmd gsad >/dev/null 2>&1 || true
     log_ok "GVM packages updated."
   else
     log_ok "GVM packages already at latest apt candidate."
+    gvm_migrate_if_needed
   fi
   ensure_feed_cron
 }
@@ -1068,6 +1143,7 @@ do_restore() {
     log_ok "Restored gvmd database"
   fi
   rm -rf "$tmp"
+  gvm_migrate_if_needed
   start_gvm_stack
   if [[ -f /etc/cloudflared/config.yml ]]; then
     systemctl enable --now cloudflared >/dev/null 2>&1 || systemctl start cloudflared || true
