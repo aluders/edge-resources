@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# KALI SCRIPT v2.0
+# KALI SCRIPT v2.1
 # ==============================================================================
 #
 # WHAT IT DOES
@@ -40,9 +40,10 @@
 #   --backup-full     Same archive plus full gvmd dump (reports/results)
 #   --restore FILE    Restore from a --backup archive
 #   --backup-dir DIR  Override where --backup writes the archive
+#   --clean           Remove stale pg clusters, old snapshots, apt cruft
 #   --only LIST       Only act on LIST
 #   --skip LIST       Act on all except LIST
-#   -y, --yes         Don't pause before gvm-setup / restore confirm
+#   -y, --yes         Don't pause before gvm-setup / restore / clean confirm
 #   -h, --help        Show usage
 #
 #   LIST: openvas, exim, cloudflared, fastfetch, speedtest
@@ -57,7 +58,7 @@
 #   sudo ./kali-script.sh --backup
 #   sudo ./kali-script.sh --restore ~/kali-backup-20260911-193000.tar.gz
 #
-# NOTES — Kali Script v2.0
+# NOTES — Kali Script v2.1
 # -----
 #   - Must run as root (re-execs with sudo).
 #   - Built against Kali 2026.3 rolling, amd64, GVM 25.04.x stack as
@@ -98,6 +99,14 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v2.1 - --clean. Lists, confirms (type "clean" unless -y), then removes:
+#          stopped PostgreSQL clusters older than the online one holding
+#          gvmd, their now-unused postgresql-VER packages, gvmd
+#          pre-migrate/pre-restore dumps and *.pre-restore.* copies older
+#          than CLEAN_KEEP_DAYS, apt autoremove --purge, apt autoclean.
+#          --update and normal runs only report pending cleanup; they
+#          never delete. Fixed --restore's cloudflared pre-restore copy
+#          (two different timestamps; always created even on a bare box).
 #   v2.0 - gvmd schema migration. After a GVM package upgrade (--update),
 #          a normal run, or a restore, the script compares the gvmd DB
 #          revision with what the installed gvmd supports. If it is behind,
@@ -133,7 +142,7 @@
 #   v1.0 - Initial release from live recon of the existing Kali GVM VM.
 # ==============================================================================
 set -uo pipefail
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.1"
 GSAD_LISTEN="0.0.0.0"
 GSAD_PORT="443"
 GSAD_OVERRIDE_DIR="/etc/systemd/system/gsad.service.d"
@@ -169,6 +178,8 @@ BACKUP_MODE=0
 BACKUP_FULL=0
 RESTORE_FILE=""
 BACKUP_DIR_ARG=""
+CLEAN_MODE=0
+CLEAN_KEEP_DAYS=7
 ASSUME_YES=0
 ONLY_LIST=""
 SKIP_LIST=""
@@ -187,9 +198,10 @@ Flags:
   --backup-full     Archive including full gvmd dump (reports + results)
   --restore FILE    Restore from a --backup archive
   --backup-dir DIR  Override --backup destination directory
+  --clean           Remove stale pg clusters, old snapshots (>${CLEAN_KEEP_DAYS}d), apt cruft
   --only LIST       Only act on the components in LIST
   --skip LIST       Act on all components except those in LIST
-  -y, --yes         Don't pause before gvm-setup / restore confirm
+  -y, --yes         Don't pause before gvm-setup / restore / clean confirm
   -h, --help        Show this help
   LIST is a comma-separated list drawn from: $(IFS=,; echo "${ALL_COMPONENTS[*]}" | sed 's/,/, /g')
 Usage:
@@ -200,6 +212,8 @@ Usage:
   sudo ./kali-script.sh --only cloudflared,fastfetch
   sudo ./kali-script.sh --skip openvas
   sudo ./kali-script.sh --backup
+  sudo ./kali-script.sh --clean
+  sudo ./kali-script.sh --update --clean
   sudo ./kali-script.sh --restore /home/you/kali-backup-20260911-193000.tar.gz
 EOF
 }
@@ -211,6 +225,7 @@ while [[ $# -gt 0 ]]; do
     --backup-full) BACKUP_MODE=1; BACKUP_FULL=1; shift ;;
     --restore) RESTORE_FILE="$2"; shift 2 ;;
     --backup-dir) BACKUP_DIR_ARG="$2"; shift 2 ;;
+    --clean) CLEAN_MODE=1; shift ;;
     --only) ONLY_LIST="$2"; shift 2 ;;
     --skip) SKIP_LIST="$2"; shift 2 ;;
     -y|--yes) ASSUME_YES=1; shift ;;
@@ -290,7 +305,7 @@ gvm_pg_cluster_check() {
     log_err "Move it with pg_upgradecluster (or restore a backup) before re-running. Not migrating."
     return 1
   fi
-  log_warn "gvmd DB is on the online cluster. Drop the old one once verified (pg_dropcluster VER main)."
+  log_warn "gvmd DB is on the online cluster. Old cluster(s) can go: run with --clean."
   return 0
 }
 gvm_migrate_if_needed() {
@@ -958,7 +973,7 @@ prompt_fresh_or_restore() {
   if [[ -n "$RESTORE_FILE" ]]; then
     return 0
   fi
-  if [[ $STATUS_ONLY -eq 1 || $UPDATE_MODE -eq 1 || $BACKUP_MODE -eq 1 ]]; then
+  if [[ $STATUS_ONLY -eq 1 || $UPDATE_MODE -eq 1 || $BACKUP_MODE -eq 1 || $CLEAN_MODE -eq 1 ]]; then
     return 0
   fi
   if [[ $ASSUME_YES -eq 1 ]]; then
@@ -1072,11 +1087,13 @@ do_restore() {
     log_ok "Restored gsad drop-in"
   fi
   if [[ -d "$tmp/etc/cloudflared" ]]; then
-    mkdir -p /etc/cloudflared
     if [[ -d /etc/cloudflared ]]; then
-      mkdir -p "/etc/cloudflared.pre-restore.$(date +%s)"
-      cp -a /etc/cloudflared/. "/etc/cloudflared.pre-restore.$(date +%s)/" 2>/dev/null || true
+      local cf_aside
+      cf_aside="/etc/cloudflared.pre-restore.$(date +%s)"
+      mkdir -p "$cf_aside"
+      cp -a /etc/cloudflared/. "${cf_aside}/" 2>/dev/null || true
     fi
+    mkdir -p /etc/cloudflared
     cp -a "$tmp/etc/cloudflared/." /etc/cloudflared/
     chmod 600 /etc/cloudflared/*.json 2>/dev/null || true
     log_ok "Restored /etc/cloudflared"
@@ -1151,6 +1168,139 @@ do_restore() {
   log_ok "Restore complete. Previous live data was copied aside as *.pre-restore.*"
 }
 # ==============================================================================
+# CLEAN
+# ==============================================================================
+# Every clean_* lister prints one item per line and deletes nothing.
+pg_online_main_ver() {
+  command -v pg_lsclusters >/dev/null 2>&1 || return 1
+  pg_lsclusters -h 2>/dev/null | awk '$3==5432 && $4 ~ /^online/ {print $1; exit}'
+}
+clean_list_clusters() {
+  # Stopped clusters older than the online 5432 cluster — and only when
+  # that online cluster actually holds a current gvmd DB with users in it.
+  local ov users
+  ov=$(pg_online_main_ver) || return 0
+  [[ -n "$ov" ]] || return 0
+  gvm_db_exists || return 0
+  users=$(sudo -u postgres psql -d gvmd -Atc "SELECT count(*) FROM users" 2>/dev/null)
+  [[ "${users:-0}" -gt 0 ]] || return 0
+  [[ "$(gvm_db_rev)" == "$(gvm_supported_rev)" ]] || return 0
+  pg_lsclusters -h 2>/dev/null | awk -v ov="$ov" '$4 !~ /^online/ && ($1+0) < (ov+0) {print $1" "$2}'
+}
+clean_list_pg_pkgs() {
+  # postgresql-VER* packages, only for versions where every cluster is
+  # in the stale list (i.e. nothing of that version survives).
+  local stale="$1" v total dropping
+  for v in $(awk 'NF{print $1}' <<<"$stale" | sort -u); do
+    total=$(pg_lsclusters -h 2>/dev/null | awk -v v="$v" '$1==v' | wc -l)
+    dropping=$(awk -v v="$v" '$1==v' <<<"$stale" | wc -l)
+    (( total == dropping )) || continue
+    dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' "postgresql-${v}" "postgresql-${v}-*" "postgresql-client-${v}" 2>/dev/null \
+      | awk '$1 ~ /^i/ {print $2}'
+  done
+}
+clean_age_ok() {
+  # $1 = epoch seconds; true if older than CLEAN_KEEP_DAYS
+  local ts="$1" now
+  [[ "$ts" =~ ^[0-9]+$ ]] || return 1
+  now=$(date +%s)
+  (( now - ts > CLEAN_KEEP_DAYS * 86400 ))
+}
+clean_list_files() {
+  local f ts
+  # Dumps written fresh by pg_dump: mtime is trustworthy.
+  find /var/tmp -maxdepth 1 -type f \( -name 'gvmd-pre-migrate-*.dump' -o -name 'gvmd.pre-restore.*.dump' \) \
+    -mtime +"$CLEAN_KEEP_DAYS" 2>/dev/null
+  # cp -a copies keep the source mtime, so age comes from the epoch in the name.
+  for f in /etc/*.pre-restore.* /etc/systemd/system/*.pre-restore.* /var/lib/gvm/*.pre-restore.*; do
+    [[ -e "$f" ]] || continue
+    ts="${f##*.pre-restore.}"
+    clean_age_ok "$ts" && echo "$f"
+  done
+}
+clean_list_autoremove() {
+  apt-get -s autoremove --purge 2>/dev/null | awk '/^Purg|^Remv/ {print $2}'
+}
+clean_pending_count() {
+  local stale n=0
+  stale=$(clean_list_clusters)
+  n=$(( n + $(printf '%s' "$stale" | grep -c . ) ))
+  n=$(( n + $(clean_list_files | grep -c . ) ))
+  n=$(( n + $(clean_list_autoremove | grep -c . ) ))
+  echo "$n"
+}
+clean_hint() {
+  local n
+  n=$(clean_pending_count)
+  if (( n > 0 )); then
+    echo
+    log_warn "${n} cleanup item(s) pending (old pg cluster / snapshots / apt cruft). Review with: sudo $0 --clean"
+  fi
+}
+do_clean() {
+  local stale pkgs files autorm line
+  echo
+  log_info "=== clean ==="
+  stale=$(clean_list_clusters)
+  pkgs=$( [[ -n "$stale" ]] && clean_list_pg_pkgs "$stale" )
+  files=$(clean_list_files)
+  autorm=$(clean_list_autoremove)
+  # autoremove may already cover the pg packages; don't list them twice.
+  if [[ -n "$pkgs" && -n "$autorm" ]]; then
+    autorm=$(grep -vxF -f <(echo "$pkgs") <<<"$autorm" || true)
+  fi
+  if [[ -z "$stale$pkgs$files$autorm" ]]; then
+    log_ok "Nothing to clean."
+    apt-get autoclean -qq >/dev/null 2>&1 || true
+    return 0
+  fi
+  echo "    The following will be PERMANENTLY removed:"
+  if [[ -n "$stale" ]]; then
+    echo "    PostgreSQL clusters (gvmd lives on $(pg_online_main_ver)/main, verified):"
+    while read -r line; do echo "      - ${line}  ($(du -sh "/var/lib/postgresql/${line% *}/${line#* }" 2>/dev/null | cut -f1))"; done <<<"$stale"
+  fi
+  if [[ -n "$pkgs" ]]; then
+    echo "    Packages for dropped PostgreSQL versions:"
+    sed 's/^/      - /' <<<"$pkgs"
+  fi
+  if [[ -n "$files" ]]; then
+    echo "    Snapshots / pre-restore copies older than ${CLEAN_KEEP_DAYS} days:"
+    while read -r line; do echo "      - ${line}  ($(du -sh "$line" 2>/dev/null | cut -f1))"; done <<<"$files"
+  fi
+  if [[ -n "$autorm" ]]; then
+    echo "    apt autoremove --purge:"
+    sed 's/^/      - /' <<<"$autorm"
+  fi
+  if [[ $ASSUME_YES -ne 1 ]]; then
+    local reply
+    read -r -p "    Type 'clean' to continue: " reply
+    if [[ "$reply" != "clean" ]]; then
+      log_warn "Clean skipped."
+      return 0
+    fi
+  fi
+  if [[ -n "$stale" ]]; then
+    while read -r v name; do
+      log_info "Dropping PostgreSQL cluster ${v}/${name}..."
+      pg_dropcluster --stop "$v" "$name" && log_ok "Dropped ${v}/${name}." || log_err "pg_dropcluster ${v} ${name} failed."
+    done <<<"$stale"
+  fi
+  if [[ -n "$pkgs" ]]; then
+    log_info "Purging old PostgreSQL packages..."
+    # shellcheck disable=SC2086
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y $pkgs >/dev/null && log_ok "Purged: $(echo $pkgs)" || log_err "Package purge failed."
+  fi
+  if [[ -n "$files" ]]; then
+    while read -r line; do
+      rm -rf -- "$line" && log_ok "Removed ${line}"
+    done <<<"$files"
+  fi
+  log_info "apt autoremove --purge / autoclean..."
+  DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y >/dev/null 2>&1 || log_warn "apt autoremove reported errors."
+  apt-get autoclean -qq >/dev/null 2>&1 || true
+  log_ok "Clean complete."
+}
+# ==============================================================================
 # STATUS REPORT / MAIN
 # ==============================================================================
 print_status_report() {
@@ -1165,6 +1315,9 @@ print_status_report() {
       log_warn "$c — not configured / needs attention"
     fi
   done
+  local n
+  n=$(clean_pending_count)
+  (( n > 0 )) && log_warn "cleanup — ${n} item(s) pending, run --clean"
   echo
 }
 check_os
@@ -1174,8 +1327,8 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   exit 0
 fi
 if [[ -n "$RESTORE_FILE" ]]; then
-  if [[ $BACKUP_MODE -eq 1 || $UPDATE_MODE -eq 1 ]]; then
-    log_err "Cannot combine --restore with --backup or --update."
+  if [[ $BACKUP_MODE -eq 1 || $UPDATE_MODE -eq 1 || $CLEAN_MODE -eq 1 ]]; then
+    log_err "Cannot combine --restore with --backup, --update or --clean."
     exit 1
   fi
   if [[ "$RESTORE_FILE" == ~/* && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
@@ -1190,6 +1343,16 @@ if [[ -n "$RESTORE_FILE" ]]; then
   do_restore "$RESTORE_FILE"
   echo
   print_status_report
+  log_ok "Done. (Kali Script v${SCRIPT_VERSION})"
+  exit 0
+fi
+if [[ $BACKUP_MODE -eq 1 && $CLEAN_MODE -eq 1 ]]; then
+  log_err "Cannot combine --backup with --clean."
+  exit 1
+fi
+if [[ $CLEAN_MODE -eq 1 && $UPDATE_MODE -ne 1 ]]; then
+  do_clean
+  echo
   log_ok "Done. (Kali Script v${SCRIPT_VERSION})"
   exit 0
 fi
@@ -1223,6 +1386,11 @@ for c in "${ALL_COMPONENTS[@]}"; do
     fi
   fi
 done
+if [[ $CLEAN_MODE -eq 1 ]]; then
+  do_clean
+elif [[ $UPDATE_MODE -eq 1 ]]; then
+  clean_hint
+fi
 if [[ $UPDATE_MODE -eq 1 ]]; then
   echo
   log_ok "Update pass complete. (Kali Script v${SCRIPT_VERSION})"
