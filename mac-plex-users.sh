@@ -2,8 +2,8 @@
 # =============================================================================
 # Tautulli / Plex Activity & User Audit Tool
 # =============================================================================
-# Version:      1.1.0
-# Date:         2026-09-01
+# Version:      1.2
+# Date:         2026-11-12
 # Description:  Command-line tool to query a Tautulli instance for current
 #               Plex activity (streams, bandwidth, transcode details) or a
 #               list of shared users. Creates a hidden virtual environment
@@ -76,7 +76,7 @@ if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
 fi
 source "$VENV_DIR/bin/activate"
-pip install --upgrade pip requests &> /dev/null
+python3 -m pip install -q requests
 
 # --- Python Logic ---
 python3 - "$1" <<EOF
