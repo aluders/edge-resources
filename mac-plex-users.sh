@@ -2,8 +2,7 @@
 # =============================================================================
 # Tautulli / Plex Activity & User Audit Tool
 # =============================================================================
-# Version:      1.2
-# Date:         2026-11-12
+# Version:      1.3
 # Description:  Command-line tool to query a Tautulli instance for current
 #               Plex activity (streams, bandwidth, transcode details) or a
 #               list of shared users. Creates a hidden virtual environment
@@ -21,12 +20,14 @@
 # Usage:
 #   tautulli.sh            Show current Plex activity (default)
 #   tautulli.sh --users    List all shared users with email and ID
+#   tautulli.sh --upgrade  Upgrade pip inside the virtual environment
 #   tautulli.sh --help     Show this help message
 #   tautulli.sh -h         Same as --help
 #
 # Examples:
 #   tautulli.sh
 #   tautulli.sh --users
+#   tautulli.sh --upgrade
 #   tautulli.sh --help
 #
 # Notes:
@@ -49,6 +50,7 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
 \033[1;33mUsage:\033[0m
   tautulli.sh            Show current Plex activity (default)
   tautulli.sh --users    List all shared users with email and ID
+  tautulli.sh --upgrade  Upgrade pip inside the virtual environment
   tautulli.sh --help     Show this help message
 
 \033[1;33mConfiguration:\033[0m
@@ -61,6 +63,21 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
   tautulli.sh
   tautulli.sh --users
 "
+    exit 0
+fi
+
+# --- Upgrade ---
+if [[ "$1" == "--upgrade" ]]; then
+    if [ ! -d "$VENV_DIR" ]; then
+        echo "Creating virtual environment..."
+        python3 -m venv "$VENV_DIR"
+    fi
+    source "$VENV_DIR/bin/activate"
+    echo "Upgrading pip..."
+    python3 -m pip install --upgrade pip
+    echo "Upgrading requests..."
+    python3 -m pip install --upgrade requests
+    deactivate
     exit 0
 fi
 
