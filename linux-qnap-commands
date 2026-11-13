@@ -3,3 +3,6 @@ for d in /sys/block/sd*; do grep -qE "SSD 8[567]" $d/device/model 2>/dev/null &&
 
 # samsung drives current NCQ depth...
 for d in /sys/block/sd*; do grep -qE "SSD 8[567]" $d/device/model 2>/dev/null && echo "$(basename $d) $(cat $d/device/model): $(cat $d/device/queue_depth)"; done
+
+# non-rotational current NCQ depth...
+for d in /sys/block/sd*; do [ "$(cat $d/queue/rotational 2>/dev/null)" = "0" ] && echo "$(basename $d) $(cat $d/device/model): $(cat $d/device/queue_depth)"; done
