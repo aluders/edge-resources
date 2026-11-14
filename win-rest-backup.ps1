@@ -30,8 +30,13 @@
 #
 # Not captured (see MANUAL-CHECKLIST.txt): source code, passwords,
 # Salesforce-side config, DNS, router/NAT, Neogrid account details.
+#
+# Each backup includes RESTORE-GUIDE.txt: step-by-step rebuild commands
+# filled in with the names, paths and settings from that run.
 # ------------------------------------------------------------------------------
 # Changelog
+#   1.6  Writes RESTORE-GUIDE.txt with step-by-step commands built from
+#        this run's values; folder permissions also saved restorable (.acl)
 #   1.5  Known drop folder (C:\JsonPayloads) in CONFIG: permissions saved,
 #        file count in summary, guarded against; checklist adds \JSON task
 #   1.4  Drop .pfx export (no password prompt); agent folder detection
@@ -45,7 +50,7 @@
 # ==============================================================================
 
 # ---- CONFIG ------------------------------------------------------------------
-$Version    = "1.5"
+$Version    = "1.6"
 $SiteName   = ""                   # force a site name; blank = pick from a list
 $DropFolder = "C:\JsonPayloads"    # where the endpoint writes files for Neogrid
 $AgentMatch = "neogrid"            # matched against services, tasks, folders
@@ -156,7 +161,9 @@ $Summary.Add("Site     : $SiteName (id $($site.'SITE.ID'), $($site.state))")
 $Summary.Add("Bindings : $($site.bindings)")
 
 # App pools
-$pools = @($appNodes | ForEach-Object { $_.'APPPOOL.NAME' } | Sort-Object -Unique)
+$pools    = @($appNodes | ForEach-Object { $_.'APPPOOL.NAME' } | Sort-Object -Unique)
+$poolInfo = @{}
+$authInfo = @{}
 foreach ($p in $pools) {
     $f = Join-Path $Out "iis\apppool-$(Get-SafeName $p).xml"
     (& $AppCmd list apppool "$p" /config /xml) | Out-File $f -Encoding utf8
@@ -164,6 +171,7 @@ foreach ($p in $pools) {
     $add = $px.appcmd.APPPOOL.add
     $idType = if ($add.processModel.identityType) { $add.processModel.identityType } else { "ApplicationPoolIdentity" }
     $idUser = if ($add.processModel.userName) { " ($($add.processModel.userName))" } else { "" }
+    $poolInfo[$p] = @{ Runtime = $px.appcmd.APPPOOL.RuntimeVersion; Pipeline = $px.appcmd.APPPOOL.PipelineMode; Identity = "$idType$idUser" }
     $Summary.Add("AppPool  : $p  runtime=$($px.appcmd.APPPOOL.RuntimeVersion) pipeline=$($px.appcmd.APPPOOL.PipelineMode) identity=$idType$idUser")
     Write-Ok "App pool: $p ($idType$idUser)"
 }
@@ -173,9 +181,11 @@ foreach ($a in $appNodes) {
     $appPath = $a.'APP.NAME'
     $safe    = Get-SafeName $appPath
     (& $AppCmd list config "$appPath") | Out-File (Join-Path $Out "iis\effective-config-$safe.xml") -Encoding utf8
+    $authInfo[$appPath] = @{}
     $auth = foreach ($sec in "anonymousAuthentication", "basicAuthentication", "windowsAuthentication") {
         $txt = (& $AppCmd list config "$appPath" -section:system.webServer/security/authentication/$sec) -join "`n"
         $state = if ($txt -match "<$sec[^>]*enabled=`"true`"") { "on" } elseif ($txt -match "<$sec[^>]*enabled=`"false`"") { "off" } else { "default" }
+        $authInfo[$appPath][$sec] = $state
         "$($sec -replace 'Authentication','')=$state"
     }
     $Summary.Add("App      : $appPath  pool=$($a.'APPPOOL.NAME')  auth: $($auth -join ', ')")
@@ -307,7 +317,9 @@ if ($conflict.Count -gt 0) {
 # NTFS permissions on app folders + referenced folders
 foreach ($p in @($appPhysPaths + $dataDirs | Sort-Object -Unique)) {
     if (Test-Path -LiteralPath $p) {
-        (icacls "$p") | Out-File (Join-Path $Out "system\acl\$(Get-SafeName $p).txt") -Encoding utf8
+        $aclBase = Join-Path $Out "system\acl\$(Get-SafeName $p)"
+        (icacls "$p") | Out-File "$aclBase.txt" -Encoding utf8            # readable
+        icacls "$p" /save "$aclBase.acl" /C /Q | Out-Null                  # restorable (icacls <parent> /restore)
     }
 }
 Write-Ok "Saved NTFS permissions for $(@($appPhysPaths + $dataDirs | Sort-Object -Unique).Count) folder(s)"
@@ -471,10 +483,10 @@ MANUAL CHECKLIST - things this backup can't capture
       cloudflare.com/ips - re-check it on rebuild.
 
 [ ] ORIGIN CERTIFICATE
-    Self-signed, so nothing to renew from a CA. On rebuild, create a
-    new one and bind it to 443 - Cloudflare Full mode doesn't validate
-    it. Watch its expiry date in SUMMARY.txt: if it lapses, Full mode
-    still accepts an expired self-signed cert, so this is low risk.
+    Cloudflare Full mode doesn't validate the origin cert (self-signed,
+    internal CA, or expired all work), so nothing needs renewing. On
+    rebuild, any new cert bound to 443 will do - see RESTORE-GUIDE.txt.
+    Don't switch Cloudflare to Full (strict) without a valid cert.
 
 [ ] DROP FOLDER
     C:\JsonPayloads - not referenced in any config file, so the path
@@ -487,8 +499,222 @@ MANUAL CHECKLIST - things this backup can't capture
     does - it needs that account's password to be re-created.
 "@
 
+# ---- Restore guide -----------------------------------------------------------
+# Written from this run's values so the commands match what was backed up.
+$G = New-Object System.Collections.Generic.List[string]
+function Add-G { param([string]$s = "") $G.Add($s) }
+
+# Apps to restore: skip anything served from C:\Windows (e.g. CertSrv,
+# which comes with the Certificate Services role, not the developer)
+$restoreApps = foreach ($a in $appNodes) {
+    $appPath = $a.'APP.NAME'
+    $rootV = $vdirNodes | Where-Object { $_.'VDIR.NAME' -eq ($appPath.TrimEnd('/') + '/') } | Select-Object -First 1
+    if (-not $rootV) { continue }
+    $phys = [Environment]::ExpandEnvironmentVariables($rootV.physicalPath)
+    if ($phys -like "$env:windir\*") { continue }
+    [pscustomobject]@{
+        AppPath = $appPath
+        SubPath = '/' + $appPath.Substring($SiteName.Length).Trim('/')
+        Pool    = $a.'APPPOOL.NAME'
+        Phys    = $phys
+        Saved   = "app\$(Get-SafeName $phys)"
+    }
+}
+$restorePools = @($restoreApps | ForEach-Object { $_.Pool } | Sort-Object -Unique | Where-Object { $_ -ne "DefaultAppPool" })
+$hosting      = $software | Where-Object { $_.DisplayName -match "Hosting" } | Select-Object -First 1
+$restoreTasks = @($tasks | Where-Object { $_.TaskName -notlike "Optimize Start Menu*" -and $_.TaskName -notlike "ShadowCopyVolume*" -and $_.TaskPath -notlike "\GoogleSystem\*" })
+
+Add-G "RESTORE GUIDE - JSON upload endpoint + Neogrid agent"
+Add-G "Generated by Backup-JsonUpload v$Version from $env:COMPUTERNAME on $(Get-Date -Format 'yyyy-MM-dd')"
+Add-G "===================================================================="
+Add-G ""
+Add-G "Target: a fresh Windows Server with the same name/domain if possible"
+Add-G "(SMSEEDS domain accounts and IIS app pool identities then match the"
+Add-G "saved folder permissions). Run everything in an elevated PowerShell."
+Add-G ""
+Add-G "Extract the backup zip, then set these two variables first:"
+Add-G ""
+Add-G ('    $B      = "C:\Temp\' + $Name + '"   # extracted backup folder')
+Add-G '    $appcmd = "$env:windir\System32\inetsrv\appcmd.exe"'
+Add-G ""
+Add-G "SUMMARY.txt has every original value if anything below doesn't fit."
+Add-G ""
+Add-G ""
+Add-G "1. INSTALL IIS"
+Add-G "--------------"
+Add-G "Installs the same web server features the old server had:"
+Add-G ""
+Add-G '    Install-WindowsFeature -Name (Import-Csv "$B\system\windows-features.csv" | Where-Object Name -like "Web-*").Name'
+Add-G ""
+Add-G "Only the Web-* features are needed for this app. The old server also"
+Add-G "ran Certificate Services (CertSrv) - that's separate, don't add it"
+Add-G "unless the client needs a CA on the new server."
+Add-G ""
+Add-G ""
+Add-G "2. INSTALL THE ASP.NET CORE HOSTING BUNDLE"
+Add-G "------------------------------------------"
+if ($hosting) {
+    Add-G "Original: $($hosting.DisplayName) ($($hosting.DisplayVersion))"
+} else {
+    Add-G "Original: not detected - check system\installed-software.csv"
+}
+Add-G "Download the matching Hosting Bundle from the .NET download archive"
+Add-G "(dotnet.microsoft.com/download/dotnet), install it, then:"
+Add-G ""
+Add-G '    iisreset'
+Add-G ""
+Add-G "Keep a copy of the installer with this backup - older versions can"
+Add-G "be hard to find later."
+Add-G ""
+Add-G ""
+Add-G "3. COPY THE APP FILES BACK"
+Add-G "--------------------------"
+foreach ($r in $restoreApps) {
+    Add-G "$($r.AppPath)  ->  $($r.Phys)"
+    Add-G ('    robocopy "$B\' + $r.Saved + '" "' + $r.Phys + '" /E')
+    Add-G ('    icacls "' + (Split-Path $r.Phys -Parent) + '" /restore "$B\system\acl\' + (Get-SafeName $r.Phys) + '.acl"')
+    Add-G ""
+}
+Add-G "(robocopy exit codes 0-7 are success. The icacls line puts back the"
+Add-G "folder's original permissions.)"
+Add-G ""
+Add-G ""
+Add-G "4. RECREATE THE IIS APP POOL AND APPLICATIONS"
+Add-G "---------------------------------------------"
+foreach ($p in $restorePools) {
+    $rt = if ($poolInfo[$p].Runtime) { $poolInfo[$p].Runtime } else { '""' }
+    Add-G "App pool $p (original identity: $($poolInfo[$p].Identity))"
+    Add-G ('    & $appcmd add apppool /name:"' + $p + '" /managedRuntimeVersion:' + $rt + ' /managedPipelineMode:' + $poolInfo[$p].Pipeline)
+    Add-G ""
+}
+foreach ($r in $restoreApps) {
+    Add-G "Application $($r.AppPath)"
+    if ($r.SubPath -eq '/') {
+        Add-G ('    & $appcmd set app "' + $r.AppPath + '" /applicationPool:"' + $r.Pool + '"')
+    } else {
+        Add-G ('    & $appcmd add app /site.name:"' + $SiteName + '" /path:' + $r.SubPath + ' /physicalPath:"' + $r.Phys + '" /applicationPool:"' + $r.Pool + '"')
+    }
+    foreach ($sec in "anonymousAuthentication", "basicAuthentication", "windowsAuthentication") {
+        $st = $authInfo[$r.AppPath][$sec]
+        if ($st -eq "on" -or $st -eq "off") {
+            $en = if ($st -eq "on") { "true" } else { "false" }
+            Add-G ('    & $appcmd set config "' + $r.AppPath + '" -section:system.webServer/security/authentication/' + $sec + ' /enabled:' + $en + ' /commit:apphost')
+        }
+    }
+    Add-G ""
+}
+Add-G "Reference: iis\effective-config-*.xml has each app's full settings."
+Add-G "Don't copy iis\inetsrv-config\applicationHost.config over the new"
+Add-G "server's - it holds machine-specific encrypted values and will break IIS."
+Add-G ""
+Add-G ""
+Add-G "5. RECREATE THE DROP FOLDER"
+Add-G "---------------------------"
+if ($DropFolder) {
+    Add-G "The app writes incoming JSON here and the Neogrid agent picks it up."
+    Add-G ""
+    Add-G ('    New-Item -ItemType Directory -Path "' + $DropFolder + '" -Force')
+    Add-G ('    icacls "' + (Split-Path $DropFolder -Parent) + '" /restore "$B\system\acl\' + (Get-SafeName $DropFolder) + '.acl"')
+    Add-G ""
+    Add-G "Check the result against system\acl\$(Get-SafeName $DropFolder).txt"
+} else {
+    Add-G "Drop folder wasn't set in the backup script's CONFIG - see SUMMARY.txt."
+}
+Add-G ""
+Add-G ""
+Add-G "6. HTTPS CERTIFICATE AND BINDING"
+Add-G "--------------------------------"
+Add-G "Cloudflare Full mode doesn't validate the origin cert, so a new"
+Add-G "self-signed one is fine:"
+Add-G ""
+Add-G '    $cert = New-SelfSignedCertificate -DnsName "rest.smseeds.com" -CertStoreLocation Cert:\LocalMachine\My -NotAfter (Get-Date).AddYears(20)'
+foreach ($b in ($site.bindings -split ',')) {
+    if ($b -notmatch '^https/(.*):(\d+):(.*)$') { continue }
+    $bi = "$($Matches[1]):$($Matches[2]):$($Matches[3])"
+    $ipport = if ($Matches[3]) { $null } elseif ($Matches[1] -eq "*") { "0.0.0.0:$($Matches[2])" } else { "$($Matches[1]):$($Matches[2])" }
+    Add-G ('    & $appcmd set site "' + $SiteName + '" "/+bindings.[protocol=''https'',bindingInformation=''' + $bi + ''']"')
+    if ($ipport) {
+        Add-G ('    netsh http add sslcert ipport=' + $ipport + ' certhash=$($cert.Thumbprint) appid="{4dc3e181-e14b-4a21-b022-59fc669b0914}"')
+    } else {
+        Add-G ('    netsh http add sslcert hostnameport=' + $Matches[3] + ':' + $Matches[2] + ' certhash=$($cert.Thumbprint) certstorename=MY appid="{4dc3e181-e14b-4a21-b022-59fc669b0914}"')
+    }
+}
+Add-G ""
+Add-G "Firewall - allow 443 inbound (the router limits it to Cloudflare):"
+Add-G ""
+Add-G '    New-NetFirewallRule -DisplayName "HTTPS-In" -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow'
+Add-G ""
+Add-G "Other custom rules from the old server: system\firewall-custom-inbound.csv"
+Add-G ""
+Add-G ""
+Add-G "7. REINSTALL THE NEOGRID AGENT"
+Add-G "------------------------------"
+foreach ($dir in $agentDirs) {
+    Add-G "Original folder: $dir"
+}
+foreach ($s in $agentSvcs) {
+    Add-G "Original service: $($s.Name), runs as $($s.StartName), $($s.StartMode) start"
+}
+Add-G ""
+Add-G "a. Install the same agent version from Neogrid (version is in the"
+Add-G "   folder name above and agent\listing-*.csv). Neogrid support may"
+Add-G "   need to re-register it to the client's account."
+Add-G "b. Stop the service and copy the saved config files over the fresh"
+Add-G "   install:"
+Add-G ""
+foreach ($s in $agentSvcs) { Add-G ('    Stop-Service "' + $s.Name + '"') }
+foreach ($dir in $agentDirs) {
+    Add-G ('    robocopy "$B\agent\' + (Get-SafeName $dir) + '" "<new install folder>" /E')
+}
+foreach ($s in $agentSvcs) { Add-G ('    Start-Service "' + $s.Name + '"') }
+Add-G ""
+Add-G "   If you install to a different folder than the original, search the"
+Add-G "   copied config files for the old path and update it."
+Add-G "c. Confirm the agent is watching $DropFolder."
+Add-G ""
+Add-G ""
+Add-G "8. RE-IMPORT SCHEDULED TASKS"
+Add-G "----------------------------"
+if ($restoreTasks.Count -eq 0) {
+    Add-G "(none to restore)"
+} else {
+    Add-G "Re-import the ones that belong to this setup (\JSON at minimum)."
+    Add-G "Tasks that run as a user need that user's password."
+    Add-G ""
+    foreach ($t in $restoreTasks) {
+        $tf = '$B\system\tasks\' + (Get-SafeName ($t.TaskPath + $t.TaskName)) + '.xml'
+        $u  = $t.Principal.UserId
+        Add-G "$($t.TaskPath)$($t.TaskName)  (runs as $u)"
+        if ($u -match '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE)$' -or -not $u) {
+            Add-G ('    Register-ScheduledTask -TaskName "' + $t.TaskName + '" -TaskPath "' + $t.TaskPath + '" -Xml (Get-Content "' + $tf + '" -Raw)')
+        } else {
+            Add-G ('    Register-ScheduledTask -TaskName "' + $t.TaskName + '" -TaskPath "' + $t.TaskPath + '" -Xml (Get-Content "' + $tf + '" -Raw) -User "' + $u + '" -Password "<password>"')
+        }
+        Add-G ""
+    }
+}
+Add-G ""
+Add-G "9. NETWORK AND CLOUDFLARE"
+Add-G "-------------------------"
+Add-G "- Router: point the 443 port forward at the new server's IP. Keep the"
+Add-G "  Cloudflare-only source restriction (cloudflare.com/ips)."
+Add-G "- Cloudflare: if the public IP changed, update the proxied DNS record"
+Add-G "  for rest.smseeds.com. Leave SSL/TLS mode on Full."
+Add-G ""
+Add-G ""
+Add-G "10. TEST"
+Add-G "--------"
+Add-G "a. Browse to https://rest.smseeds.com/api/JsonUpload - it should say"
+Add-G "   ""Please make a POST of Json here. Windows authentication required."""
+Add-G "b. Trigger (or wait for) a Salesforce push. A file should appear in"
+Add-G "   $DropFolder and then be picked up by the Neogrid agent."
+Add-G "c. If the POST fails, check the app's logs (stdout logging can be"
+Add-G "   turned on in the app's web.config) and the IIS logs in"
+Add-G "   C:\inetpub\logs\LogFiles."
+
 $Summary | Out-File (Join-Path $Out "SUMMARY.txt") -Encoding utf8
 $checklist | Out-File (Join-Path $Out "MANUAL-CHECKLIST.txt") -Encoding utf8
+$G | Out-File (Join-Path $Out "RESTORE-GUIDE.txt") -Encoding utf8
 
 # ---- Move to execution directory ---------------------------------------------
 $Final = Join-Path $ExecDir $Name
