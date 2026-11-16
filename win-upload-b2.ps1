@@ -1,5 +1,5 @@
 # =============================================================================
-# backblaze.ps1  v1.0
+# backblaze.ps1  v1.1
 # -----------------------------------------------------------------------------
 # B2 Upload Automation Script (Windows / PowerShell)
 #
@@ -36,6 +36,7 @@
 #   Uses 'return', never 'exit', so it will not close the caller's window.
 #
 # CHANGELOG
+#   1.1  Block idle sleep while uploading (SetThreadExecutionState, no admin)
 #   1.0  Initial PowerShell port of backblaze.sh v1.6 (interactive only)
 # =============================================================================
 
@@ -45,7 +46,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
 # ---- CONFIG -----------------------------------------------------------------
-$Version          = '1.0'
+$Version          = '1.1'
 $DefaultMode      = 'auto'
 $DefaultCutoff    = 209715200          # 200 MiB: auto mode warns above this on native
 $DefaultChunk     = '96M'
@@ -71,6 +72,26 @@ function Write-Ok   ([string]$m) { Write-Host "[+] $m" -ForegroundColor Green }
 function Write-Info ([string]$m) { Write-Host "[*] $m" -ForegroundColor Cyan }
 function Write-Warn ([string]$m) { Write-Host "[!] $m" -ForegroundColor Yellow }
 function Write-Err  ([string]$m) { Write-Host "[x] $m" -ForegroundColor Red }
+
+# ---- sleep prevention ----------------------------------------------------------
+function Set-KeepAwake([bool]$On) {
+    # ES_CONTINUOUS (0x80000000) | ES_SYSTEM_REQUIRED (0x1). Display may still
+    # turn off. Released automatically if this PowerShell process exits.
+    if ($env:OS -ne 'Windows_NT') { return }
+    try {
+        if (-not ('EdgeTools.Power' -as [type])) {
+            Add-Type -Namespace EdgeTools -Name Power -MemberDefinition @'
+[DllImport("kernel32.dll")]
+public static extern uint SetThreadExecutionState(uint esFlags);
+'@
+        }
+        $flags = if ($On) { [uint32]2147483649 } else { [uint32]2147483648 }
+        if ([EdgeTools.Power]::SetThreadExecutionState($flags) -eq 0) { throw 'call returned 0' }
+        if ($On) { Write-Info 'Sleep blocked while uploading.' }
+    } catch {
+        if ($On) { Write-Warn "Could not block sleep: $($_.Exception.Message)" }
+    }
+}
 
 # ---- prompt helpers ----------------------------------------------------------
 function Read-Default([string]$Prompt, [string]$Default) {
@@ -442,6 +463,7 @@ try {
     }
 
     Write-Host '------------------------------------'
+    Set-KeepAwake $true
 
     # ---- decide backend ----
     $Largest = [int64]((@(Get-SourceFiles) | Measure-Object -Property Length -Maximum).Maximum)
@@ -496,6 +518,7 @@ catch {
     Write-Err $_.Exception.Message
 }
 finally {
+    Set-KeepAwake $false
     if ($Http) { $Http.Dispose() }
     $AppKey = $null
 }
