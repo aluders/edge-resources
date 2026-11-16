@@ -1,5 +1,5 @@
 /********************************************************************
-  YouTube Toolkit  v1.1
+  YouTube Toolkit  v1.2
   --------------------------------------------------
   Combines the YouTube Scheduler and YouTube Redirect
   workers into a single deployment per church.
@@ -18,7 +18,10 @@
 
   Redirect Routes (subdomain-based):
     live.*  → Latest live / upcoming / recent stream
+              (only videos whose title starts with LIVE_TITLE_PREFIX)
     last.*  → Latest completed non-live video
+              (only videos whose title starts with LAST_TITLE_PREFIX)
+    Leave a prefix as "" to disable title filtering for that route.
     Add ?embed to either route to return an embed URL instead of watch URL
 
   DST Strategy:
@@ -60,6 +63,14 @@
     - last.*?refresh  Bypass cache
 
   Changelog:
+    v1.2 - Added LIVE_TITLE_PREFIX and LAST_TITLE_PREFIX: each redirect
+           route now only considers videos whose title starts with its
+           prefix (case-insensitive; "" = no filtering)
+         - Added REDIRECT_SCAN_LIMIT (default 50) so matching videos are
+           still found when newer non-matching uploads exist
+         - Redirect cache keys now include the prefix, so changing a
+           prefix takes effect immediately instead of after the 6h TTL
+         - ?test on live/last now reports prefix, scanned and matched counts
     v1.1 - Added ENABLE_NOTIFICATION_SUBJECT toggle
          - Omitting subject header sends cleaner SMS via email-to-text gateways
     v1.0 - Initial YouTube Toolkit release
@@ -120,9 +131,20 @@ const NOTIFICATION_BODY = "Sunday service is now live.";
 const CHANNEL_ID          = "UCBl48WQE_6YH4u4rbpVtlqA";
 const UPLOADS_PLAYLIST_ID = "UU" + CHANNEL_ID.slice(2);
 
+// TITLE FILTERS: Each redirect route only considers videos whose title
+// STARTS WITH its prefix (case-insensitive). Use "" to disable filtering.
+// live.* matches against upcoming/live broadcasts; last.* against finished videos.
+const LIVE_TITLE_PREFIX = "Abide Live - ";
+const LAST_TITLE_PREFIX = "Abide Live - ";
+
+// How many recent uploads to scan (1-50) when looking for a title match.
+// Higher = finds older matches; no extra API quota cost (still 2 calls).
+const REDIRECT_SCAN_LIMIT = 50;
+
 const CACHE_TTL      = 21600; // 6 hours
-const CACHE_KEY_LIVE = `https://cache.local/yt-redirect-live/${UPLOADS_PLAYLIST_ID}`;
-const CACHE_KEY_LAST = `https://cache.local/yt-redirect-last/${UPLOADS_PLAYLIST_ID}`;
+// Prefixes are part of the cache key so changing them busts the cache automatically
+const CACHE_KEY_LIVE = `https://cache.local/yt-redirect-live/${UPLOADS_PLAYLIST_ID}/${encodeURIComponent(LIVE_TITLE_PREFIX)}`;
+const CACHE_KEY_LAST = `https://cache.local/yt-redirect-last/${UPLOADS_PLAYLIST_ID}/${encodeURIComponent(LAST_TITLE_PREFIX)}`;
 
 /********************************************************************
   FEATURE TOGGLES
@@ -130,10 +152,10 @@ const CACHE_KEY_LAST = `https://cache.local/yt-redirect-last/${UPLOADS_PLAYLIST_
 const ENABLE_SCHEDULING = true;
 const ENABLE_GO_LIVE = true;
 const ENABLE_AUTO_END = true;
-const ENABLE_GO_LIVE_NOTIFICATION = true;
-const ENABLE_NOTIFICATION_SUBJECT = false;  // Set to false to omit subject (cleaner for SMS gateways)
+const ENABLE_GO_LIVE_NOTIFICATION = false;
+const ENABLE_NOTIFICATION_SUBJECT = true;  // Set to false to omit subject (cleaner for SMS gateways)
 const ENABLE_REDIRECT = true;
-const VERBOSE_LOGGING = false;
+const VERBOSE_LOGGING = true;
 const DEVELOPER_MODE = false;
 
 function devModeOn() {
@@ -441,6 +463,9 @@ export default {
             devMode:   DEVELOPER_MODE,
             route:     isLive ? "live" : "last",
             channelId: CHANNEL_ID,
+            titlePrefix: result.prefix,
+            scanned:   result.scanned,
+            matched:   result.matched,
             selected: {
               id:     result.id,
               title:  result.title,
@@ -680,13 +705,29 @@ async function fetchVideoDetails(videoIds, authHeader) {
 }
 
 /********************************************************************
+  REDIRECT: TITLE FILTER
+  Case-insensitive "starts with". Empty prefix = match everything.
+********************************************************************/
+function matchesPrefix(video, prefix) {
+  if (!prefix) return true;
+  const title = (video.snippet?.title || "").trimStart().toLowerCase();
+  return title.startsWith(prefix.trimStart().toLowerCase());
+}
+
+/********************************************************************
   REDIRECT: LIVE ROUTE
   Priority: Live → Upcoming → Newest Upload
+  Only videos matching LIVE_TITLE_PREFIX are considered.
 ********************************************************************/
 async function handleLive(authHeader) {
-  const items    = await fetchPlaylistItems(UPLOADS_PLAYLIST_ID, 5, authHeader);
-  const videoIds = items.map(i => i.snippet.resourceId.videoId);
-  const videos   = await fetchVideoDetails(videoIds, authHeader);
+  const items    = await fetchPlaylistItems(UPLOADS_PLAYLIST_ID, REDIRECT_SCAN_LIMIT, authHeader);
+  const videoIds = items.map(i => i.snippet?.resourceId?.videoId).filter(Boolean);
+  const scanned  = await fetchVideoDetails(videoIds, authHeader);
+  const videos   = scanned.filter(v => matchesPrefix(v, LIVE_TITLE_PREFIX));
+
+  if (!videos.length) {
+    throw new Error(`No videos found with title starting "${LIVE_TITLE_PREFIX}" (scanned ${scanned.length}).`);
+  }
 
   let target, reason;
 
@@ -705,20 +746,25 @@ async function handleLive(authHeader) {
   if (!target) {
     videos.sort((a, b) => new Date(b.snippet.publishedAt) - new Date(a.snippet.publishedAt));
     target = videos[0];
-    reason = "newest upload (no live or upcoming found)";
+    reason = "newest matching upload (no live or upcoming found)";
   }
 
-  return { id: target.id, title: target.snippet.title, reason };
+  return {
+    id: target.id, title: target.snippet.title, reason,
+    prefix: LIVE_TITLE_PREFIX, scanned: scanned.length, matched: videos.length
+  };
 }
 
 /********************************************************************
   REDIRECT: LAST ROUTE
   Returns latest completed non-live video
+  Only videos matching LAST_TITLE_PREFIX are considered.
 ********************************************************************/
 async function handleLast(authHeader) {
-  const items    = await fetchPlaylistItems(UPLOADS_PLAYLIST_ID, 10, authHeader);
+  const items    = await fetchPlaylistItems(UPLOADS_PLAYLIST_ID, REDIRECT_SCAN_LIMIT, authHeader);
   const videoIds = items.map(i => i.snippet?.resourceId?.videoId).filter(Boolean);
-  const videos   = await fetchVideoDetails(videoIds, authHeader);
+  const scanned  = await fetchVideoDetails(videoIds, authHeader);
+  const videos   = scanned.filter(v => matchesPrefix(v, LAST_TITLE_PREFIX));
 
   const target = videos.find(
     v =>
@@ -726,8 +772,14 @@ async function handleLast(authHeader) {
       v.snippet?.liveBroadcastContent === "completed"
   );
 
-  if (!target) throw new Error("No completed or uploaded videos found.");
-  return { id: target.id, title: target.snippet.title, reason: "latest completed/non-live video" };
+  if (!target) {
+    throw new Error(`No completed videos found with title starting "${LAST_TITLE_PREFIX}" (scanned ${scanned.length}, ${videos.length} matched prefix).`);
+  }
+  return {
+    id: target.id, title: target.snippet.title,
+    reason: "latest completed/non-live video",
+    prefix: LAST_TITLE_PREFIX, scanned: scanned.length, matched: videos.length
+  };
 }
 
 /********************************************************************
