@@ -1,20 +1,35 @@
 # ============================================================
 # RESET-WINDOWSUPDATE.PS1
 # ============================================================
-# Resets Windows Update by stopping the related services,
-# rebuilding the SoftwareDistribution and catroot2 cache
-# folders, clearing stale BITS queue files, and starting the
-# services again. Forces Windows to re-download update
-# metadata instead of using a corrupted local cache.
-# Includes dosvc (Delivery Optimization), usosvc (Update
-# Orchestrator), and WaaSMedicSvc on the default stop/start
-# list. Those last two are why SoftwareDistribution often
-# stays locked after wuauserv alone is stopped: Medic
-# restarts WU, Orchestrator keeps handles in the cache.
+# Two jobs in one pass:
+#   1. Resets Windows Update - stops the related services,
+#      clears the SoftwareDistribution and catroot2 caches,
+#      the BITS queue and the Delivery Optimization cache,
+#      then starts everything again so Windows re-downloads
+#      update metadata instead of using a corrupted cache.
+#   2. Reclaims disk space - clears Windows and per-user temp
+#      folders, crash dumps and Windows Error Reporting
+#      queues, and (optionally) runs a DISM component store
+#      cleanup to drop superseded WinSxS components.
+#
+# Stops dosvc (Delivery Optimization), usosvc (Update
+# Orchestrator) and WaaSMedicSvc along with wuauserv. Medic
+# restarts WU behind you and Orchestrator keeps handles in
+# SoftwareDistribution, which is why the folder often stays
+# locked when only wuauserv is stopped.
+#
+# Temp files modified in the last 24 hours are left alone so
+# an installer that is running or waiting on a reboot doesn't
+# lose its files. Junctions/symlinks are never followed, so
+# nothing outside the target folders is touched.
 #
 # USAGE:
 #   .\Reset-WindowsUpdate.ps1
-#       stop services, delete cache folders, start services
+#       reset WU caches + clear temp, dumps, error reports
+#   .\Reset-WindowsUpdate.ps1 -ComponentCleanup
+#       also run DISM StartComponentCleanup (slow: 5-20 min)
+#   .\Reset-WindowsUpdate.ps1 -TempAgeHours 0
+#       clear all temp files regardless of age
 #   .\Reset-WindowsUpdate.ps1 -IncludeOptional
 #       also stop/start msiserver and appidsvc
 #
@@ -25,9 +40,20 @@
 #     - same as a local run with no switches.
 #     - switches can't be passed through a bare iex call;
 #       use the scriptblock form instead:
-#       & ([scriptblock]::Create((irm wu.vcc.net))) -IncludeOptional
+#       & ([scriptblock]::Create((irm wu.vcc.net))) -ComponentCleanup
 #
 # CHANGELOG (newest first):
+#   v2.0 - Now also a disk-space cleanup. Adds Windows\Temp
+#          and every user profile's AppData\Local\Temp
+#          (files older than -TempAgeHours, default 24), the
+#          Delivery Optimization cache, crash dumps
+#          (MEMORY.DMP, Minidump, LiveKernelReports) and WER
+#          report queues. New -ComponentCleanup switch runs
+#          DISM StartComponentCleanup. One shared delete
+#          routine for every folder: skips reparse points,
+#          counts bytes actually freed, and reports per-folder
+#          and total space reclaimed plus system-drive free
+#          space before/after. Single $ScriptVersion constant.
 #   v1.3 - Stop-Service was still dumping "Waiting for service
 #          to stop..." warnings (same class as the BITS start
 #          spam in v1.2). Now silenced on stop too. Access
@@ -60,8 +86,16 @@
 # ============================================================
 [CmdletBinding()]
 param(
-    [switch]$IncludeOptional    # also handle msiserver + appidsvc
+    [switch]$IncludeOptional,     # also handle msiserver + appidsvc
+    [switch]$ComponentCleanup,    # run DISM StartComponentCleanup (slow)
+    [int]$TempAgeHours = 24       # leave temp files newer than this (0 = clear all)
 )
+
+# ============================================================
+# CONFIG
+# ============================================================
+$ScriptVersion   = "2.0"
+$ClearCrashDumps = $true          # MEMORY.DMP, Minidump, LiveKernelReports, WER queues
 
 $ErrorActionPreference = "Stop"
 
@@ -90,10 +124,106 @@ function Test-Admin {
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Format-Size {
+    param([double]$Bytes)
+    if ($Bytes -ge 1GB) { return "{0:N2} GB" -f ($Bytes / 1GB) }
+    if ($Bytes -ge 1MB) { return "{0:N1} MB" -f ($Bytes / 1MB) }
+    return "{0:N0} KB" -f ($Bytes / 1KB)
+}
+
+function Get-FreeBytes {
+    return (New-Object System.IO.DriveInfo($env:SystemDrive)).AvailableFreeSpace
+}
+
+# Walks a folder and deletes files last written before $Cutoff,
+# then any emptied subfolders created before $Cutoff. Reparse
+# points are skipped, never followed. Tallies into script scope:
+# $script:freed (bytes) and $script:skipped (locked items).
+function Remove-ItemsUnder {
+    param([string]$Dir, [datetime]$Cutoff)
+
+    foreach ($item in @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue)) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            continue
+        }
+
+        if ($item.PSIsContainer) {
+            Remove-ItemsUnder -Dir $item.FullName -Cutoff $Cutoff
+            $hasChildren = Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if (-not $hasChildren -and $item.CreationTime -lt $Cutoff) {
+                Remove-Item -LiteralPath $item.FullName -Force -ErrorAction SilentlyContinue
+            }
+        }
+        elseif ($item.LastWriteTime -lt $Cutoff) {
+            try {
+                Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
+                $script:freed += $item.Length
+            }
+            catch {
+                $script:skipped++
+            }
+        }
+    }
+}
+
+# -Strict:       folder must end up empty; retries, failure flips $folderOk
+# -RemoveFolder: delete the folder itself once empty so it's recreated clean
+# -AgeHours:     only remove files older than this (0 = everything)
+function Clear-Folder {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int]$AgeHours = 0,
+        [switch]$Strict,
+        [switch]$RemoveFolder
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Status "Not present: $Path (nothing to clear)" "Success"
+        return
+    }
+
+    $cutoff = if ($AgeHours -gt 0) { (Get-Date).AddHours(-$AgeHours) } else { [datetime]::MaxValue }
+    $attempts = if ($Strict) { 3 } else { 1 }
+    $script:freed = 0
+
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        if ($attempt -gt 1) {
+            Write-Status "Retry $attempt/$attempts after short wait..." "Info"
+            Start-Sleep -Seconds 2
+        }
+        $script:skipped = 0
+        Remove-ItemsUnder -Dir $Path -Cutoff $cutoff
+        if ($script:skipped -eq 0) { break }
+    }
+
+    $script:totalFreed += $script:freed
+    $size = Format-Size $script:freed
+
+    if ($Strict -and $script:skipped -gt 0) {
+        Write-Status "Could not fully clear $Path - $($script:skipped) item(s) still locked ($size freed)" "Error"
+        $script:folderOk = $false
+        return
+    }
+
+    if ($RemoveFolder) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $Path)) {
+            Write-Status "Deleted $Path - $size" "Success"
+            return
+        }
+    }
+
+    $note = if ($script:skipped -gt 0) { " ($($script:skipped) in use, left alone)" } else { "" }
+    Write-Status "Cleared $Path - $size$note" "Success"
+}
+
 # ============================================================
 # ADMIN CHECK
 # ============================================================
 Write-Section "Admin Check"
+
+Write-Status "Reset-WindowsUpdate v$ScriptVersion" "Info"
 
 if (-not (Test-Admin)) {
     Write-Status "This script must be run as Administrator." "Error"
@@ -103,6 +233,11 @@ if (-not (Test-Admin)) {
 }
 
 Write-Status "Running elevated." "Success"
+
+$freeBefore        = Get-FreeBytes
+$script:totalFreed = 0
+$script:folderOk   = $true
+Write-Status "$env:SystemDrive free space: $(Format-Size $freeBefore)" "Info"
 
 # ============================================================
 # SERVICE STOP
@@ -155,86 +290,27 @@ foreach ($name in $services) {
 }
 
 # ============================================================
-# CACHE FOLDERS
+# WINDOWS UPDATE CACHE
 # ============================================================
-Write-Section "Resetting Cache Folders"
+Write-Section "Windows Update Cache"
 
-function Reset-CacheFolder {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [string]$StaleBackupName
-    )
-
-    if ($StaleBackupName) {
-        $bak = Join-Path (Split-Path -Parent $Path) $StaleBackupName
-        if (Test-Path -LiteralPath $bak) {
-            Write-Status "Removing leftover backup $bak..." "Info"
-            Remove-Item -LiteralPath $bak -Recurse -Force -ErrorAction SilentlyContinue
-            if (-not (Test-Path -LiteralPath $bak)) {
-                Write-Status "Removed $bak" "Success"
-            }
-        }
+# Leftover .bak copies from v1.0/v1.1 runs.
+foreach ($bak in @("$env:SystemRoot\SoftwareDistribution.bak", "$env:SystemRoot\System32\catroot2.bak")) {
+    if (Test-Path -LiteralPath $bak) {
+        Clear-Folder -Path $bak -RemoveFolder
     }
-
-    if (-not (Test-Path -LiteralPath $Path)) {
-        Write-Status "Not present: $Path (nothing to clear)" "Success"
-        return $true
-    }
-
-    Write-Status "Clearing $Path..." "Info"
-
-    # Prefer emptying the folder over deleting the directory
-    # itself. The directory object is what stays locked; the
-    # files inside are what actually need to go so WU rebuilds.
-    $cleared = $false
-    for ($attempt = 1; $attempt -le 3 -and -not $cleared; $attempt++) {
-        if ($attempt -gt 1) {
-            Write-Status "Retry $attempt/3 after short wait..." "Info"
-            Start-Sleep -Seconds 2
-        }
-
-        Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-            }
-
-        $left = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
-        if ($left.Count -eq 0) {
-            # Folder is empty - try to remove the directory too
-            # so WU recreates it clean. Failure here is fine.
-            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-            $cleared = $true
-        }
-    }
-
-    if ($cleared) {
-        if (Test-Path -LiteralPath $Path) {
-            Write-Status "Emptied $Path (folder left in place)" "Success"
-        }
-        else {
-            Write-Status "Deleted $Path" "Success"
-        }
-        return $true
-    }
-
-    $left = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
-    Write-Status "Could not fully clear $Path - $($left.Count) item(s) still locked." "Error"
-    return $false
 }
 
-$folderOk = $true
-if (-not (Reset-CacheFolder -Path "$env:SystemRoot\SoftwareDistribution" -StaleBackupName "SoftwareDistribution.bak")) {
-    $folderOk = $false
-}
-if (-not (Reset-CacheFolder -Path "$env:SystemRoot\System32\catroot2" -StaleBackupName "catroot2.bak")) {
-    $folderOk = $false
+Clear-Folder -Path "$env:SystemRoot\SoftwareDistribution" -Strict -RemoveFolder
+Clear-Folder -Path "$env:SystemRoot\System32\catroot2" -Strict -RemoveFolder
+
+# Delivery Optimization peer cache - safe to clear while dosvc is stopped.
+$doCache = "$env:SystemRoot\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache"
+if (Test-Path -LiteralPath $doCache) {
+    Clear-Folder -Path $doCache
 }
 
-# ============================================================
-# BITS QUEUE
-# ============================================================
-Write-Section "Clearing Bits Queue"
-
+# BITS queue
 $qmgrPatterns = @(
     "$env:ALLUSERSPROFILE\Microsoft\Network\Downloader\qmgr*.dat",
     "$env:ALLUSERSPROFILE\Application Data\Microsoft\Network\Downloader\qmgr*.dat"
@@ -242,18 +318,74 @@ $qmgrPatterns = @(
 
 $qmgrRemoved = 0
 foreach ($pattern in $qmgrPatterns) {
-    Get-Item -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object {
-        Write-Status "Removing $($_.FullName)" "Info"
+    Get-Item -Path $pattern -Force -ErrorAction SilentlyContinue | ForEach-Object {
         Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
-        $qmgrRemoved++
+        if (-not (Test-Path -LiteralPath $_.FullName)) {
+            $qmgrRemoved++
+        }
     }
 }
 
 if ($qmgrRemoved -eq 0) {
-    Write-Status "No qmgr*.dat files found (nothing to clear)" "Success"
+    Write-Status "No BITS queue files found (nothing to clear)" "Success"
 }
 else {
     Write-Status "Removed $qmgrRemoved BITS queue file(s)" "Success"
+}
+
+# ============================================================
+# TEMP FOLDERS
+# ============================================================
+Write-Section "Temp Folders"
+
+if ($TempAgeHours -gt 0) {
+    Write-Status "Leaving files modified in the last $TempAgeHours hour(s)" "Info"
+}
+
+$tempPaths = @("$env:SystemRoot\Temp")
+$tempPaths += @(Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue |
+    Where-Object { -not $_.Special -and $_.LocalPath } |
+    ForEach-Object { Join-Path $_.LocalPath "AppData\Local\Temp" } |
+    Where-Object { Test-Path -LiteralPath $_ })
+
+foreach ($path in $tempPaths) {
+    Clear-Folder -Path $path -AgeHours $TempAgeHours
+}
+
+# ============================================================
+# CRASH DUMPS + ERROR REPORTS
+# ============================================================
+if ($ClearCrashDumps) {
+    Write-Section "Crash Dumps + Error Reports"
+
+    $dumpFile = "$env:SystemRoot\MEMORY.DMP"
+    if (Test-Path -LiteralPath $dumpFile) {
+        $len = (Get-Item -LiteralPath $dumpFile -Force).Length
+        Remove-Item -LiteralPath $dumpFile -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $dumpFile)) {
+            $script:totalFreed += $len
+            Write-Status "Deleted $dumpFile - $(Format-Size $len)" "Success"
+        }
+        else {
+            Write-Status "Could not delete $dumpFile" "Warn"
+        }
+    }
+
+    $dumpFolders = @(
+        "$env:SystemRoot\Minidump",
+        "$env:SystemRoot\LiveKernelReports",
+        "$env:ProgramData\Microsoft\Windows\WER\ReportArchive",
+        "$env:ProgramData\Microsoft\Windows\WER\ReportQueue",
+        "$env:ProgramData\Microsoft\Windows\WER\Temp"
+    )
+    $found = @($dumpFolders | Where-Object { Test-Path -LiteralPath $_ })
+    foreach ($path in $found) {
+        Clear-Folder -Path $path
+    }
+
+    if (-not (Test-Path -LiteralPath $dumpFile) -and $found.Count -eq 0) {
+        Write-Status "No crash dumps or error reports found" "Success"
+    }
 }
 
 # ============================================================
@@ -301,19 +433,42 @@ foreach ($name in $startOrder) {
 }
 
 # ============================================================
+# COMPONENT STORE (optional)
+# ============================================================
+if ($ComponentCleanup) {
+    Write-Section "Component Store Cleanup"
+
+    # Removes superseded WinSxS components. Installed updates stay
+    # uninstallable (no /ResetBase). Runs after services are back
+    # up since it goes through TrustedInstaller.
+    Write-Status "Running DISM StartComponentCleanup - can take 5-20 minutes..." "Info"
+    & dism.exe /Online /Cleanup-Image /StartComponentCleanup | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Status "Component store cleanup complete" "Success"
+    }
+    else {
+        Write-Status "DISM exited with code $LASTEXITCODE" "Warn"
+    }
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Section "Summary"
 
-if ($folderOk -and $startFailed -eq 0) {
+if ($script:folderOk -and $startFailed -eq 0) {
     Write-Status "Windows Update cache reset complete." "Success"
 }
-elseif ($folderOk) {
+elseif ($script:folderOk) {
     Write-Status "Folders reset, but $startFailed service(s) failed to start." "Warn"
 }
 else {
-    Write-Status "One or more cache folders could not be cleared. Reboot and rerun." "Error"
+    Write-Status "One or more WU cache folders could not be cleared. Reboot and rerun." "Error"
 }
+
+$freeAfter = Get-FreeBytes
+Write-Status "Files removed: $(Format-Size $script:totalFreed)" "Success"
+Write-Status "$env:SystemDrive free space: $(Format-Size $freeBefore) -> $(Format-Size $freeAfter)" "Info"
 
 Write-Status "Next: Settings > Windows Update > Check for updates" "Info"
 Write-Status "Windows will recreate SoftwareDistribution and catroot2 on the next check." "Info"
