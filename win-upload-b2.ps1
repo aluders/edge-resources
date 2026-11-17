@@ -1,5 +1,5 @@
 # =============================================================================
-# backblaze.ps1  v1.1
+# backblaze.ps1  v1.2
 # -----------------------------------------------------------------------------
 # B2 Upload Automation Script (Windows / PowerShell)
 #
@@ -36,6 +36,7 @@
 #   Uses 'return', never 'exit', so it will not close the caller's window.
 #
 # CHANGELOG
+#   1.2  Block sleep at launch, before prompts (doubles as a keep-awake tool)
 #   1.1  Block idle sleep while uploading (SetThreadExecutionState, no admin)
 #   1.0  Initial PowerShell port of backblaze.sh v1.6 (interactive only)
 # =============================================================================
@@ -46,7 +47,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
 # ---- CONFIG -----------------------------------------------------------------
-$Version          = '1.1'
+$Version          = '1.2'
 $DefaultMode      = 'auto'
 $DefaultCutoff    = 209715200          # 200 MiB: auto mode warns above this on native
 $DefaultChunk     = '96M'
@@ -87,7 +88,7 @@ public static extern uint SetThreadExecutionState(uint esFlags);
         }
         $flags = if ($On) { [uint32]2147483649 } else { [uint32]2147483648 }
         if ([EdgeTools.Power]::SetThreadExecutionState($flags) -eq 0) { throw 'call returned 0' }
-        if ($On) { Write-Info 'Sleep blocked while uploading.' }
+        if ($On) { Write-Info 'Sleep blocked until this script ends or the window is closed.' }
     } catch {
         if ($On) { Write-Warn "Could not block sleep: $($_.Exception.Message)" }
     }
@@ -431,6 +432,7 @@ try {
     Write-Host ''
     Write-Host "=== B2 Upload  v$Version ===" -ForegroundColor Cyan
     Write-Host ''
+    Set-KeepAwake $true
 
     $AppId     = Read-Required 'B2 Application Key ID'
     $AppKey    = Read-Secret   'B2 Application Key'
@@ -463,7 +465,6 @@ try {
     }
 
     Write-Host '------------------------------------'
-    Set-KeepAwake $true
 
     # ---- decide backend ----
     $Largest = [int64]((@(Get-SourceFiles) | Measure-Object -Property Length -Maximum).Maximum)
