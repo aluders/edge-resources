@@ -1,3 +1,6 @@
+# enable irm commands on windows server (run then open new window)
+'HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319','HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319'|%{sp $_ SchUseStrongCrypto 1 -Type DWord;sp $_ SystemDefaultTlsVersions 1 -Type DWord}
+
 # script execution commands...
 Set-ExecutionPolicy RemoteSigned
 # Temporary (Current Session Only):
