@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v3.5
+# EDGE MPV v3.6
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -196,6 +196,22 @@
 #     pinned, mpv fails and retries every 5s until the TV is connected. To
 #     test on the built-in screen, set DRM_CONNECTOR="eDP-1" and use --force.
 #     --status lists the connector names and which are connected.
+#   - SUBTITLES picks how subtitles are handled; it is an Environment= line
+#     in the unit, so `mpvedit` can change it (then `mpvrestart`):
+#       ""      mpv's default: show a track only if the file marks one as
+#               default or forced (how it behaved before v3.6)
+#       off     never show subtitles
+#       on      show English subtitles when the file has an English track
+#               (if it has none, mpv may still pick a track the file marks
+#               as default)
+#       forced  only the forced parts of an English track: the lines for
+#               foreign-language scenes in an otherwise English film. Works
+#               with DVD and Blu-ray image subtitles (what MakeMKV rips
+#               carry); text subtitles have no forced parts, so nothing
+#               shows. If this mpv lacks --sub-forced-only, subtitles are
+#               turned off rather than risk mpv not starting.
+#     A .srt with exactly the video's name next to it is still loaded in
+#     every mode but off. --status shows the current mode.
 #   - PANEL_BRIGHTNESS dims the tablet's own screen to save power; the video
 #     is on the TV. It is written to /sys/class/backlight/*/brightness about
 #     10 seconds after each service start: mpv taking over the display turns
@@ -249,6 +265,10 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.6  - Added SUBTITLES ("" / off / on / forced), passed to the launcher
+#           as an Environment= line and turned into mpv options there.
+#           --status shows the mode. Existing boxes need --force once to get
+#           the new unit line.
 #   v3.5  - The USB stick's mount now follows the overlay: read-only when the
 #           overlay is on, writable by the kiosk user when it's off, so a
 #           video can be scp'd onto it in maintenance mode. --status shows
@@ -365,7 +385,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="3.5"
+SCRIPT_VERSION="3.6"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -384,6 +404,11 @@ MPV_BIN="/usr/bin/mpv"
 # Backlight level for the tablet's own panel, set each time the service
 # starts. 0 = dimmest (very dim on the Hi12, saves power). Empty = leave alone.
 PANEL_BRIGHTNESS="0"
+
+# Subtitles: "" = mpv default (follow the file's own default/forced flags),
+# off = never, on = English when the file has an English track,
+# forced = only the forced parts of an English track (foreign-language scenes)
+SUBTITLES=""
 
 # Display output (see --status for names) and ALSA device for HDMI sound
 DRM_CONNECTOR="HDMI-A-1"
@@ -978,6 +1003,7 @@ Environment=USB_LABEL=${USB_LABEL}
 Environment=USB_MOUNT=${USB_MOUNT}
 Environment=FALLBACK_VIDEO=${VIDEO_PATH}
 Environment=PANEL_BRIGHTNESS=${PANEL_BRIGHTNESS}
+Environment=SUBTITLES=${SUBTITLES}
 ExecStartPre=+${PLAY_BIN} --mount
 ExecStart=${PLAY_BIN} ${MPV_OPTS}
 ExecStartPost=+${PLAY_BIN} --dim
@@ -1048,6 +1074,26 @@ if mountpoint -q "$USB_MOUNT"; then
        -o -iname '*.avi' -o -iname '*.mpg' -o -iname '*.mpeg' \
        -o -iname '*.webm' -o -iname '*.ts' \) -print0 | sort -z)
 fi
+
+# Subtitle mode (SUBTITLES from the unit) -> mpv options.
+subs=()
+case "${SUBTITLES:-}" in
+  "")     ;;
+  off)    subs=(--sid=no) ;;
+  on)     subs=(--slang=en,eng) ;;
+  forced)
+    # An unknown option stops mpv starting, so check this mpv has it first.
+    if /usr/bin/mpv --list-options 2>/dev/null | grep -q -- '--sub-forced-only'; then
+      subs=(--slang=en,eng --sub-forced-only=yes)
+    else
+      echo "edge-mpv-play: this mpv has no --sub-forced-only — subtitles off instead" >&2
+      subs=(--sid=no)
+    fi
+    ;;
+  *) echo "edge-mpv-play: unknown SUBTITLES='${SUBTITLES}' — using mpv's default" >&2 ;;
+esac
+[[ "${SUBTITLES:-}" =~ ^(off|on|forced)$ ]] && echo "edge-mpv-play: subtitles ${SUBTITLES}"
+set -- "$@" "${subs[@]}"
 
 if (( ${#files[@]} > 0 )); then
   echo "edge-mpv-play: playing ${#files[@]} video(s) from USB stick ${USB_LABEL}"
@@ -1209,6 +1255,9 @@ show_video_source() {
   else
     log_info "Video source: no USB stick labelled ${USB_LABEL} — fallback ${VIDEO_PATH}."
   fi
+  local sm
+  sm=$(sed -n 's/^Environment=SUBTITLES=//p' "$UNIT_PATH" 2>/dev/null)
+  log_info "Subtitles: ${sm:-default (follow the file's flags)}"
   echo
 }
 
