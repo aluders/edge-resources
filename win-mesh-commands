@@ -19,6 +19,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='Sil
 
 # smartmontools
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol='Tls12'; $s=Join-Path $env:ProgramFiles 'smartmontools\bin\smartctl.exe'; if(!(Test-Path $s)){$u=((Invoke-RestMethod 'https://api.github.com/repos/smartmontools/smartmontools/releases/latest' -UseBasicParsing).assets | Where-Object name -like '*win32-setup.exe' | Select-Object -First 1).browser_download_url; $i=Join-Path $env:TEMP 'smartmontools-setup.exe'; Invoke-WebRequest $u -OutFile $i -UseBasicParsing; Start-Process $i '/S' -Wait; Remove-Item $i}; & $s -i -H C:"
+# smartmontools (percentage)
+powershell -NoProfile -Command "$s=Join-Path $env:ProgramFiles 'smartmontools\bin\smartctl.exe'; $j=& $s -j -H -A -l devstat C: | ConvertFrom-Json; $u=$j.nvme_smart_health_information_log.percentage_used; if($u -eq $null){$u=($j.ata_device_statistics.pages.table | Where-Object name -like 'Percentage Used*').value}; if($u -ne $null){$h=[math]::Max(0,100-$u)}else{$a=$j.ata_smart_attributes.table | Where-Object {$_.id -in 231,233,177,202,169} | Select-Object -First 1; if($a){$h=$a.value}}; 'Model:    ' + $j.model_name; 'Serial:   ' + $j.serial_number; 'SMART:    ' + $(if($j.smart_status.passed){'PASSED'}else{'FAILED'}); 'Health:   ' + $(if($h -ne $null){[string]$h + '%'}else{'n/a (HDD or no wear attribute)'}); 'Temp:     ' + $j.temperature.current + ' C'; 'Power-on: ' + $j.power_on_time.hours + ' hrs'"
 
 ### meraki to meshcentral commands (replace URL and GROUP as needed)...
 
