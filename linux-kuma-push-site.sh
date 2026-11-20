@@ -52,7 +52,7 @@ CURL_MAX=20
 TIMER_INTERVAL="1min"
 # Push every minute while the site is up. A failed check pushes nothing,
 # so Kuma's heartbeat window and Retries decide when it goes down.
-# Heartbeat 90 seconds, Retries 1, Retry Interval 60 seconds.
+# Heartbeat 90 seconds, Retries 1, Retry Interval 90 seconds.
 KUMA_HEARTBEAT_SEC=90
 ############################################
 # STATUS OUTPUT HELPERS
@@ -197,7 +197,7 @@ Checks public sites from this VPS and pushes up/down to Uptime Kuma.
 Only successful checks are pushed. A failed check pushes nothing and
 Kuma's Retries decide when the monitor goes down.
 Set each Push monitor Heartbeat Interval to ${KUMA_HEARTBEAT_SEC} seconds, Retries to 1,
-and Heartbeat Retry Interval to 60 seconds.
+and Heartbeat Retry Interval to 90 seconds.
 
 Usage: $0 [MODE]
 Modes:
@@ -396,7 +396,7 @@ fi
 success "curl present."
 info "[2/5] Sites to monitor"
 echo "    For each site, create a Push monitor in Kuma first."
-echo "    Heartbeat Interval: ${KUMA_HEARTBEAT_SEC} seconds. Retries: 1. Retry Interval: 60."
+echo "    Heartbeat Interval: ${KUMA_HEARTBEAT_SEC} seconds. Retries: 1. Retry Interval: 90."
 echo "    60 seconds races the timer and shows pending beats."
 echo "    Paste the push URL Kuma displays. Blank URL ends the list."
 echo
@@ -443,7 +443,7 @@ echo "=========================================="
 success "INSTALLATION COMPLETE"
 echo " Map:      $MAP_FILE"
 echo " Timer:    every $TIMER_INTERVAL"
-echo " Kuma:     heartbeat ${KUMA_HEARTBEAT_SEC}s, retries 1, retry interval 60s"
+echo " Kuma:     heartbeat ${KUMA_HEARTBEAT_SEC}s, retries 1, retry interval 90s"
 echo " Status:   $0 --status"
 echo "=========================================="
 if [[ -f "$LAST_FILE" ]]; then
