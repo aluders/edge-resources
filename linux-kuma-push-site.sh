@@ -21,9 +21,14 @@ set -euo pipefail
 #   ./oracle-kuma-probe.sh --version    # Print script version
 #   ./oracle-kuma-probe.sh --help       # Show help
 #
-# VERSION 1.4
+# VERSION 1.5
 #
 # CHANGELOG (newest first):
+#   1.5  - Never push status=down. Kuma skips retries for an explicit down,
+#          and its watchdog turns the next beat to PENDING, so recoveries
+#          were never logged or emailed. A failed check now skips the push
+#          and Kuma's Retries decide. Fixed the "000000" code (curl -w
+#          printed 000 and the || echo 000 fallback added another).
 #   1.4  - Notes: Kuma heartbeat 90s and retries 1. A 60s heartbeat
 #          races the systemd timer and shows pending beats.
 #   1.3  - One check and one push per minute. Retries belong in Kuma.
@@ -33,7 +38,7 @@ set -euo pipefail
 #   1.0  - Initial: interactive install, add/remove, probe with
 #          retries, systemd timer, status/logs/uninstall.
 ############################################
-VERSION="1.4"
+VERSION="1.5"
 ############################################
 # CONFIGURATION
 ############################################
@@ -45,8 +50,9 @@ SYSTEMD_SVC="/etc/systemd/system/kuma-probe.service"
 SYSTEMD_TMR="/etc/systemd/system/kuma-probe.timer"
 CURL_MAX=20
 TIMER_INTERVAL="1min"
-# Push every minute. Kuma heartbeat must be longer than this plus
-# systemd AccuracySec, or the beat shows pending. 90 seconds, retries 1.
+# Push every minute while the site is up. A failed check pushes nothing,
+# so Kuma's heartbeat window and Retries decide when it goes down.
+# Heartbeat 90 seconds, Retries 1, Retry Interval 60 seconds.
 KUMA_HEARTBEAT_SEC=90
 ############################################
 # STATUS OUTPUT HELPERS
@@ -115,15 +121,26 @@ while IFS=\$'\\t' read -r url push; do
     [[ -z "\${url:-}" || "\${url:0:1}" == "#" ]] && continue
     base="\${push%%\\?*}"
     start=\$(date +%s%3N)
+    rc=0
     code=\$(curl -sS -o /dev/null -w '%{http_code}' \\
-        --max-time "\$CURL_MAX" -L --max-redirs 3 "\$url" || echo 000)
+        --max-time "\$CURL_MAX" -L --max-redirs 3 "\$url") || rc=\$?
+    [[ "\$code" =~ ^[0-9]{3}\$ ]] || code=000
     ms=\$(( \$(date +%s%3N) - start ))
     case "\$code" in
         2*|3*) state=up ;;
         *)     state=down ;;
     esac
+    if [[ "\$state" == down ]]; then
+        # Do not push status=down. Kuma treats an explicit down as final and
+        # skips retries, and its watchdog then turns the next beat to PENDING,
+        # so the recovery is never recorded. Skipping the push lets Kuma's
+        # Retries handle a single failed check.
+        echo "\$url check failed: HTTP \$code curl exit \$rc (\${ms}ms), push skipped" >&2
+        printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -Is)" "\$url" "fail(curl \$rc)" "\$code" "\$ms" >> "\$tmp"
+        continue
+    fi
     if curl -fsS -o /dev/null --max-time 10 -G "\$base" \\
-        --data-urlencode "status=\$state" \\
+        --data-urlencode "status=up" \\
         --data-urlencode "msg=\${code}" \\
         --data-urlencode "ping=\${ms}"; then
         printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "\$(date -Is)" "\$url" "\$state" "\$code" "\$ms" >> "\$tmp"
@@ -177,8 +194,10 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 Oracle Uptime Kuma Push Probe (v$VERSION)
 
 Checks public sites from this VPS and pushes up/down to Uptime Kuma.
-Set each Push monitor Heartbeat Interval to ${KUMA_HEARTBEAT_SEC} seconds and Retries to 1.
-A 60-second heartbeat races this timer and shows pending beats.
+Only successful checks are pushed. A failed check pushes nothing and
+Kuma's Retries decide when the monitor goes down.
+Set each Push monitor Heartbeat Interval to ${KUMA_HEARTBEAT_SEC} seconds, Retries to 1,
+and Heartbeat Retry Interval to 60 seconds.
 
 Usage: $0 [MODE]
 Modes:
@@ -377,7 +396,7 @@ fi
 success "curl present."
 info "[2/5] Sites to monitor"
 echo "    For each site, create a Push monitor in Kuma first."
-echo "    Heartbeat Interval: ${KUMA_HEARTBEAT_SEC} seconds. Retries: 1."
+echo "    Heartbeat Interval: ${KUMA_HEARTBEAT_SEC} seconds. Retries: 1. Retry Interval: 60."
 echo "    60 seconds races the timer and shows pending beats."
 echo "    Paste the push URL Kuma displays. Blank URL ends the list."
 echo
@@ -424,7 +443,7 @@ echo "=========================================="
 success "INSTALLATION COMPLETE"
 echo " Map:      $MAP_FILE"
 echo " Timer:    every $TIMER_INTERVAL"
-echo " Kuma:     heartbeat ${KUMA_HEARTBEAT_SEC}s, retries 1"
+echo " Kuma:     heartbeat ${KUMA_HEARTBEAT_SEC}s, retries 1, retry interval 60s"
 echo " Status:   $0 --status"
 echo "=========================================="
 if [[ -f "$LAST_FILE" ]]; then
