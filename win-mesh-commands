@@ -1,3 +1,6 @@
+# disable hyper-v and related to eliminate duplicate meshcentral entries
+dism /online /disable-feature /featurename:Microsoft-Hyper-V-All /norestart & dism /online /disable-feature /featurename:VirtualMachinePlatform /norestart & dism /online /disable-feature /featurename:Containers-DisposableClientVM /norestart & dism /online /disable-feature /featurename:Microsoft-Windows-Subsystem-Linux /norestart
+
 # ookla speedtest (1.2.0)
 powershell -Command "Invoke-WebRequest -Uri 'https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip' -OutFile 'C:\Windows\Temp\speedtest.zip'; Expand-Archive -Path 'C:\Windows\Temp\speedtest.zip' -DestinationPath 'C:\Windows\Temp\Speedtest' -Force; Copy-Item 'C:\Windows\Temp\Speedtest\speedtest.exe' -Destination 'C:\Windows\speedtest.exe' -Force; Remove-Item 'C:\Windows\Temp\speedtest.zip'; Remove-Item 'C:\Windows\Temp\Speedtest' -Recurse -Force; Write-Host 'Done. You can now type speedtest.'"
 
