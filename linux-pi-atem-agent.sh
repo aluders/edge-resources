@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="66"
+INSTALLER_VERSION="69"
 
 # ==========================================
-# ATEM AGENT (v66)
+# ATEM AGENT (v69)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -96,9 +96,6 @@ INSTALLER_VERSION="66"
 #   (no flag) or --install
 #              Full install: dependencies, JS files, config, service.
 #              Safe to re-run — preserves existing config.
-#
-#   --redeploy Re-deploy JS files and service unit only. Skips apt
-#              dependency installs. Fast path for JS or service changes.
 #
 #   --update   Check and update installed components: apt packages
 #              (nodejs, npm, lftp, swaks, ffmpeg, fastfetch,
@@ -201,6 +198,15 @@ INSTALLER_VERSION="66"
 #
 # CHANGELOG
 # ------------------------------------------
+# v69 - drivestatus: blank line moved to after the health % line (smartctl
+#       already leaves a blank line before it).
+#
+# v68 - Removed --redeploy. Full install (no flag) is fast enough when packages
+#       are already up to date, and --redeploy was skipping alias setup anyway.
+#
+# v67 - drivestatus: strip leading zero from health % using $4+0 arithmetic
+#       coercion in awk (e.g. 099 -> 99). Added blank line before output.
+#
 # v66 - drivestatus: back to alias, written via heredoc with '\'' quoting so the
 #       awk single-quoted regex survives correctly into .bashrc.
 #
@@ -617,24 +623,6 @@ EOF
 }
 
 # ==========================================
-# cmd_redeploy — re-deploy JS + service only
-# ==========================================
-cmd_redeploy() {
-    if [ "$CURRENT_USER" == "root" ]; then
-        echo "❌ ERROR: Run as normal user (e.g. edgeadmin), not root."
-        exit 1
-    fi
-
-    echo ">>> Redeploying atem-agent v${INSTALLER_VERSION} (JS + service only)..."
-    mkdir -p "$PROJECT_DIR"
-    mkdir -p "$LOCAL_DEST_DIR"
-    _deploy_js_files
-    _deploy_service
-    echo "================================================="
-    echo "✅ REDEPLOYED v${INSTALLER_VERSION} (JS + service)"
-    echo "================================================="
-}
-
 # ==========================================
 # cmd_update — check and update components
 # ==========================================
@@ -849,10 +837,6 @@ FLAGS:
                  JS files, config, sudoers rule, service.
                  Safe to re-run — preserves existing atem.config.
 
-  --redeploy     Re-deploy JS files (monitor.js, trigger.js) and the
-                 systemd service unit only. Skips all apt installs.
-                 Use after editing JS or to bump the service version.
-
   --update       Check and update installed components: apt packages
                  (nodejs, npm, lftp, swaks, ffmpeg, fastfetch,
                  smartmontools, speedtest), cloudflared binary, and
@@ -941,9 +925,6 @@ EXAMPLES:
 
   Run pipeline immediately (bypass guards):
     ~/atem-agent.sh --on-demand
-
-  Quick redeploy after editing JS files:
-    ~/atem-agent.sh --redeploy
 
   Check system status:
     ~/atem-agent.sh --status
@@ -1249,7 +1230,7 @@ open('$BASHRC', 'w').write(content)
 "
     # Write alias via heredoc — avoids all shell quoting layers
     cat >> "$BASHRC" <<'DRIVESTATUS_ALIAS'
-alias drivestatus='sudo smartctl -i -H -A /dev/sda | awk '\''/^SMART Attributes Data Structure/ {skip=1} !skip {print} /Wear_Leveling_Count|Media_Wearout_Indicator|Percent_Lifetime_Remain|SSD_Life_Left/ {h=$4} END {if (h!="") print "Drive health: " h "%"}'\'''
+alias drivestatus='sudo smartctl -i -H -A /dev/sda | awk '\''/^SMART Attributes Data Structure/ {skip=1} !skip {print} /Wear_Leveling_Count|Media_Wearout_Indicator|Percent_Lifetime_Remain|SSD_Life_Left/ {h=$4+0} END {if (h!="") print "Drive health: " h "%\n"}'\'''
 DRIVESTATUS_ALIAS
     echo ">>> alias drivestatus set."
 }
@@ -1658,7 +1639,6 @@ ${LINKS_SECTION}"
 # ==========================================
 case "${1:-}" in
     ""|--install)         cmd_install                ;;
-    --redeploy)           cmd_redeploy               ;;
     --update)             cmd_update                 ;;
     --status)             cmd_status                 ;;
     --run)                cmd_run                    ;;
