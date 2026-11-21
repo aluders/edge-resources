@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="61"
+INSTALLER_VERSION="62"
 
 # ==========================================
-# ATEM AGENT (v61)
+# ATEM AGENT (v62)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -76,7 +76,7 @@ INSTALLER_VERSION="61"
 #   atemstatus   sudo systemctl status atem-monitor --no-pager -l
 #   atemlog      journalctl -u atem-monitor --no-pager
 #   atemrestart  sudo systemctl restart atem-monitor
-#   drivestatus  sudo smartctl -i -H /dev/sda
+#   drivestatus  sudo smartctl -i -H /dev/sda + SSD health %
 #
 # SYSTEM TOOLS INSTALLED
 # ------------------------------------------
@@ -201,6 +201,14 @@ INSTALLER_VERSION="61"
 #
 # CHANGELOG
 # ------------------------------------------
+# v62 - drivestatus alias now includes SSD health % (Wear_Leveling_Count /
+#       Media_Wearout_Indicator / Percent_Lifetime_Remain / SSD_Life_Left).
+#       Added _cleanup_old_recordings(): after each successful copy, checks disk
+#       usage on the atem partition; if >90%, removes oldest date-grouped
+#       recording sets (all files matching YYYY-MMDD-*) one batch at a time
+#       until usage is ≤90% or only the current run's files remain. Logs each
+#       deletion and warns if disk is still full after exhausting old recordings.
+#
 # v61 - _tunnel_and_notify: rm -f log files at start of function to prevent
 #       "Permission denied" errors when a prior run was killed mid-way (e.g.
 #       SSH broken pipe) leaving root-owned /tmp log files behind.
@@ -1206,7 +1214,7 @@ _setup_aliases() {
         ["atemstatus"]="sudo systemctl status atem-monitor --no-pager -l"
         ["atemlog"]="journalctl -u atem-monitor --no-pager"
         ["atemrestart"]="sudo systemctl restart atem-monitor"
-        ["drivestatus"]="sudo smartctl -i -H /dev/sda"
+        ["drivestatus"]="sudo smartctl -i -H /dev/sda; sudo smartctl -A /dev/sda | awk '/Wear_Leveling_Count|Media_Wearout_Indicator|Percent_Lifetime_Remain|SSD_Life_Left/ {print \"Drive health: \" \$4 \"%\"; exit}'"
     )
 
     for ALIAS_NAME in "${!ATEM_ALIASES[@]}"; do
@@ -1374,7 +1382,64 @@ _pipeline_run() {
         fi
     fi
 
+    # Clean up old recordings if disk is above 90%
+    _cleanup_old_recordings "$DEST_DIR" "$FILE_PREFIX"
+
     _tunnel_and_notify "$DEST_DIR" DOWNLOADED_FILES AUDIO_FILES
+}
+
+# _cleanup_old_recordings DEST_DIR CURRENT_PREFIX
+# After a successful copy, remove oldest date-grouped recordings until disk usage
+# on the atem partition is at or below 90%. Never deletes files from CURRENT_PREFIX.
+_cleanup_old_recordings() {
+    local DEST_DIR="$1"
+    local CURRENT_PREFIX="$2"
+
+    # Get disk usage % for the partition containing DEST_DIR
+    local USAGE
+    USAGE=$(df --output=pcent "$DEST_DIR" | tail -1 | tr -d ' %')
+
+    if [[ "$USAGE" -le 90 ]]; then
+        return 0
+    fi
+
+    log "💾 Disk at ${USAGE}% — cleaning old recordings to get below 90%..."
+
+    # Collect all date prefixes in DEST_DIR except the current run's
+    local -a PREFIXES
+    mapfile -t PREFIXES < <(
+        find "$DEST_DIR" -maxdepth 1 \( -name "*.mp4" -o -name "*.m4a" \) \
+        | sed 's|.*/||; s/-[0-9]*\.\(mp4\|m4a\)$//' \
+        | sort -u \
+        | grep -v "^${CURRENT_PREFIX}$"
+    )
+
+    if [[ ${#PREFIXES[@]} -eq 0 ]]; then
+        email_log "⚠️ Disk at ${USAGE}% but no old recordings to remove — manual cleanup needed"
+        return 0
+    fi
+
+    for PREFIX in "${PREFIXES[@]}"; do
+        USAGE=$(df --output=pcent "$DEST_DIR" | tail -1 | tr -d ' %')
+        if [[ "$USAGE" -le 90 ]]; then
+            break
+        fi
+        local FILES_DELETED=()
+        while IFS= read -r f; do
+            rm -f "$f"
+            FILES_DELETED+=("$(basename "$f")")
+        done < <(find "$DEST_DIR" -maxdepth 1 -name "${PREFIX}-*" \( -name "*.mp4" -o -name "*.m4a" \))
+        if [[ ${#FILES_DELETED[@]} -gt 0 ]]; then
+            email_log "🗑️  Removed old recording set ${PREFIX} ($(IFS=', '; echo "${FILES_DELETED[*]}"))"
+        fi
+    done
+
+    USAGE=$(df --output=pcent "$DEST_DIR" | tail -1 | tr -d ' %')
+    if [[ "$USAGE" -gt 90 ]]; then
+        email_log "⚠️ Disk still at ${USAGE}% after removing all old recordings — manual cleanup needed"
+    else
+        email_log "💾 Disk now at ${USAGE}% after cleanup"
+    fi
 }
 
 # _tunnel_and_notify DEST_DIR DOWNLOADED_FILES_REF AUDIO_FILES_REF
