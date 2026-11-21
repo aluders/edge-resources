@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="69"
+INSTALLER_VERSION="70"
 
 # ==========================================
-# ATEM AGENT (v69)
+# ATEM AGENT (v70)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -198,6 +198,9 @@ INSTALLER_VERSION="69"
 #
 # CHANGELOG
 # ------------------------------------------
+# v70 - --help: replaced box-drawing title with the plain ===== banner used
+#       by --status and install output (box broke alignment as version grew).
+#
 # v69 - drivestatus: blank line moved to after the health % line (smartctl
 #       already leaves a blank line before it).
 #
@@ -824,9 +827,9 @@ cmd_test_stream() {
 cmd_help() {
     cat <<HELP
 
-╔══════════════════════════════════════════════════════╗
-║              ATEM AGENT v${INSTALLER_VERSION} — HELP                  ║
-╚══════════════════════════════════════════════════════╝
+=================================================
+  ATEM AGENT v${INSTALLER_VERSION} — HELP
+=================================================
 
 USAGE:
   atem-agent.sh [FLAG] [ARG]
