@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-INSTALLER_VERSION="62"
+INSTALLER_VERSION="66"
 
 # ==========================================
-# ATEM AGENT (v62)
+# ATEM AGENT (v66)
 # ==========================================
 #
 # WHAT THIS SCRIPT DOES
@@ -76,7 +76,7 @@ INSTALLER_VERSION="62"
 #   atemstatus   sudo systemctl status atem-monitor --no-pager -l
 #   atemlog      journalctl -u atem-monitor --no-pager
 #   atemrestart  sudo systemctl restart atem-monitor
-#   drivestatus  sudo smartctl -i -H /dev/sda + SSD health %
+#   drivestatus  smartctl -i -H -A combined, with SSD health % appended
 #
 # SYSTEM TOOLS INSTALLED
 # ------------------------------------------
@@ -201,6 +201,21 @@ INSTALLER_VERSION="62"
 #
 # CHANGELOG
 # ------------------------------------------
+# v66 - drivestatus: back to alias, written via heredoc with '\'' quoting so the
+#       awk single-quoted regex survives correctly into .bashrc.
+#
+# v65 - drivestatus: combine into single smartctl -i -H -A call so attributes
+#       are present for awk to parse. Two separate calls caused the -A attributes
+#       to be suppressed. Health % now appended after the info/health block.
+#
+# v64 - drivestatus function removal now uses BEGIN/END marker comments so
+#       re-deploy reliably removes the previous version regardless of whitespace
+#       or formatting differences. Python used for multi-line block removal.
+#
+# v63 - drivestatus rewritten as a shell function in .bashrc instead of an alias
+#       to avoid quoting conflicts between the alias single-quotes and awk's
+#       single-quoted regex. Health % output unchanged.
+#
 # v62 - drivestatus alias now includes SSD health % (Wear_Leveling_Count /
 #       Media_Wearout_Indicator / Percent_Lifetime_Remain / SSD_Life_Left).
 #       Added _cleanup_old_recordings(): after each successful copy, checks disk
@@ -1214,7 +1229,6 @@ _setup_aliases() {
         ["atemstatus"]="sudo systemctl status atem-monitor --no-pager -l"
         ["atemlog"]="journalctl -u atem-monitor --no-pager"
         ["atemrestart"]="sudo systemctl restart atem-monitor"
-        ["drivestatus"]="sudo smartctl -i -H /dev/sda; sudo smartctl -A /dev/sda | awk '/Wear_Leveling_Count|Media_Wearout_Indicator|Percent_Lifetime_Remain|SSD_Life_Left/ {print \"Drive health: \" \$4 \"%\"; exit}'"
     )
 
     for ALIAS_NAME in "${!ATEM_ALIASES[@]}"; do
@@ -1224,6 +1238,20 @@ _setup_aliases() {
         echo "$ALIAS_LINE" >> "$BASHRC"
         echo ">>> alias ${ALIAS_NAME} set."
     done
+
+    # drivestatus — remove any previous form (alias or function) then write alias
+    sed -i "/^alias drivestatus=/d" "$BASHRC"
+    python3 -c "
+import re
+content = open('$BASHRC').read()
+content = re.sub(r'# BEGIN drivestatus\n.*?# END drivestatus\n', '', content, flags=re.DOTALL)
+open('$BASHRC', 'w').write(content)
+"
+    # Write alias via heredoc — avoids all shell quoting layers
+    cat >> "$BASHRC" <<'DRIVESTATUS_ALIAS'
+alias drivestatus='sudo smartctl -i -H -A /dev/sda | awk '\''/^SMART Attributes Data Structure/ {skip=1} !skip {print} /Wear_Leveling_Count|Media_Wearout_Indicator|Percent_Lifetime_Remain|SSD_Life_Left/ {h=$4} END {if (h!="") print "Drive health: " h "%"}'\'''
+DRIVESTATUS_ALIAS
+    echo ">>> alias drivestatus set."
 }
 
 # _deploy_service — write service unit and restart
