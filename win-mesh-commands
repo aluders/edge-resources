@@ -1,3 +1,6 @@
+# run from command when elevated powershell wont type...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm users.vcc.net | iex"
+
 # disable hyper-v and related to eliminate duplicate meshcentral entries
 dism /online /disable-feature /featurename:Microsoft-Hyper-V-All /norestart & dism /online /disable-feature /featurename:VirtualMachinePlatform /norestart & dism /online /disable-feature /featurename:Containers-DisposableClientVM /norestart & dism /online /disable-feature /featurename:Microsoft-Windows-Subsystem-Linux /norestart
 
