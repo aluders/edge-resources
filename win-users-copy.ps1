@@ -1,5 +1,5 @@
 # Copy-UserFolders.ps1
-# Version: 2.5
+# Version: 2.6
 # Usage: irm users.vcc.net | iex
 #
 # Copies the user folders you pick (Desktop, Documents, Downloads, Pictures,
@@ -7,6 +7,8 @@
 # using VSSCopy.exe (VSS-aware, handles open/locked files).
 #
 # CHANGELOG (newest first):
+#   v2.6 - Added "Complete (entire Users folder)" menu option: copies all of
+#          <Source>:\Users to <Destination>:\Users in a single pass.
 #   v2.5 - Banner renamed to "COPY USER FOLDERS" to match the script name.
 #   v2.4 - Logs now written to <Destination>:\VSSCopyLogs\<timestamp>\
 #          instead of C:\ (keeps them with the copied data).
@@ -43,7 +45,7 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'   # speeds up Invoke-WebRequest significantly
 
-$ScriptVersion       = "2.5"
+$ScriptVersion       = "2.6"
 $VssCopyExe          = "C:\Program Files\VSSCopy\VSSCopy.exe"
 $VssCopySetupUrl     = "https://files.edgeintegrated.net/SetupVSSCopy.exe"
 $FolderMenu          = @('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music')   # menu order; "All" is added as the last number
@@ -326,8 +328,10 @@ if (-not $users) {
 }
 
 # --- Folder picker ---
-$allNumber = $FolderMenu.Count + 1
-$FoldersToCopy = @()
+$allNumber      = $FolderMenu.Count + 1
+$completeNumber = $FolderMenu.Count + 2
+$CompleteMode   = $false
+$FoldersToCopy  = @()
 while ($FoldersToCopy.Count -eq 0) {
     Write-Host "------------------------------------" -ForegroundColor Gray
     Write-Host " Folders to copy:" -ForegroundColor Cyan
@@ -335,14 +339,19 @@ while ($FoldersToCopy.Count -eq 0) {
         Write-Host ("   {0}) {1}" -f ($i + 1), $FolderMenu[$i]) -ForegroundColor Gray
     }
     Write-Host ("   {0}) All of the above" -f $allNumber) -ForegroundColor Gray
+    Write-Host ("   {0}) Complete (entire Users folder)" -f $completeNumber) -ForegroundColor Gray
     $pick = Read-Host " Enter numbers (e.g. 1,2,4)"
     $nums = @($pick -split '[,\s]+' | Where-Object { $_ -ne '' })
-    $valid = ($nums.Count -gt 0) -and -not ($nums | Where-Object { $_ -notmatch '^\d+$' -or [int]$_ -lt 1 -or [int]$_ -gt $allNumber })
+    $valid = ($nums.Count -gt 0) -and -not ($nums | Where-Object { $_ -notmatch '^\d+$' -or [int]$_ -lt 1 -or [int]$_ -gt $completeNumber })
     if (-not $valid) {
-        Write-Host " [!] Invalid selection. Use numbers 1-$allNumber separated by commas." -ForegroundColor Red
+        Write-Host " [!] Invalid selection. Use numbers 1-$completeNumber separated by commas." -ForegroundColor Red
         continue
     }
-    if ($nums -contains "$allNumber") {
+    if ($nums -contains "$completeNumber") {
+        # Complete covers everything, so it overrides any other numbers entered
+        $CompleteMode  = $true
+        $FoldersToCopy = @('Complete')
+    } elseif ($nums -contains "$allNumber") {
         $FoldersToCopy = @($FolderMenu)
     } else {
         $idx = $nums | ForEach-Object { [int]$_ } | Sort-Object -Unique
@@ -353,7 +362,11 @@ while ($FoldersToCopy.Count -eq 0) {
 Write-Host "------------------------------------" -ForegroundColor Gray
 Write-Host " [i] Source:      $SourceUsersPath" -ForegroundColor Gray
 Write-Host " [i] Destination: $DestUsersPath" -ForegroundColor Gray
-Write-Host " [i] Folders:     $($FoldersToCopy -join ', ')" -ForegroundColor Gray
+if ($CompleteMode) {
+    Write-Host " [i] Folders:     Complete (entire Users folder)" -ForegroundColor Gray
+} else {
+    Write-Host " [i] Folders:     $($FoldersToCopy -join ', ')" -ForegroundColor Gray
+}
 Write-Host " [i] Users found: $($users.Count)" -ForegroundColor Gray
 Write-Host "------------------------------------" -ForegroundColor Gray
 
@@ -373,14 +386,30 @@ $successCount = 0
 $skipCount    = 0
 $failCount    = 0
 
-foreach ($user in $users) {
+# Complete mode is a single pass over the whole Users folder, not one pass per user
+$workItems = $users
+if ($CompleteMode) {
+    $workItems = @([pscustomobject]@{ Name = 'Users'; FullName = $SourceUsersPath })
+}
+
+foreach ($user in $workItems) {
     $userName = $user.Name
     Write-Host "------------------------------------" -ForegroundColor Gray
-    Write-Host " [i] User: $userName" -ForegroundColor Cyan
+    if ($CompleteMode) {
+        Write-Host " [i] Entire Users folder" -ForegroundColor Cyan
+    } else {
+        Write-Host " [i] User: $userName" -ForegroundColor Cyan
+    }
 
     foreach ($folder in $FoldersToCopy) {
-        $srcPath = Join-Path $user.FullName $folder
-        $dstPath = Join-Path (Join-Path $DestUsersPath $userName) $folder
+        if ($CompleteMode) {
+            # Whole Users folder: <Source>:\Users -> <Destination>:\Users
+            $srcPath = $SourceUsersPath
+            $dstPath = $DestUsersPath
+        } else {
+            $srcPath = Join-Path $user.FullName $folder
+            $dstPath = Join-Path (Join-Path $DestUsersPath $userName) $folder
+        }
 
         if (-not (Test-Path $srcPath)) {
             Write-Host "   [i] Skipping $folder (not found on source)." -ForegroundColor Gray
