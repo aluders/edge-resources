@@ -39,6 +39,8 @@ param(
 #     FeatureLockDown policy). Acrobat will NOT patch itself while this is on.
 #
 # Changelog:
+#   1.2 - Status reports one line per exe against the authoritative hive instead
+#         of a confusing per-bitness pair
 #   1.1 - Added Adobe Refresh Manager blocking ($BlockRefreshManager) and
 #         Acrobat/Reader bUpdater policy; service/task/ARP matching now
 #         list-driven; Undo finds IFEO blocks by marker
@@ -46,7 +48,7 @@ param(
 # ==============================================================================
 
 # ---- CONFIG ------------------------------------------------------------------
-$Version     = '1.1'
+$Version     = '1.2'
 $ScriptUrl   = 'https://adobe.vcc.net'
 $TaskPath    = '\EdgeTools\'
 $TaskName    = 'Adobe Genuine Block'
@@ -471,14 +473,17 @@ function Show-Status {
         else { Write-Status '!' "Absent, not locked: $f" }
     }
 
-    foreach ($root in $IfeoRoots) {
-        if (-not (Test-Path -LiteralPath $root)) { continue }
-        $arch = if ($root -match 'WOW6432Node') { '32-bit' } else { '64-bit' }
-        foreach ($exe in $BlockedExes) {
+    # One line per exe against the native hive, which is what governs execution.
+    # The WOW6432Node hive is only consulted if it exists, so a "blocked" here
+    # means blocked regardless of bitness; reporting it per-hive just adds noise.
+    foreach ($exe in $BlockedExes) {
+        $blocked = $false
+        foreach ($root in $IfeoRoots) {
             $cur = Get-ItemProperty -LiteralPath (Join-Path $root $exe) -ErrorAction SilentlyContinue
-            if ($cur -and $cur.Debugger -eq $IfeoDebugger) { Write-Status '+' "Blocked ($arch): $exe" }
-            else { Write-Status 'x' "Not blocked ($arch): $exe" }
+            if ($cur -and $cur.Debugger -eq $IfeoDebugger) { $blocked = $true; break }
         }
+        if ($blocked) { Write-Status '+' "Execution blocked: $exe" }
+        else { Write-Status 'x' "Not blocked: $exe" }
     }
 
     foreach ($key in $UpdaterPolicyKeys) {
