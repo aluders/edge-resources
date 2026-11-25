@@ -27,6 +27,7 @@
 #     wiped
 #
 # Changelog:
+#   2.5 - Zero-fill success reads "zeroed and verified"
 #   2.4 - Offer zero-fill for disks whose test pattern survives TRIM; ejects
 #         zeroed disks too
 #   2.3 - Renamed from Invoke-DiskTrim.ps1 to Invoke-TrimWipe.ps1
@@ -42,7 +43,7 @@
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-$ScriptVersion = "2.4"
+$ScriptVersion = "2.5"
 $LaunchUrl     = "trim.vcc.net"
 $EjectUsb      = "Auto"                           # Auto = eject, no prompt / On = prompt / Off = never
 $TestTag       = "====[EdgeTools*TRIM*Test]===="  # raw test sector content
@@ -573,7 +574,7 @@ function Start-TrimWipe {
                 $r.Detail = Invoke-ZeroFill -Number $r.Disk
                 $r.Result = 'Zeroed'
                 $r.Time   = "{0:N1}m" -f $timer.Elapsed.TotalMinutes
-                Write-Ok ("Disk {0}: zeroed in {1:N1} min" -f $r.Disk, $timer.Elapsed.TotalMinutes)
+                Write-Ok ("Disk {0}: zeroed and verified in {1:N1} min" -f $r.Disk, $timer.Elapsed.TotalMinutes)
             } catch {
                 Write-Fail "Disk $($r.Disk): zero-fill failed, $($_.Exception.Message)"
             }
