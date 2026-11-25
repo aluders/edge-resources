@@ -1,4 +1,4 @@
-# Invoke-DiskTrim.ps1
+# Invoke-TrimWipe.ps1
 # Interactive whole-disk TRIM for non-system drives
 #
 # Usage:
@@ -19,8 +19,12 @@
 #   - TRIM makes data read back as zeros but is not a NIST 800-88 purge;
 #     use crypto erase (Parted Magic) for drives leaving your hands
 #   - Relaunches itself elevated if not already running as admin
+#   - Verified USB disks can be safely removed at the end ($EjectUsb); a
+#     dock is skipped if it also holds a disk that wasn't trimmed
 #
 # Changelog:
+#   2.3 - Renamed from Invoke-DiskTrim.ps1 to Invoke-TrimWipe.ps1
+#   2.2 - Safe-remove verified USB disks at the end; $EjectUsb = Auto / On / Off
 #   2.1 - TRIM via temporary volume + Optimize-Volume -ReTrim (raw-disk TRIM
 #         IOCTL rejected by UASP docks); test pattern moved to 75% of disk
 #   2.0 - Replaced DiskTrim with native Windows TRIM IOCTL (inline C#);
@@ -32,8 +36,9 @@
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-$ScriptVersion = "2.1"
+$ScriptVersion = "2.3"
 $LaunchUrl     = "trim.vcc.net"
+$EjectUsb      = "Auto"                           # Auto = eject, no prompt / On = prompt / Off = never
 $TestTag       = "====[EdgeTools*TRIM*Test]===="  # raw test sector content
 $TestPosition  = 0.75                             # test sector, fraction of disk
 
@@ -149,6 +154,108 @@ public static class EdgeDiskIo
 '@
 
 # ---------------------------------------------------------------------------
+# Native safe removal (same as "Safely Remove Hardware")
+# ---------------------------------------------------------------------------
+$EdgeDeviceEjectSource = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class EdgeDeviceEject
+{
+    const int  CM_DRP_CAPABILITIES = 0x10;
+    const uint CM_DEVCAP_REMOVABLE = 0x4;
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    static extern int CM_Locate_DevNodeW(out uint devInst, string deviceId, int flags);
+
+    [DllImport("cfgmgr32.dll")]
+    static extern int CM_Get_Parent(out uint parent, uint devInst, int flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    static extern int CM_Get_Device_IDW(uint devInst, StringBuilder buffer, int length, int flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    static extern int CM_Get_DevNode_Registry_PropertyW(uint devInst, int property, out int regType, out uint buffer, ref int length, int flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    static extern int CM_Request_Device_EjectW(uint devInst, out int vetoType, StringBuilder vetoName, int nameLength, int flags);
+
+    // Device ID of the nearest removable node at or above deviceId, or null
+    public static string FindRemovable(string deviceId)
+    {
+        uint inst;
+        if (string.IsNullOrEmpty(deviceId) || CM_Locate_DevNodeW(out inst, deviceId, 0) != 0) return null;
+        for (int depth = 0; depth < 16; depth++)
+        {
+            int type;
+            uint caps;
+            int len = 4;
+            if (CM_Get_DevNode_Registry_PropertyW(inst, CM_DRP_CAPABILITIES, out type, out caps, ref len, 0) == 0
+                && (caps & CM_DEVCAP_REMOVABLE) != 0)
+            {
+                StringBuilder id = new StringBuilder(512);
+                return CM_Get_Device_IDW(inst, id, id.Capacity, 0) == 0 ? id.ToString() : null;
+            }
+            uint parent;
+            if (CM_Get_Parent(out parent, inst, 0) != 0) return null;
+            inst = parent;
+        }
+        return null;
+    }
+
+    // Returns null on success, otherwise the reason
+    public static string Eject(string deviceId)
+    {
+        uint inst;
+        int cr = CM_Locate_DevNodeW(out inst, deviceId, 0);
+        if (cr != 0) return "device not found (CR 0x" + cr.ToString("X") + ")";
+        int veto;
+        StringBuilder name = new StringBuilder(260);
+        cr = CM_Request_Device_EjectW(inst, out veto, name, name.Capacity, 0);
+        if (veto != 0) return "vetoed by " + (name.Length > 0 ? name.ToString() : "Windows") + " (veto type " + veto + ")";
+        if (cr != 0) return "CR 0x" + cr.ToString("X");
+        return null;
+    }
+}
+'@
+
+# ---------------------------------------------------------------------------
+# Safe-remove USB disks, one eject per dock
+# ---------------------------------------------------------------------------
+function Invoke-UsbEject {
+    param([object[]]$Disks)
+
+    # Map every disk to its removable device so shared docks are detected
+    $map = @(Get-CimInstance Win32_DiskDrive | ForEach-Object {
+        [pscustomobject]@{ Disk = [int]$_.Index; Device = [EdgeDeviceEject]::FindRemovable($_.PNPDeviceID) }
+    })
+
+    $wanted  = @($Disks | ForEach-Object { [int]$_.Disk })
+    $targets = [ordered]@{}
+    foreach ($n in $wanted) {
+        $dev = ($map | Where-Object { $_.Disk -eq $n }).Device
+        if (-not $dev) {
+            Write-Warn "Disk ${n}: no removable device found, not ejected"
+            continue
+        }
+        if (-not $targets.Contains($dev)) { $targets[$dev] = @() }
+        $targets[$dev] += $n
+    }
+
+    foreach ($dev in $targets.Keys) {
+        $list   = ($targets[$dev] | ForEach-Object { "Disk $_" }) -join ', '
+        $others = @($map | Where-Object { $_.Device -eq $dev -and $wanted -notcontains $_.Disk } | ForEach-Object { "Disk $($_.Disk)" })
+        if ($others.Count) {
+            Write-Warn "${list}: not ejected, same device also holds $($others -join ', ')"
+            continue
+        }
+        $err = [EdgeDeviceEject]::Eject($dev)
+        if ($err) { Write-Fail "${list}: eject failed, $err" } else { Write-Ok "${list}: ejected" }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Per-disk TRIM (disk must be RAW on entry; left RAW on exit)
 # ---------------------------------------------------------------------------
 function Invoke-WholeDiskTrim {
@@ -209,9 +316,9 @@ function Invoke-WholeDiskTrim {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-function Start-DiskTrim {
+function Start-TrimWipe {
     Write-Host ""
-    Write-Host "Disk TRIM v$ScriptVersion" -ForegroundColor White
+    Write-Host "Trim Wipe v$ScriptVersion" -ForegroundColor White
     Write-Host ""
 
     # Elevation
@@ -226,14 +333,13 @@ function Start-DiskTrim {
         return
     }
 
-    # Native helper (compiled once per session)
-    if (-not ('EdgeDiskIo' -as [type])) {
-        try {
-            Add-Type -TypeDefinition $EdgeDiskIoSource -ErrorAction Stop
-        } catch {
-            Write-Fail "Failed to compile native helper: $($_.Exception.Message)"
-            return
-        }
+    # Native helpers (compiled once per session)
+    try {
+        if (-not ('EdgeDiskIo' -as [type]))      { Add-Type -TypeDefinition $EdgeDiskIoSource -ErrorAction Stop }
+        if (-not ('EdgeDeviceEject' -as [type])) { Add-Type -TypeDefinition $EdgeDeviceEjectSource -ErrorAction Stop }
+    } catch {
+        Write-Fail "Failed to compile native helper: $($_.Exception.Message)"
+        return
     }
 
     # Disk enumeration
@@ -332,6 +438,7 @@ function Start-DiskTrim {
             Disk   = $n
             Model  = $d.FriendlyName
             Size   = "{0:N0} GB" -f ($d.Size / 1GB)
+            Bus    = $d.BusType
             Result = $result
             Time   = "{0:N1}s" -f $timer.Elapsed.TotalSeconds
             Detail = $detail
@@ -354,7 +461,29 @@ function Start-DiskTrim {
     } else {
         Write-Warn "$ok of $(@($results).Count) disk(s) trimmed and verified"
     }
+
+    # Eject
+    $usb = @($results | Where-Object { $_.Result -eq 'Verified' -and $_.Bus -eq 'USB' })
+    if ($usb.Count) {
+        switch ($EjectUsb) {
+            'Auto' {
+                Write-Host ""
+                Invoke-UsbEject -Disks $usb
+            }
+            'On' {
+                Write-Host ""
+                if ((Read-Host "Eject $($usb.Count) trimmed USB disk(s)? (Y/n)") -notmatch '^[Nn]') {
+                    Invoke-UsbEject -Disks $usb
+                }
+            }
+            'Off' { }
+            default {
+                Write-Host ""
+                Write-Warn "Unknown `$EjectUsb value '$EjectUsb', not ejecting (use Auto, On or Off)"
+            }
+        }
+    }
     Write-Host ""
 }
 
-Start-DiskTrim
+Start-TrimWipe
