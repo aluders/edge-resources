@@ -4,7 +4,6 @@ param(
 
 # ==============================================================================
 # Block-AdobeGenuine.ps1
-# Edge Integrated - Edge Tools
 #
 # Force-removes Adobe Genuine Service (AGS / AdobeGCClient) and, optionally,
 # Adobe Refresh Manager (ARM, the Acrobat/Reader updater) and blocks them from
