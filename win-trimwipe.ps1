@@ -19,10 +19,16 @@
 #   - TRIM makes data read back as zeros but is not a NIST 800-88 purge;
 #     use crypto erase (Parted Magic) for drives leaving your hands
 #   - Relaunches itself elevated if not already running as admin
-#   - Verified USB disks can be safely removed at the end ($EjectUsb); a
-#     dock is skipped if it also holds a disk that wasn't trimmed
+#   - Disks that accept TRIM but still return old data (older controllers
+#     without deterministic read-after-trim) are offered a zero-fill at the
+#     end: one full write, same readable end result, still not a purge
+#   - Verified / zeroed USB disks can be safely removed at the end
+#     ($EjectUsb); a dock is skipped if it also holds a disk that wasn't
+#     wiped
 #
 # Changelog:
+#   2.4 - Offer zero-fill for disks whose test pattern survives TRIM; ejects
+#         zeroed disks too
 #   2.3 - Renamed from Invoke-DiskTrim.ps1 to Invoke-TrimWipe.ps1
 #   2.2 - Safe-remove verified USB disks at the end; $EjectUsb = Auto / On / Off
 #   2.1 - TRIM via temporary volume + Optimize-Volume -ReTrim (raw-disk TRIM
@@ -36,11 +42,12 @@
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-$ScriptVersion = "2.3"
+$ScriptVersion = "2.4"
 $LaunchUrl     = "trim.vcc.net"
 $EjectUsb      = "Auto"                           # Auto = eject, no prompt / On = prompt / Off = never
 $TestTag       = "====[EdgeTools*TRIM*Test]===="  # raw test sector content
 $TestPosition  = 0.75                             # test sector, fraction of disk
+$ZeroChunk     = 16MB                             # zero-fill write size
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -152,6 +159,89 @@ public static class EdgeDiskIo
     }
 }
 '@
+
+# ---------------------------------------------------------------------------
+# Native zero-fill writer (reuses one aligned zero buffer)
+# ---------------------------------------------------------------------------
+$EdgeDiskZeroSource = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class EdgeDiskZero
+{
+    static IntPtr raw = IntPtr.Zero;
+    static IntPtr buf = IntPtr.Zero;
+    static int    bufSize = 0;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool WriteFile(SafeFileHandle h, IntPtr buf, int count, out int written, IntPtr overlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetFilePointerEx(SafeFileHandle h, long distance, out long newPos, uint method);
+
+    public static void Write(SafeFileHandle h, long offset, int length)
+    {
+        if (length > bufSize)
+        {
+            if (raw != IntPtr.Zero) Marshal.FreeHGlobal(raw);
+            raw = Marshal.AllocHGlobal(length + 4096);
+            buf = new IntPtr((raw.ToInt64() + 4095) & ~4095L);
+            Marshal.Copy(new byte[length], 0, buf, length);
+            bufSize = length;
+        }
+        long pos;
+        int n;
+        if (!SetFilePointerEx(h, offset, out pos, 0) || !WriteFile(h, buf, length, out n, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (n != length) throw new Exception("Short write at offset " + offset);
+    }
+}
+'@
+
+# ---------------------------------------------------------------------------
+# Zero-fill a RAW disk, then confirm the test sector reads back zeros
+# ---------------------------------------------------------------------------
+function Invoke-ZeroFill {
+    param([int]$Number)
+
+    $h = [EdgeDiskIo]::Open($Number)
+    try {
+        $geo        = [EdgeDiskIo]::GetGeometry($h)
+        $size       = $geo[0]
+        $sector     = [int]$geo[1]
+        $testOffset = [long][Math]::Floor($size * $TestPosition / 1MB) * 1MB
+
+        $offset = [long]0
+        $last   = -1
+        $sw     = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            while ($offset -lt $size) {
+                $len = [int][Math]::Min([long]$ZeroChunk, $size - $offset)
+                [EdgeDiskZero]::Write($h, $offset, $len)
+                $offset += $len
+                $pct = [int][Math]::Floor(100 * $offset / $size)
+                if ($pct -ne $last) {
+                    $mbps = ($offset / 1MB) / [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
+                    Write-Host ("`r    Zeroing... {0,3}%  {1,6:N0} MB/s " -f $pct, $mbps) -NoNewline
+                    $last = $pct
+                }
+            }
+        } finally {
+            Write-Host ""
+        }
+
+        $after = [EdgeDiskIo]::ReadSector($h, $testOffset, $sector)
+    } finally {
+        $h.Dispose()
+    }
+
+    if (@($after | Where-Object { $_ -ne 0 }).Count) {
+        throw "Zero-fill completed but test sector is not zero"
+    }
+    return ("Zero-filled {0:N0} GB, test sector reads back zeros" -f ($size / 1GB))
+}
 
 # ---------------------------------------------------------------------------
 # Native safe removal (same as "Safely Remove Hardware")
@@ -337,6 +427,7 @@ function Start-TrimWipe {
     try {
         if (-not ('EdgeDiskIo' -as [type]))      { Add-Type -TypeDefinition $EdgeDiskIoSource -ErrorAction Stop }
         if (-not ('EdgeDeviceEject' -as [type])) { Add-Type -TypeDefinition $EdgeDeviceEjectSource -ErrorAction Stop }
+        if (-not ('EdgeDiskZero' -as [type]))    { Add-Type -TypeDefinition $EdgeDiskZeroSource -ErrorAction Stop }
     } catch {
         Write-Fail "Failed to compile native helper: $($_.Exception.Message)"
         return
@@ -410,9 +501,10 @@ function Start-TrimWipe {
 
     # TRIM
     $results = foreach ($d in $selected) {
-        $n      = $d.Number
-        $result = 'Failed'
-        $detail = ''
+        $n        = $d.Number
+        $result   = 'Failed'
+        $detail   = ''
+        $zeroable = $false
         $timer  = [Diagnostics.Stopwatch]::StartNew()
 
         Write-Host ""
@@ -430,18 +522,20 @@ function Start-TrimWipe {
             $result = 'Verified'
             Write-Ok ("Disk {0}: TRIM verified in {1:N1}s" -f $n, $timer.Elapsed.TotalSeconds)
         } catch {
-            $detail = $_.Exception.Message
+            $detail   = $_.Exception.Message
+            $zeroable = $detail -like '*test pattern still readable*'
             Write-Fail "Disk ${n}: $detail"
         }
 
         [pscustomobject]@{
-            Disk   = $n
-            Model  = $d.FriendlyName
-            Size   = "{0:N0} GB" -f ($d.Size / 1GB)
-            Bus    = $d.BusType
-            Result = $result
-            Time   = "{0:N1}s" -f $timer.Elapsed.TotalSeconds
-            Detail = $detail
+            Disk     = $n
+            Model    = $d.FriendlyName
+            Size     = "{0:N0} GB" -f ($d.Size / 1GB)
+            Bus      = $d.BusType
+            Result   = $result
+            Time     = "{0:N1}s" -f $timer.Elapsed.TotalSeconds
+            Detail   = $detail
+            Zeroable = $zeroable
         }
     }
 
@@ -462,8 +556,32 @@ function Start-TrimWipe {
         Write-Warn "$ok of $(@($results).Count) disk(s) trimmed and verified"
     }
 
+    # Zero-fill disks that accepted TRIM but still return old data
+    $zeroable = @($results | Where-Object { $_.Zeroable })
+    if ($zeroable.Count) {
+        Write-Host ""
+        Write-Warn "$($zeroable.Count) disk(s) accepted TRIM but still return old data"
+        Write-Info "Zero-fill overwrites every sector (one full write, not a purge)"
+        foreach ($r in $zeroable) {
+            Write-Host ""
+            if ((Read-Host "Zero-fill Disk $($r.Disk) - $($r.Model) ($($r.Size))? (y/N)") -notmatch '^[Yy]') {
+                Write-Info "Disk $($r.Disk): skipped"
+                continue
+            }
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            try {
+                $r.Detail = Invoke-ZeroFill -Number $r.Disk
+                $r.Result = 'Zeroed'
+                $r.Time   = "{0:N1}m" -f $timer.Elapsed.TotalMinutes
+                Write-Ok ("Disk {0}: zeroed in {1:N1} min" -f $r.Disk, $timer.Elapsed.TotalMinutes)
+            } catch {
+                Write-Fail "Disk $($r.Disk): zero-fill failed, $($_.Exception.Message)"
+            }
+        }
+    }
+
     # Eject
-    $usb = @($results | Where-Object { $_.Result -eq 'Verified' -and $_.Bus -eq 'USB' })
+    $usb = @($results | Where-Object { ($_.Result -in @('Verified', 'Zeroed')) -and $_.Bus -eq 'USB' })
     if ($usb.Count) {
         switch ($EjectUsb) {
             'Auto' {
@@ -472,7 +590,7 @@ function Start-TrimWipe {
             }
             'On' {
                 Write-Host ""
-                if ((Read-Host "Eject $($usb.Count) trimmed USB disk(s)? (Y/n)") -notmatch '^[Nn]') {
+                if ((Read-Host "Eject $($usb.Count) wiped USB disk(s)? (Y/n)") -notmatch '^[Nn]') {
                     Invoke-UsbEject -Disks $usb
                 }
             }
