@@ -5,14 +5,15 @@
 #   irm trim.vcc.net | iex
 #
 # Notes:
-#   - Sends TRIM through Windows' own storage stack
-#     (IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES on \\.\PhysicalDriveN), which
-#     Windows translates to ATA TRIM / SCSI UNMAP / NVMe Deallocate, so it
-#     works through UASP docks that block raw SCSI pass-through
-#   - No partitions or formatting needed; the whole disk is trimmed in
-#     chunks from byte 0 to the end
-#   - Verification: writes a test pattern to sector 0, trims, then reads
-#     sector 0 back; Verified means the pattern is gone
+#   - TRIMs through a temporary NTFS volume using Windows' own ReTrim
+#     (Optimize-Volume), the path proven to pass through UASP docks;
+#     raw-disk TRIM IOCTLs are rejected by some USB bridges
+#   - Flow per disk: write test pattern at 75% of the disk (raw), create one
+#     full-size partition, quick format NTFS, ReTrim, clear back to RAW, then
+#     read the test sector back; Verified means the pattern is gone
+#   - Uses MBR (<= 2 TB) so there's no 16 MB MSR partition; only the first
+#     1 MB and the new NTFS metadata (~130 MB of fresh structures, not old
+#     data) aren't trimmed
 #   - DESTROYS ALL DATA on the selected disks
 #   - System and boot disks are never listed; HDDs are hidden (no TRIM)
 #   - TRIM makes data read back as zeros but is not a NIST 800-88 purge;
@@ -20,6 +21,8 @@
 #   - Relaunches itself elevated if not already running as admin
 #
 # Changelog:
+#   2.1 - TRIM via temporary volume + Optimize-Volume -ReTrim (raw-disk TRIM
+#         IOCTL rejected by UASP docks); test pattern moved to 75% of disk
 #   2.0 - Replaced DiskTrim with native Windows TRIM IOCTL (inline C#);
 #         works through UASP docks, no exe download, progress and timing
 #   1.1 - Run DiskTrim on the console directly so its error text is shown
@@ -29,10 +32,10 @@
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-$ScriptVersion = "2.0"
+$ScriptVersion = "2.1"
 $LaunchUrl     = "trim.vcc.net"
-$ChunkBytes    = 1GB                              # TRIM range per IOCTL call
-$TestTag       = "====[EdgeTools*TRIM*Test]===="  # written to sector 0
+$TestTag       = "====[EdgeTools*TRIM*Test]===="  # raw test sector content
+$TestPosition  = 0.75                             # test sector, fraction of disk
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -43,15 +46,15 @@ function Write-Warn { param([string]$Msg) Write-Host "[!] $Msg" -ForegroundColor
 function Write-Fail { param([string]$Msg) Write-Host "[x] $Msg" -ForegroundColor Red }
 
 # ---------------------------------------------------------------------------
-# Native disk access
+# Native raw sector access (test pattern only)
 # ---------------------------------------------------------------------------
-$EdgeDiskTrimSource = @'
+$EdgeDiskIoSource = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-public static class EdgeDiskTrim
+public static class EdgeDiskIo
 {
     const uint GENERIC_READ             = 0x80000000;
     const uint GENERIC_WRITE            = 0x40000000;
@@ -60,8 +63,7 @@ public static class EdgeDiskTrim
     const uint OPEN_EXISTING            = 3;
     const uint FILE_FLAG_NO_BUFFERING   = 0x20000000;
     const uint FILE_FLAG_WRITE_THROUGH  = 0x80000000;
-    const uint IOCTL_DISK_GET_DRIVE_GEOMETRY_EX         = 0x000700A0;
-    const uint IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES = 0x002D9404;
+    const uint IOCTL_DISK_GET_DRIVE_GEOMETRY_EX = 0x000700A0;
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
@@ -143,86 +145,65 @@ public static class EdgeDiskTrim
         }
         finally { Marshal.FreeHGlobal(raw); }
     }
-
-    // DEVICE_MANAGE_DATA_SET_ATTRIBUTES (28 bytes, ranges at 8-byte aligned
-    // offset 32) + one DEVICE_DATA_SET_RANGE. Returns 0 or a Win32 error.
-    public static int Trim(SafeFileHandle h, long offset, long length)
-    {
-        const int hdr = 32;
-        const int size = hdr + 16;
-        IntPtr buf = Marshal.AllocHGlobal(size);
-        try
-        {
-            for (int i = 0; i < size; i++) Marshal.WriteByte(buf, i, 0);
-            Marshal.WriteInt32(buf, 0, 28);      // Size
-            Marshal.WriteInt32(buf, 4, 1);       // Action = DeviceDsmAction_Trim
-            Marshal.WriteInt32(buf, 20, hdr);    // DataSetRangesOffset
-            Marshal.WriteInt32(buf, 24, 16);     // DataSetRangesLength
-            Marshal.WriteInt64(buf, hdr, offset);
-            Marshal.WriteInt64(buf, hdr + 8, length);
-            int ret;
-            return DeviceIoControl(h, IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES, buf, size, IntPtr.Zero, 0, out ret, IntPtr.Zero)
-                ? 0 : Marshal.GetLastWin32Error();
-        }
-        finally { Marshal.FreeHGlobal(buf); }
-    }
 }
 '@
 
 # ---------------------------------------------------------------------------
-# Per-disk TRIM
+# Per-disk TRIM (disk must be RAW on entry; left RAW on exit)
 # ---------------------------------------------------------------------------
 function Invoke-WholeDiskTrim {
     param([int]$Number)
 
-    $h = [EdgeDiskTrim]::Open($Number)
+    # Test pattern at 75% of the disk, clear of NTFS metadata
+    $h = [EdgeDiskIo]::Open($Number)
     try {
-        $geo    = [EdgeDiskTrim]::GetGeometry($h)
-        $size   = $geo[0]
-        $sector = [int]$geo[1]
+        $geo        = [EdgeDiskIo]::GetGeometry($h)
+        $size       = $geo[0]
+        $sector     = [int]$geo[1]
+        $testOffset = [long][Math]::Floor($size * $TestPosition / 1MB) * 1MB
 
-        # Test pattern in sector 0
         $pattern = New-Object byte[] $sector
         $tag     = [Text.Encoding]::ASCII.GetBytes($TestTag)
         [Array]::Copy($tag, $pattern, $tag.Length)
         $patternB64 = [Convert]::ToBase64String($pattern)
 
-        [EdgeDiskTrim]::WriteSector($h, 0, $pattern)
-        if ([Convert]::ToBase64String([EdgeDiskTrim]::ReadSector($h, 0, $sector)) -ne $patternB64) {
+        [EdgeDiskIo]::WriteSector($h, $testOffset, $pattern)
+        if ([Convert]::ToBase64String([EdgeDiskIo]::ReadSector($h, $testOffset, $sector)) -ne $patternB64) {
             throw "Test pattern did not read back before TRIM"
         }
-
-        # TRIM whole disk in chunks
-        $offset = [long]0
-        $last   = -1
-        while ($offset -lt $size) {
-            $len = [Math]::Min([long]$ChunkBytes, $size - $offset)
-            $err = [EdgeDiskTrim]::Trim($h, $offset, $len)
-            if ($err) {
-                Write-Host ""
-                throw ("TRIM rejected at {0:N0} GB: {1}" -f ($offset / 1GB), (New-Object ComponentModel.Win32Exception $err).Message)
-            }
-            $offset += $len
-            $pct = [int][Math]::Floor(100 * $offset / $size)
-            if ($pct -ne $last) {
-                Write-Host ("`r    Trimming... {0,3}%" -f $pct) -NoNewline
-                $last = $pct
-            }
-        }
-        Write-Host ""
-
-        # Verify
-        $after = [EdgeDiskTrim]::ReadSector($h, 0, $sector)
-        if ([Convert]::ToBase64String($after) -eq $patternB64) {
-            throw "TRIM accepted but test pattern still readable (not honored by drive or bridge)"
-        }
-        if (@($after | Where-Object { $_ -ne 0 }).Count) {
-            return "Test pattern cleared (reads back non-zero data)"
-        }
-        return "Test pattern cleared (reads back zeros)"
     } finally {
         $h.Dispose()
     }
+
+    # Temporary volume + ReTrim, always cleared back to RAW
+    $style = if ($size -gt 2TB) { 'GPT' } else { 'MBR' }
+    try {
+        Write-Info "Creating temporary $style volume"
+        Initialize-Disk -Number $Number -PartitionStyle $style -ErrorAction Stop
+        $part = New-Partition -DiskNumber $Number -UseMaximumSize -ErrorAction Stop
+        Format-Volume -Partition $part -FileSystem NTFS -Confirm:$false -Force -ErrorAction Stop | Out-Null
+
+        Write-Info "Running ReTrim"
+        $log = @(Get-Volume -Partition $part | Optimize-Volume -ReTrim -Verbose -ErrorAction Stop 4>&1 | ForEach-Object { "$_" })
+        $trimmedLine = $log | Where-Object { $_ -match 'Total space trimmed' } | Select-Object -Last 1
+        $trimmed = if ($trimmedLine) { ($trimmedLine -replace '^.*=\s*', '').Trim() } else { 'unknown' }
+    } finally {
+        Clear-Disk -Number $Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction SilentlyContinue
+    }
+
+    # Verify
+    $h = [EdgeDiskIo]::Open($Number)
+    try {
+        $after = [EdgeDiskIo]::ReadSector($h, $testOffset, $sector)
+    } finally {
+        $h.Dispose()
+    }
+
+    if ([Convert]::ToBase64String($after) -eq $patternB64) {
+        throw "ReTrim ran ($trimmed) but test pattern still readable (not honored by drive or bridge)"
+    }
+    $reads = if (@($after | Where-Object { $_ -ne 0 }).Count) { 'non-zero data' } else { 'zeros' }
+    return "$trimmed trimmed, test sector reads back $reads"
 }
 
 # ---------------------------------------------------------------------------
@@ -246,9 +227,9 @@ function Start-DiskTrim {
     }
 
     # Native helper (compiled once per session)
-    if (-not ('EdgeDiskTrim' -as [type])) {
+    if (-not ('EdgeDiskIo' -as [type])) {
         try {
-            Add-Type -TypeDefinition $EdgeDiskTrimSource -ErrorAction Stop
+            Add-Type -TypeDefinition $EdgeDiskIoSource -ErrorAction Stop
         } catch {
             Write-Fail "Failed to compile native helper: $($_.Exception.Message)"
             return
