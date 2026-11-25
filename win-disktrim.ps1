@@ -1,34 +1,38 @@
 # Invoke-DiskTrim.ps1
-# Interactive whole-disk TRIM for non-system drives, using DiskTrim
+# Interactive whole-disk TRIM for non-system drives
 #
 # Usage:
 #   irm trim.vcc.net | iex
 #
 # Notes:
-#   - Wraps DiskTrim 2.2 (github.com/tenox7/disktrim), which sends UNMAP
-#     across every LBA on a disk, then checks that a test pattern written
-#     to sector 0 reads back empty
+#   - Sends TRIM through Windows' own storage stack
+#     (IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES on \\.\PhysicalDriveN), which
+#     Windows translates to ATA TRIM / SCSI UNMAP / NVMe Deallocate, so it
+#     works through UASP docks that block raw SCSI pass-through
+#   - No partitions or formatting needed; the whole disk is trimmed in
+#     chunks from byte 0 to the end
+#   - Verification: writes a test pattern to sector 0, trims, then reads
+#     sector 0 back; Verified means the pattern is gone
 #   - DESTROYS ALL DATA on the selected disks
 #   - System and boot disks are never listed; HDDs are hidden (no TRIM)
-#   - Connect drives directly to SATA/NVMe; most USB bridges drop UNMAP
 #   - TRIM makes data read back as zeros but is not a NIST 800-88 purge;
 #     use crypto erase (Parted Magic) for drives leaving your hands
-#   - DiskTrim is cached under %LOCALAPPDATA%\EdgeTools\disktrim\ and
-#     re-downloaded if its SHA256 doesn't match
 #   - Relaunches itself elevated if not already running as admin
 #
 # Changelog:
+#   2.0 - Replaced DiskTrim with native Windows TRIM IOCTL (inline C#);
+#         works through UASP docks, no exe download, progress and timing
+#   1.1 - Run DiskTrim on the console directly so its error text is shown
+#         (redirected output was lost on failure); pass/fail by exit code
 #   1.0 - Initial release
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-$ScriptVersion = "1.0"
+$ScriptVersion = "2.0"
 $LaunchUrl     = "trim.vcc.net"
-$DiskTrimUrl   = "https://github.com/tenox7/disktrim/releases/download/2.2/disktrim-x64.exe"
-$DiskTrimHash  = "A0D2433124D1DA577D5FC44E5F82B6FEFE408D60065BEDAB746E5B6791D7340D"
-$ToolDir       = Join-Path $env:LOCALAPPDATA "EdgeTools\disktrim"
-$DiskTrimExe   = Join-Path $ToolDir "disktrim-x64.exe"
+$ChunkBytes    = 1GB                              # TRIM range per IOCTL call
+$TestTag       = "====[EdgeTools*TRIM*Test]===="  # written to sector 0
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -37,6 +41,189 @@ function Write-Ok   { param([string]$Msg) Write-Host "[+] $Msg" -ForegroundColor
 function Write-Info { param([string]$Msg) Write-Host "[*] $Msg" -ForegroundColor Cyan }
 function Write-Warn { param([string]$Msg) Write-Host "[!] $Msg" -ForegroundColor Yellow }
 function Write-Fail { param([string]$Msg) Write-Host "[x] $Msg" -ForegroundColor Red }
+
+# ---------------------------------------------------------------------------
+# Native disk access
+# ---------------------------------------------------------------------------
+$EdgeDiskTrimSource = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class EdgeDiskTrim
+{
+    const uint GENERIC_READ             = 0x80000000;
+    const uint GENERIC_WRITE            = 0x40000000;
+    const uint FILE_SHARE_READ          = 0x1;
+    const uint FILE_SHARE_WRITE         = 0x2;
+    const uint OPEN_EXISTING            = 3;
+    const uint FILE_FLAG_NO_BUFFERING   = 0x20000000;
+    const uint FILE_FLAG_WRITE_THROUGH  = 0x80000000;
+    const uint IOCTL_DISK_GET_DRIVE_GEOMETRY_EX         = 0x000700A0;
+    const uint IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES = 0x002D9404;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DeviceIoControl(SafeFileHandle h, uint code, IntPtr inBuf, int inSize, IntPtr outBuf, int outSize, out int returned, IntPtr overlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ReadFile(SafeFileHandle h, IntPtr buf, int count, out int read, IntPtr overlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool WriteFile(SafeFileHandle h, IntPtr buf, int count, out int written, IntPtr overlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetFilePointerEx(SafeFileHandle h, long distance, out long newPos, uint method);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool FlushFileBuffers(SafeFileHandle h);
+
+    public static SafeFileHandle Open(int disk)
+    {
+        SafeFileHandle h = CreateFileW(@"\\.\PhysicalDrive" + disk, GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING,
+            FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH, IntPtr.Zero);
+        if (h.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return h;
+    }
+
+    // Returns { disk size in bytes, logical sector size }
+    public static long[] GetGeometry(SafeFileHandle h)
+    {
+        IntPtr buf = Marshal.AllocHGlobal(256);
+        try
+        {
+            int ret;
+            if (!DeviceIoControl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IntPtr.Zero, 0, buf, 256, out ret, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return new long[] { Marshal.ReadInt64(buf, 24), Marshal.ReadInt32(buf, 20) };
+        }
+        finally { Marshal.FreeHGlobal(buf); }
+    }
+
+    // Unbuffered I/O needs a sector-aligned buffer
+    static IntPtr Aligned(int size, out IntPtr raw)
+    {
+        raw = Marshal.AllocHGlobal(size + 4096);
+        return new IntPtr((raw.ToInt64() + 4095) & ~4095L);
+    }
+
+    public static void WriteSector(SafeFileHandle h, long offset, byte[] data)
+    {
+        IntPtr raw;
+        IntPtr buf = Aligned(data.Length, out raw);
+        try
+        {
+            Marshal.Copy(data, 0, buf, data.Length);
+            long pos;
+            int n;
+            if (!SetFilePointerEx(h, offset, out pos, 0) || !WriteFile(h, buf, data.Length, out n, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            FlushFileBuffers(h);
+        }
+        finally { Marshal.FreeHGlobal(raw); }
+    }
+
+    public static byte[] ReadSector(SafeFileHandle h, long offset, int size)
+    {
+        IntPtr raw;
+        IntPtr buf = Aligned(size, out raw);
+        try
+        {
+            long pos;
+            int n;
+            if (!SetFilePointerEx(h, offset, out pos, 0) || !ReadFile(h, buf, size, out n, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            byte[] data = new byte[size];
+            Marshal.Copy(buf, data, 0, size);
+            return data;
+        }
+        finally { Marshal.FreeHGlobal(raw); }
+    }
+
+    // DEVICE_MANAGE_DATA_SET_ATTRIBUTES (28 bytes, ranges at 8-byte aligned
+    // offset 32) + one DEVICE_DATA_SET_RANGE. Returns 0 or a Win32 error.
+    public static int Trim(SafeFileHandle h, long offset, long length)
+    {
+        const int hdr = 32;
+        const int size = hdr + 16;
+        IntPtr buf = Marshal.AllocHGlobal(size);
+        try
+        {
+            for (int i = 0; i < size; i++) Marshal.WriteByte(buf, i, 0);
+            Marshal.WriteInt32(buf, 0, 28);      // Size
+            Marshal.WriteInt32(buf, 4, 1);       // Action = DeviceDsmAction_Trim
+            Marshal.WriteInt32(buf, 20, hdr);    // DataSetRangesOffset
+            Marshal.WriteInt32(buf, 24, 16);     // DataSetRangesLength
+            Marshal.WriteInt64(buf, hdr, offset);
+            Marshal.WriteInt64(buf, hdr + 8, length);
+            int ret;
+            return DeviceIoControl(h, IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES, buf, size, IntPtr.Zero, 0, out ret, IntPtr.Zero)
+                ? 0 : Marshal.GetLastWin32Error();
+        }
+        finally { Marshal.FreeHGlobal(buf); }
+    }
+}
+'@
+
+# ---------------------------------------------------------------------------
+# Per-disk TRIM
+# ---------------------------------------------------------------------------
+function Invoke-WholeDiskTrim {
+    param([int]$Number)
+
+    $h = [EdgeDiskTrim]::Open($Number)
+    try {
+        $geo    = [EdgeDiskTrim]::GetGeometry($h)
+        $size   = $geo[0]
+        $sector = [int]$geo[1]
+
+        # Test pattern in sector 0
+        $pattern = New-Object byte[] $sector
+        $tag     = [Text.Encoding]::ASCII.GetBytes($TestTag)
+        [Array]::Copy($tag, $pattern, $tag.Length)
+        $patternB64 = [Convert]::ToBase64String($pattern)
+
+        [EdgeDiskTrim]::WriteSector($h, 0, $pattern)
+        if ([Convert]::ToBase64String([EdgeDiskTrim]::ReadSector($h, 0, $sector)) -ne $patternB64) {
+            throw "Test pattern did not read back before TRIM"
+        }
+
+        # TRIM whole disk in chunks
+        $offset = [long]0
+        $last   = -1
+        while ($offset -lt $size) {
+            $len = [Math]::Min([long]$ChunkBytes, $size - $offset)
+            $err = [EdgeDiskTrim]::Trim($h, $offset, $len)
+            if ($err) {
+                Write-Host ""
+                throw ("TRIM rejected at {0:N0} GB: {1}" -f ($offset / 1GB), (New-Object ComponentModel.Win32Exception $err).Message)
+            }
+            $offset += $len
+            $pct = [int][Math]::Floor(100 * $offset / $size)
+            if ($pct -ne $last) {
+                Write-Host ("`r    Trimming... {0,3}%" -f $pct) -NoNewline
+                $last = $pct
+            }
+        }
+        Write-Host ""
+
+        # Verify
+        $after = [EdgeDiskTrim]::ReadSector($h, 0, $sector)
+        if ([Convert]::ToBase64String($after) -eq $patternB64) {
+            throw "TRIM accepted but test pattern still readable (not honored by drive or bridge)"
+        }
+        if (@($after | Where-Object { $_ -ne 0 }).Count) {
+            return "Test pattern cleared (reads back non-zero data)"
+        }
+        return "Test pattern cleared (reads back zeros)"
+    } finally {
+        $h.Dispose()
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Main
@@ -58,38 +245,14 @@ function Start-DiskTrim {
         return
     }
 
-    if (-not [Environment]::Is64BitOperatingSystem) {
-        Write-Fail "64-bit Windows required"
-        return
-    }
-
-    # DiskTrim bootstrap
-    if (Test-Path $DiskTrimExe) {
-        if ((Get-FileHash $DiskTrimExe -Algorithm SHA256).Hash -ne $DiskTrimHash) {
-            Write-Warn "Cached DiskTrim hash mismatch, re-downloading"
-            Remove-Item $DiskTrimExe -Force
-        }
-    }
-
-    if (-not (Test-Path $DiskTrimExe)) {
-        Write-Info "Downloading DiskTrim..."
-        New-Item -ItemType Directory -Path $ToolDir -Force | Out-Null
+    # Native helper (compiled once per session)
+    if (-not ('EdgeDiskTrim' -as [type])) {
         try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $DiskTrimUrl -OutFile $DiskTrimExe -UseBasicParsing -ErrorAction Stop
+            Add-Type -TypeDefinition $EdgeDiskTrimSource -ErrorAction Stop
         } catch {
-            Write-Fail "Download failed: $($_.Exception.Message)"
+            Write-Fail "Failed to compile native helper: $($_.Exception.Message)"
             return
         }
-        if ((Get-FileHash $DiskTrimExe -Algorithm SHA256).Hash -ne $DiskTrimHash) {
-            Remove-Item $DiskTrimExe -Force
-            Write-Fail "Downloaded DiskTrim failed SHA256 check, aborting"
-            return
-        }
-        Write-Ok "DiskTrim cached at $DiskTrimExe"
-    } else {
-        Write-Ok "DiskTrim found (hash verified)"
     }
 
     # Disk enumeration
@@ -119,7 +282,7 @@ function Start-DiskTrim {
     Write-Host ""
 
     if ($disks | Where-Object { $_.BusType -eq 'USB' }) {
-        Write-Warn "USB disks shown in yellow; many USB bridges don't pass TRIM"
+        Write-Warn "USB disks shown in yellow; TRIM only works through UASP bridges that support UNMAP"
         Write-Host ""
     }
 
@@ -163,6 +326,7 @@ function Start-DiskTrim {
         $n      = $d.Number
         $result = 'Failed'
         $detail = ''
+        $timer  = [Diagnostics.Stopwatch]::StartNew()
 
         Write-Host ""
         Write-Info "Disk $n - $($d.FriendlyName)"
@@ -175,21 +339,9 @@ function Start-DiskTrim {
                 Clear-Disk -Number $n -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop
             }
 
-            Write-Info "Running DiskTrim"
-            $out  = @(& $DiskTrimExe -y $n 2>&1 | ForEach-Object { "$_" })
-            $code = $LASTEXITCODE
-            $out | Where-Object { $_.Trim() } | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
-
-            if ($code -eq 0 -and ($out -match 'Looks like TRIM worked')) {
-                $result = 'Verified'
-                $detail = 'Test pattern cleared after UNMAP'
-                Write-Ok "Disk ${n}: TRIM verified"
-            } else {
-                $errLine = $out | Where-Object { $_ -match '^ERROR:' } | Select-Object -Last 1
-                $detail  = if ($errLine) { ($errLine -replace '^ERROR:\s*', '').Trim() } else { "DiskTrim exit code $code" }
-                if ($out -match '^Trim: Not Supported') { $detail += " (drive reports no TRIM support)" }
-                Write-Fail "Disk ${n}: $detail"
-            }
+            $detail = Invoke-WholeDiskTrim -Number $n
+            $result = 'Verified'
+            Write-Ok ("Disk {0}: TRIM verified in {1:N1}s" -f $n, $timer.Elapsed.TotalSeconds)
         } catch {
             $detail = $_.Exception.Message
             Write-Fail "Disk ${n}: $detail"
@@ -200,6 +352,7 @@ function Start-DiskTrim {
             Model  = $d.FriendlyName
             Size   = "{0:N0} GB" -f ($d.Size / 1GB)
             Result = $result
+            Time   = "{0:N1}s" -f $timer.Elapsed.TotalSeconds
             Detail = $detail
         }
     }
@@ -209,7 +362,7 @@ function Start-DiskTrim {
     Write-Host "Results" -ForegroundColor White
     foreach ($r in $results) {
         $color = if ($r.Result -eq 'Verified') { 'Green' } else { 'Red' }
-        Write-Host ("  Disk {0,-4} {1,-9} {2,-10} {3}" -f $r.Disk, $r.Result, $r.Size, $r.Model) -ForegroundColor $color
+        Write-Host ("  Disk {0,-4} {1,-9} {2,-10} {3,-8} {4}" -f $r.Disk, $r.Result, $r.Size, $r.Time, $r.Model) -ForegroundColor $color
         Write-Host "            $($r.Detail)" -ForegroundColor DarkGray
     }
 
