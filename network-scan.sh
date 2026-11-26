@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#    Network Scanner  (macOS)  v1.8
+#    Network Scanner  (macOS)  v1.9
 #    ================================
 #    Discovers every device on the local subnet using a layered approach:
 #    ICMP ping sweep, ARP cache, reverse DNS, OUI vendor lookup,
@@ -12,6 +12,9 @@
 #
 #    VERSION HISTORY
 #    ---------------
+#    1.9 - Every MAC is looked up again (VMs like QNAP/KVM 52:54:00 regained
+#          vendors); "Private MAC" only shown when the lookup finds nothing
+#          and the address is locally administered
 #    1.8 - macOS 27 hides the IPv4 ARP table from commands started by third-party
 #          apps (Alacritty, iTerm, VS Code). If arp returns nothing, it is re-run
 #          as a launchd job (not filtered, no password), then via sudo if
@@ -47,8 +50,8 @@
 #    - Vendor cache lives at ~/.cache/netscan/ — delete to force fresh lookups.
 #      Only successful API results are cached; transient failures are retried
 #      automatically on the next run. Only the 3-byte OUI prefix is sent.
-#    - Private/randomized MACs (phones, tablets) have no vendor and are labeled
-#      as such without an API call.
+#    - Every MAC is looked up. If nothing is found and the address is locally
+#      administered (randomized phone/tablet MACs), it is labeled Private MAC.
 #    - Device identity (mDNS/SSDP/HTTP title) is cached by MAC address at
 #      ~/.cache/netscan/devices/ and survives IP changes between runs.
 #    - macvendors.com API is rate-limited; the script waits 1.5s between
@@ -727,20 +730,13 @@ echo -e "  ${DIM}Phase 3/7 — Hostnames:${RESET}    done ✓  (${HOST_COUNT} re
 
 # ── Phase 4: Vendors ──────────────────────────────────────────────────────────
 echo -ne "  ${DIM}Phase 4/7 — Vendors:${RESET}      looking up OUI prefixes…\r"
-OUI_LIST=()       # unique, non-private OUIs to resolve
-PRIVATE_COUNT=0
+OUI_LIST=()       # unique OUIs to resolve (every MAC is looked up)
 for IP in "${ALIVE_IPS[@]}"; do
   [[ -f "${TMPDIR_SCAN}/arp_${IP}" ]] || continue
   MAC=$(cat "${TMPDIR_SCAN}/arp_${IP}")
   [[ "$MAC" =~ ^[0-9a-f]{2}(:[0-9a-f]{2}){5}$ ]] || continue
   OUI=$(echo "${MAC//:/}" | tr '[:lower:]' '[:upper:]' | cut -c1-6)
   printf '%s\n%s\n' "$OUI" "$MAC" > "${TMPDIR_SCAN}/mac_${IP}"
-  # Locally-administered bit set → randomized/private MAC, no registered vendor
-  if (( $((16#${MAC:0:2})) & 2 )); then
-    echo "Private MAC" > "${TMPDIR_SCAN}/vendor_${IP}"
-    (( PRIVATE_COUNT++ ))
-    continue
-  fi
   [[ " ${OUI_LIST[*]} " == *" ${OUI} "* ]] || OUI_LIST+=("$OUI")
 done
 
@@ -767,6 +763,18 @@ for OUI in "${OUI_LIST[@]}"; do
     else                       TAG="${RED}${OUI} not found${RESET} ${DIM}(will retry next run)${RESET}"
     fi
     echo -e "${V_LINE} ${CYAN}${V_IDX}${RESET}/${V_TOTAL} ${TAG}                    "
+  fi
+done
+# Label "Private MAC" only when the lookup found nothing AND the
+# locally-administered bit is set (randomized phone/tablet addresses)
+PRIVATE_COUNT=0
+for IP in "${ALIVE_IPS[@]}"; do
+  [[ -f "${TMPDIR_SCAN}/mac_${IP}" ]] || continue
+  OUI=$(sed -n '1p' "${TMPDIR_SCAN}/mac_${IP}")
+  [[ -s "${TMPDIR_SCAN}/oui_${OUI}" ]] && continue
+  if (( 16#${OUI:0:2} & 2 )); then
+    echo "Private MAC" > "${TMPDIR_SCAN}/vendor_${IP}"
+    (( PRIVATE_COUNT++ ))
   fi
 done
 VENDOR_SUMMARY="${V_OK}/${V_TOTAL} OUI(s) resolved"
