@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# EDGE MPV v3.6
+# EDGE MPV v3.9
 # ==============================================================================
 # Turns a minimal (terminal-only) Debian 12 "bookworm" box into a boot-to-video
 # kiosk: mpv plays a looping video fullscreen straight to the DRM framebuffer
@@ -20,6 +20,10 @@
 #   audio      alsa-utils (aplay, speaker-test) + kiosk user in the audio group
 #   battery    Caps the battery's charge voltage at each boot (edge-battery
 #              service) so it isn't held at 100% while always plugged in
+#   rebootmethod  Sets how the kernel resets the hardware on reboot, at each
+#              boot (edge-reboot-method service), for tablets whose reboot hangs
+#   blockdrivers  Stops drivers for unused hardware from loading (built-in
+#              touchscreen and speakers), which only log errors at boot
 #   service    /etc/systemd/system/mpv.service (enabled + started), the
 #              edge-mpv-play launcher and the USB plug/unplug udev rule
 #   reboot     Nightly reboot in root's crontab (00:00)
@@ -50,7 +54,8 @@
 #   -h, --help        Show usage and exit
 #
 #   LIST is a comma-separated list drawn from: sudo, mpv, fastfetch,
-#   speedtest, audio, battery, service, reboot, aliases, dns
+#   speedtest, audio, battery, rebootmethod, blockdrivers, service, reboot,
+#   aliases, dns
 #
 # USAGE
 # -----
@@ -242,6 +247,29 @@
 #     plays; MeshCentral and updates stop), and local names known only to the
 #     site's own DNS won't resolve. Set DNS_SERVERS="" to use DHCP's DNS; the
 #     marked line is then removed on the next run.
+#   - BLOCKED DRIVERS: BLOCK_MODULES lists kernel drivers for hardware the
+#     kiosk doesn't use, written to /etc/modprobe.d/edge-mpv-block.conf and
+#     the initramfs, so they never load. On the Hi12:
+#       goodix_ts           built-in touchscreen ("Goodix-TS ... Error
+#                           reading 1 bytes" at boot)
+#       snd_intel_sst_acpi  built-in speakers ("failed to load
+#                           intel/fw_sst_22a8.bin" at boot)
+#     HDMI sound uses a separate driver (snd_hdmi_lpe_audio) and is not
+#     affected. Takes effect at the next boot. BLOCK_MODULES="" unblocks all.
+#   - REBOOT METHOD: on these Atom tablets a reboot can finish shutting down
+#     and then hang at "Rebooting." / "kvm: exiting hardware virtualization"
+#     because the hardware reset didn't take. The Hi12's hardware watchdog
+#     doesn't rescue it, so it stays dark until power-cycled. The kernel's
+#     default reset method on the Hi12 is acpi (it falls back to kbd), and
+#     that is the one that hung, so REBOOT_METHOD defaults to efi; pci is
+#     the next to try. Valid: efi, pci, acpi, kbd, bios, triple; "" leaves
+#     the kernel's default. The edge-reboot-method service writes it to
+#     /sys/kernel/reboot/type at each boot; no boot-loader changes.
+#     To test a method without changing anything permanent (overlay on is
+#     fine), then reboot several times and see whether every one completes:
+#       echo efi | sudo tee /sys/kernel/reboot/type
+#       sudo reboot
+#     That lasts until the next boot only. --status shows the method in use.
 #   - BATTERY: a lithium cell held at 100% around the clock wears faster and
 #     can swell. The Hi12 has no "stop at 80%" setting, but its charger chip
 #     (AXP288) lets the maximum charge voltage be lowered. The cell is 4.2 V;
@@ -265,6 +293,18 @@
 #
 # VERSION HISTORY
 # ----------------
+#   v3.9  - Added the blockdrivers component: BLOCK_MODULES (default
+#           goodix_ts, snd_intel_sst_acpi) keeps the unused touchscreen and
+#           built-in speaker drivers from loading, which removes their error
+#           messages at boot. Rebuilds the initramfs when it changes.
+#   v3.8  - Fixed --status: an apostrophe in the new Subtitles line broke
+#           bash's parsing, which cut the status report short after "Video
+#           source" and fell through into a normal install run. --status
+#           now also stops itself if anything cuts it short.
+#   v3.7  - Added the rebootmethod component: REBOOT_METHOD (default efi) is
+#           written to /sys/kernel/reboot/type at each boot by an
+#           edge-reboot-method service. The Hi12's default (acpi) hung at
+#           the end of a nightly reboot. --status shows the method in use.
 #   v3.6  - Added SUBTITLES ("" / off / on / forced), passed to the launcher
 #           as an Environment= line and turned into mpv options there.
 #           --status shows the mode. Existing boxes need --force once to get
@@ -385,7 +425,7 @@
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-SCRIPT_VERSION="3.6"
+SCRIPT_VERSION="3.9"
 
 KIOSK_USER="edgeadmin"
 VIDEO_PATH="/home/${KIOSK_USER}/videos/loop-video.mp4"
@@ -434,6 +474,19 @@ DNS_MARK="# edge-mpv: fixed DNS"
 BATTERY_CHARGE_VOLTAGE="4100000"
 BATTERY_UNIT="/etc/systemd/system/edge-battery.service"
 
+# How the kernel resets the hardware on reboot, set at each boot. The Hi12's
+# default (acpi) can hang at the end of a reboot; efi is the next to try,
+# then pci. Valid: efi pci acpi kbd bios triple. Empty = kernel default.
+REBOOT_METHOD="efi"
+REBOOT_METHOD_UNIT="/etc/systemd/system/edge-reboot-method.service"
+REBOOT_TYPE_FILE="/sys/kernel/reboot/type"
+
+# Kernel drivers for unused hardware, kept from loading (space-separated).
+# goodix_ts = built-in touchscreen, snd_intel_sst_acpi = built-in speakers.
+# Empty = block nothing.
+BLOCK_MODULES="goodix_ts snd_intel_sst_acpi"
+BLOCK_CONF="/etc/modprobe.d/edge-mpv-block.conf"
+
 OVERLAY_CONF="/etc/overlayroot.conf"
 OVERLAY_SETTING='overlayroot="tmpfs"'
 
@@ -444,7 +497,7 @@ SPEEDTEST_BIN="/usr/local/bin/speedtest"
 ALIAS_BEGIN="# >>> mpv kiosk aliases >>>"
 ALIAS_END="# <<< mpv kiosk aliases <<<"
 
-ALL_COMPONENTS=(sudo dns mpv fastfetch speedtest audio battery service reboot aliases)
+ALL_COMPONENTS=(sudo dns mpv fastfetch speedtest audio battery rebootmethod blockdrivers service reboot aliases)
 UPDATABLE_COMPONENTS=(mpv fastfetch speedtest)
 
 # ==============================================================================
@@ -988,6 +1041,117 @@ install_battery() {
 }
 
 # ==============================================================================
+# COMPONENT: rebootmethod (kernel reset method, set at each boot)
+# ==============================================================================
+reboot_method_valid() {
+  [[ " efi pci acpi kbd bios triple " == *" $1 "* ]]
+}
+
+reboot_method_unit_content() {
+  cat <<EOF
+[Unit]
+Description=Set kernel reboot method (edge-mpv)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo ${REBOOT_METHOD} > ${REBOOT_TYPE_FILE}'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+status_rebootmethod() {
+  if [[ -z "$REBOOT_METHOD" ]]; then
+    [[ ! -f "$REBOOT_METHOD_UNIT" ]]
+    return
+  fi
+  [[ -w "$REBOOT_TYPE_FILE" ]] || return 0   # kernel without the setting
+  [[ -f "$REBOOT_METHOD_UNIT" ]] && [[ "$(cat "$REBOOT_METHOD_UNIT")" == "$(reboot_method_unit_content)" ]] || return 1
+  systemctl is-enabled --quiet edge-reboot-method 2>/dev/null || return 1
+  in_chroot && return 0
+  [[ "$(cat "$REBOOT_TYPE_FILE")" == "$REBOOT_METHOD" ]]
+}
+
+install_rebootmethod() {
+  if [[ -z "$REBOOT_METHOD" ]]; then
+    log_info "REBOOT_METHOD is empty — removing edge-reboot-method; the kernel default applies from the next boot."
+    systemctl disable edge-reboot-method >/dev/null 2>&1
+    rm -f "$REBOOT_METHOD_UNIT"
+    in_chroot || systemctl daemon-reload
+    return
+  fi
+  if ! reboot_method_valid "$REBOOT_METHOD"; then
+    log_err "REBOOT_METHOD='${REBOOT_METHOD}' is not one of: efi pci acpi kbd bios triple."
+    return
+  fi
+  if [[ ! -w "$REBOOT_TYPE_FILE" ]]; then
+    log_warn "${REBOOT_TYPE_FILE} not available on this kernel — reboot method left alone."
+    return
+  fi
+  log_info "Writing ${REBOOT_METHOD_UNIT} (reboot method ${REBOOT_METHOD})..."
+  reboot_method_unit_content > "$REBOOT_METHOD_UNIT"
+  chmod 644 "$REBOOT_METHOD_UNIT"
+  if in_chroot; then
+    systemctl enable edge-reboot-method >/dev/null 2>&1
+    log_ok "edge-reboot-method enabled (in chroot — it applies at the next boot)."
+    return
+  fi
+  systemctl daemon-reload
+  systemctl enable edge-reboot-method >/dev/null 2>&1
+  systemctl restart edge-reboot-method
+  if status_rebootmethod; then
+    log_ok "Reboot method set to ${REBOOT_METHOD}, applied at each boot."
+  else
+    log_err "Reboot method did not verify — read ${REBOOT_TYPE_FILE} and check 'systemctl status edge-reboot-method'."
+  fi
+}
+
+# ==============================================================================
+# COMPONENT: blockdrivers (keep drivers for unused hardware from loading)
+# ==============================================================================
+block_conf_content() {
+  local m
+  echo "# Written by edge-mpv.sh (BLOCK_MODULES). Don't edit; re-run edge-mpv.sh."
+  for m in $BLOCK_MODULES; do
+    # "blacklist" stops automatic loading; "install ... /bin/false" also
+    # stops it being pulled in as another driver's dependency.
+    echo "blacklist ${m}"
+    echo "install ${m} /bin/false"
+  done
+}
+
+status_blockdrivers() {
+  if [[ -z "$BLOCK_MODULES" ]]; then
+    [[ ! -f "$BLOCK_CONF" ]]
+    return
+  fi
+  [[ -f "$BLOCK_CONF" ]] && [[ "$(cat "$BLOCK_CONF")" == "$(block_conf_content)" ]]
+}
+
+install_blockdrivers() {
+  if [[ -z "$BLOCK_MODULES" ]]; then
+    log_info "BLOCK_MODULES is empty — removing ${BLOCK_CONF}."
+    rm -f "$BLOCK_CONF"
+  else
+    log_info "Blocking drivers: ${BLOCK_MODULES}..."
+    block_conf_content > "$BLOCK_CONF"
+    chmod 644 "$BLOCK_CONF"
+  fi
+  # The initramfs carries its own copy of modprobe.d; rebuild it to match.
+  if command -v update-initramfs >/dev/null 2>&1; then
+    log_info "Rebuilding the initramfs (takes a minute)..."
+    update-initramfs -u >/dev/null 2>&1 || log_warn "update-initramfs reported a problem — check with 'sudo update-initramfs -u'."
+  fi
+  if status_blockdrivers; then
+    log_ok "Driver blocking set — takes effect at the next boot."
+  else
+    log_err "Driver blocking did not verify — check ${BLOCK_CONF}."
+  fi
+}
+
+# ==============================================================================
 # COMPONENT: service (mpv.service)
 # ==============================================================================
 unit_content() {
@@ -1257,7 +1421,7 @@ show_video_source() {
   fi
   local sm
   sm=$(sed -n 's/^Environment=SUBTITLES=//p' "$UNIT_PATH" 2>/dev/null)
-  log_info "Subtitles: ${sm:-default (follow the file's flags)}"
+  log_info "Subtitles: ${sm:-default (follow the flags in each file)}"
   echo
 }
 
@@ -1275,6 +1439,12 @@ show_battery_status() {
     echo
     return
   done
+}
+
+show_reboot_method() {
+  [[ -r "$REBOOT_TYPE_FILE" ]] || return 0
+  log_info "Reboot method: $(cat "$REBOOT_TYPE_FILE") (CONFIG: ${REBOOT_METHOD:-kernel default})"
+  echo
 }
 
 show_wifi_status() {
@@ -1517,8 +1687,15 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   show_video_source
   show_wifi_status
   show_battery_status
+  show_reboot_method
   show_service_status
   exit 0
+fi
+# Safety net: if an error ever cuts the status block short, stop here rather
+# than falling through into a full install run.
+if [[ $STATUS_ONLY -eq 1 ]]; then
+  log_err "--status stopped early because of an error above — no changes made."
+  exit 1
 fi
 
 if [[ $RESTART_ONLY -eq 1 ]]; then
